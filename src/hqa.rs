@@ -5,9 +5,14 @@ use std::collections::HashSet;
 
 use crate::interactionTensor::InteractionTensor;
 
+/// Maximum number of future slices the lookahead considers.
+/// With exponential decay (sigma=1), contributions beyond ~20 slices are negligible.
+const LOOKAHEAD_HORIZON: usize = 20;
+
 /// Computes the lookahead matrix (L + W) from a 3D interaction view.
+/// Only examines up to `LOOKAHEAD_HORIZON` layers to avoid wasted computation.
 pub fn lookahead(gs_view: ArrayView3<f64>, sigma: f64, inf: f64) -> Array2<f64> {
-    let num_layers = gs_view.dim().0;
+    let num_layers = gs_view.dim().0.min(LOOKAHEAD_HORIZON);
     let num_qubits = gs_view.dim().1;
 
     let mut result = Array2::<f64>::zeros((num_qubits, num_qubits));
@@ -25,7 +30,7 @@ pub fn lookahead(gs_view: ArrayView3<f64>, sigma: f64, inf: f64) -> Array2<f64> 
         }
     }
 
-    // L_sum: Layers 1..N
+    // L_sum: Layers 1..horizon
     for l in 1..num_layers {
         let decay_weight = 2.0_f64.powf(-(l as f64) / sigma);
         for i in 0..num_qubits {
