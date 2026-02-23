@@ -1,45 +1,61 @@
-use ndarray::{Array2, Array3, ArrayView2, ArrayView3};
+use ndarray::{Array2, Array3, ArrayView2};
 use pathfinding::matrix::Matrix;
 use pathfinding::prelude::kuhn_munkres;
 use std::collections::HashSet;
 
-use crate::interactionTensor::InteractionTensor;
+use super::InteractionTensor;
 
 /// Maximum number of future slices the lookahead considers.
-/// With exponential decay (sigma=1), contributions beyond ~20 slices are negligible.
 const LOOKAHEAD_HORIZON: usize = 20;
 
-/// Computes the lookahead matrix (L + W) from a 3D interaction view.
-/// Only examines up to `LOOKAHEAD_HORIZON` layers to avoid wasted computation.
-pub fn lookahead(gs_view: ArrayView3<f64>, sigma: f64, inf: f64) -> Array2<f64> {
-    let num_layers = gs_view.dim().0.min(LOOKAHEAD_HORIZON);
-    let num_qubits = gs_view.dim().1;
+/// Sparse edge list: for each layer, a list of (q1, q2, weight) tuples.
+pub type ActiveGates = Vec<Vec<(usize, usize, f64)>>;
 
-    let mut result = Array2::<f64>::zeros((num_qubits, num_qubits));
-
-    if num_layers == 0 {
-        return result;
-    }
-
-    // W: Layer 0
-    for i in 0..num_qubits {
-        for j in 0..num_qubits {
-            if gs_view[[0, i, j]] > 0.0 {
-                result[[i, j]] = inf;
+/// Builds a sparse edge list from the dense interaction tensor.
+pub fn build_active_gates(gs: &InteractionTensor) -> ActiveGates {
+    let num_layers = gs.num_layers();
+    let num_qubits = gs.num_qubits();
+    let mut active_gates = vec![Vec::new(); num_layers];
+    for l in 0..num_layers {
+        for i in 0..num_qubits {
+            for j in 0..num_qubits {
+                let w = gs.weight(l, i, j);
+                if w > 0.0 {
+                    active_gates[l].push((i, j, w));
+                }
             }
         }
     }
+    active_gates
+}
 
-    // L_sum: Layers 1..horizon
-    for l in 1..num_layers {
-        let decay_weight = 2.0_f64.powf(-(l as f64) / sigma);
-        for i in 0..num_qubits {
-            for j in 0..num_qubits {
-                let interaction = gs_view[[l, i, j]];
-                if interaction > 0.0 {
-                    result[[i, j]] += interaction * decay_weight;
-                }
-            }
+/// Computes the lookahead matrix using sparse edge traversal and a truncated horizon.
+pub fn lookahead(
+    active_gates: &ActiveGates,
+    current_layer: usize,
+    num_qubits: usize,
+    sigma: f64,
+    inf: f64,
+) -> Array2<f64> {
+    let mut result = Array2::<f64>::zeros((num_qubits, num_qubits));
+    let num_layers = active_gates.len();
+
+    if current_layer >= num_layers {
+        return result;
+    }
+
+    // W: current layer — only iterate over actual gates
+    for &(i, j, _) in &active_gates[current_layer] {
+        result[[i, j]] = inf;
+    }
+
+    // L: future layers with exponential decay, only over actual gates
+    let end_layer = (current_layer + 1 + LOOKAHEAD_HORIZON).min(num_layers);
+    for l in (current_layer + 1)..end_layer {
+        let distance = l - current_layer;
+        let decay = 2.0_f64.powf(-(distance as f64) / sigma);
+        for &(i, j, weight) in &active_gates[l] {
+            result[[i, j]] += weight * decay;
         }
     }
 
@@ -61,12 +77,13 @@ pub fn hqa_mapping(
     let num_layers = gs.num_layers();
     let num_qubits = gs.num_qubits();
 
+    // Build sparse edge lists once, reuse for all layers
+    let active_gates = build_active_gates(&gs);
+
     for i in 0..num_layers {
-        // Work on a mutable Vec copy; write back into ps at the end
         let mut next_ps: Vec<i32> = ps.row(i).to_vec();
 
-        let future_view = gs.future_view(i);
-        let l_matrix = lookahead(future_view, 1.0, 65536.0);
+        let l_matrix = lookahead(&active_gates, i, num_qubits, 1.0, 65536.0);
         let g = gs.current_layer(i);
 
         let mut free_spaces = core_capacities.to_vec();
@@ -308,8 +325,7 @@ pub fn hqa_mapping(
     ps
 }
 
-/// Helper to reconstruct an Array3 from the new flat sparse JSON format:
-/// Each entry is [layer_idx, q1, q2, weight]
+/// Reconstructs an Array3 from flat sparse JSON: each entry is [layer, q1, q2, weight].
 pub fn array3_from_sparse(
     gs_sparse: &[[f64; 4]],
     num_layers: usize,
@@ -331,7 +347,7 @@ pub fn array3_from_sparse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interactionTensor::InteractionTensor;
+    use ndarray::Array2;
     use serde_json::Value;
     use std::fs;
     use std::path::Path;
@@ -354,7 +370,6 @@ mod tests {
         let input_initial_partition: Vec<i32> =
             serde_json::from_value(test_case["input_initial_partition"].clone()).unwrap();
 
-        // Build ps as Array2: shape (num_layers + 1, num_qubits), row 0 = initial partition
         let mut ps = Array2::<i32>::zeros((num_layers + 1, num_virtual_qubits));
         for (q, &val) in input_initial_partition.iter().enumerate() {
             ps[[0, q]] = val;
@@ -378,7 +393,6 @@ mod tests {
             dist_array.view(),
         );
 
-        // Convert Array2 result to Vec<Vec<i32>> for comparison with expected output
         let rust_output_vecs: Vec<Vec<i32>> = rust_output
             .rows()
             .into_iter()

@@ -1,6 +1,4 @@
 pub mod hqa;
-#[allow(non_snake_case)]
-pub mod interactionTensor;
 
 #[cfg(test)]
 mod tests {

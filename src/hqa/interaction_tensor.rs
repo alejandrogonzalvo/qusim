@@ -1,7 +1,7 @@
 use ndarray::{s, ArrayView2, ArrayView3, Axis};
 
 /// A domain-specific wrapper around the 3D interaction tensor.
-/// Methods return views tied to the lifetime of `&self`, not `'a`.
+/// Shape: (num_layers, num_qubits, num_qubits).
 pub struct InteractionTensor<'a> {
     view: ArrayView3<'a, f64>,
 }
@@ -25,13 +25,11 @@ impl<'a> InteractionTensor<'a> {
     }
 
     /// Returns a 2D view of a single layer.
-    /// Lifetime is tied to `&self` (the borrow of the InteractionTensor).
     pub fn current_layer(&self, layer_idx: usize) -> ArrayView2<'_, f64> {
         self.view.index_axis(Axis(0), layer_idx)
     }
 
     /// Returns a sub-tensor from `current_layer..` as a new ArrayView3.
-    /// Can be used directly with the `lookahead` function.
     pub fn future_view(&self, current_layer: usize) -> ArrayView3<'_, f64> {
         self.view.slice(s![current_layer.., .., ..])
     }

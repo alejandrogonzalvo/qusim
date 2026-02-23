@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
 use std::time::Instant;
 
-use qusim::hqa::hqa_mapping;
-use qusim::interactionTensor::InteractionTensor;
+use qusim::hqa::{hqa_mapping, InteractionTensor};
 
 #[derive(Deserialize)]
 struct HqaInput {

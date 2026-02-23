@@ -17,17 +17,15 @@ from utils import qiskit_circ_to_slices, all_to_all_topology
 from HQA import HQA_variation
 
 def serialize_gs(Gs):
-    gs_serialized = []
-    # Gs is a sparse stack
-    for i in range(Gs.shape[0]):
-        slice_g = Gs[i]
+    """Serialize sparse interaction tensor to flat [layer, u, v, weight] format."""
+    gs_sparse = []
+    for layer_idx in range(Gs.shape[0]):
+        slice_g = Gs[layer_idx]
         coords = slice_g.coords
         data = slice_g.data
-        edges = []
         for j in range(len(data)):
-            edges.append([int(coords[0][j]), int(coords[1][j]), float(data[j])])
-        gs_serialized.append(edges)
-    return gs_serialized
+            gs_sparse.append([float(layer_idx), float(coords[0][j]), float(coords[1][j]), float(data[j])])
+    return gs_sparse
 
 def run_bench():
     core_counts = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
@@ -74,14 +72,15 @@ def run_bench():
         
         # 4. Rust Execution (via CLI)
         print(f"  Running Rust HQA...")
-        gs_serialized = serialize_gs(Gs)
+        gs_sparse = serialize_gs(Gs)
         rust_input = {
-            "gs": gs_serialized,
-            "ps": [part], 
+            "num_virtual_qubits": virtual_qubits,
             "num_cores": num_cores,
-            "num_qubits": virtual_qubits,
-            "core_capacities": core_cap,
-            "distance_matrix": dist_matrix
+            "num_layers": Gs.shape[0],
+            "gs_sparse": gs_sparse,
+            "input_initial_partition": part,
+            "input_core_capacities": core_cap,
+            "input_distance_matrix": dist_matrix,
         }
         
         rust_input_json = json.dumps(rust_input)

@@ -1,7 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ndarray::{Array2, Array3};
-use qusim::hqa::hqa_mapping;
-use qusim::interactionTensor::InteractionTensor;
+use qusim::hqa::{hqa_mapping, InteractionTensor};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
