@@ -12,15 +12,23 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils import qiskit_circ_to_slices, all_to_all_topology, ring_topology
 from HQA import HQA_variation
 
-def serialize_gs(Gs):
+def serialize_gs_flat_sparse(Gs):
+    """
+    Serializes the sequence of sparse matrices into a single 1D list.
+    Format: [layer_idx, q1, q2, weight]
+    """
     gs_serialized = []
-    for g in Gs:
+    for layer_idx, g in enumerate(Gs):
         coords = g.coords
         data = g.data
-        edges = []
         for i in range(len(data)):
-            edges.append([int(coords[0][i]), int(coords[1][i]), float(data[i])])
-        gs_serialized.append(edges)
+            # We cast to float so Rust's serde automatically parses them as f64
+            layer = float(layer_idx)
+            u = float(coords[0][i])
+            v = float(coords[1][i])
+            w = float(data[i])
+            gs_serialized.append([layer, u, v, w])
+            
     return gs_serialized
 
 def generate_test_vectors():
@@ -32,8 +40,10 @@ def generate_test_vectors():
     circ = QFT(virtual_qubits)
     transp_circ = transpile(circ, basis_gates=['x', 'cx', 'cp', 'rz', 'h', 's', 'sdg', 't', 'tdg', 'measure'], seed_transpiler=42)
     Gs_two, Gs_all = qiskit_circ_to_slices(transp_circ)
+    
     Gs = Gs_all # Use Gs_all for mapping as in the original script
-    gs_serialized = serialize_gs(Gs)
+    gs_sparse = serialize_gs_flat_sparse(Gs)
+    num_layers = len(Gs)
 
     output_dict = {}
 
@@ -55,7 +65,8 @@ def generate_test_vectors():
     output_dict["hqa_test_qft_25_all_to_all"] = {
         "num_virtual_qubits": virtual_qubits,
         "num_cores": num_cores,
-        "input_circuit": gs_serialized,
+        "num_layers": num_layers,
+        "gs_sparse": gs_sparse,
         "input_initial_partition": Ps_ata[0].tolist(),
         "input_core_capacities": core_cap_ata,
         "input_distance_matrix": dist_matrix_ata,
@@ -80,7 +91,8 @@ def generate_test_vectors():
     output_dict["hqa_test_qft_25_ring"] = {
         "num_virtual_qubits": virtual_qubits,
         "num_cores": num_cores,
-        "input_circuit": gs_serialized,
+        "num_layers": num_layers,
+        "gs_sparse": gs_sparse,
         "input_initial_partition": Ps_ring[0].tolist(),
         "input_core_capacities": core_cap_ring,
         "input_distance_matrix": dist_matrix_ring,
@@ -107,7 +119,8 @@ def generate_test_vectors():
     output_dict["hqa_test_qft_25_large_cores"] = {
         "num_virtual_qubits": virtual_qubits,
         "num_cores": num_cores,
-        "input_circuit": gs_serialized,
+        "num_layers": num_layers,
+        "gs_sparse": gs_sparse,
         "input_initial_partition": Ps_large[0].tolist(),
         "input_core_capacities": core_cap_large,
         "input_distance_matrix": dist_matrix_large,
