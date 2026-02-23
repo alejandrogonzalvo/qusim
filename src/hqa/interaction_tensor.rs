@@ -1,36 +1,49 @@
-use ndarray::{s, ArrayView2, ArrayView3, Axis};
+/// Sparse edge list: for each layer, a list of (q1, q2, weight) tuples.
+pub type ActiveGates = Vec<Vec<(usize, usize, f64)>>;
 
-/// A domain-specific wrapper around the 3D interaction tensor.
-/// Shape: (num_layers, num_qubits, num_qubits).
-pub struct InteractionTensor<'a> {
-    view: ArrayView3<'a, f64>,
+/// Sparse interaction tensor storing only non-zero gate interactions.
+/// Replaces the dense Array3 representation for O(|E|) iteration instead of O(N²).
+pub struct InteractionTensor {
+    active_gates: ActiveGates,
+    num_layers: usize,
+    num_qubits: usize,
 }
 
-impl<'a> InteractionTensor<'a> {
-    pub fn new(view: ArrayView3<'a, f64>) -> Self {
-        Self { view }
+impl InteractionTensor {
+    /// Build directly from flat sparse JSON data: each entry is [layer, q1, q2, weight].
+    pub fn from_sparse(gs_sparse: &[[f64; 4]], num_layers: usize, num_qubits: usize) -> Self {
+        let mut active_gates = vec![Vec::new(); num_layers];
+        for edge in gs_sparse {
+            let layer = edge[0] as usize;
+            let u = edge[1] as usize;
+            let v = edge[2] as usize;
+            let w = edge[3];
+            if layer < num_layers && u < num_qubits && v < num_qubits && w > 0.0 {
+                active_gates[layer].push((u, v, w));
+            }
+        }
+        Self {
+            active_gates,
+            num_layers,
+            num_qubits,
+        }
     }
 
     pub fn num_layers(&self) -> usize {
-        self.view.dim().0
+        self.num_layers
     }
 
     pub fn num_qubits(&self) -> usize {
-        self.view.dim().1
+        self.num_qubits
     }
 
-    #[inline]
-    pub fn weight(&self, layer: usize, q1: usize, q2: usize) -> f64 {
-        self.view[[layer, q1, q2]]
+    /// Returns the sparse edge list for all layers.
+    pub fn active_gates(&self) -> &ActiveGates {
+        &self.active_gates
     }
 
-    /// Returns a 2D view of a single layer.
-    pub fn current_layer(&self, layer_idx: usize) -> ArrayView2<'_, f64> {
-        self.view.index_axis(Axis(0), layer_idx)
-    }
-
-    /// Returns a sub-tensor from `current_layer..` as a new ArrayView3.
-    pub fn future_view(&self, current_layer: usize) -> ArrayView3<'_, f64> {
-        self.view.slice(s![current_layer.., .., ..])
+    /// Returns the sparse edge list for a single layer.
+    pub fn layer_gates(&self, layer: usize) -> &[(usize, usize, f64)] {
+        &self.active_gates[layer]
     }
 }

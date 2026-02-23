@@ -1,36 +1,16 @@
-use ndarray::{Array2, Array3, ArrayView2};
+use ndarray::{Array2, ArrayView2};
 use pathfinding::matrix::Matrix;
 use pathfinding::prelude::kuhn_munkres;
 use std::collections::HashSet;
 
+use super::interaction_tensor::ActiveGates;
 use super::InteractionTensor;
 
 /// Maximum number of future slices the lookahead considers.
 const LOOKAHEAD_HORIZON: usize = 20;
 
-/// Sparse edge list: for each layer, a list of (q1, q2, weight) tuples.
-pub type ActiveGates = Vec<Vec<(usize, usize, f64)>>;
-
-/// Builds a sparse edge list from the dense interaction tensor.
-pub fn build_active_gates(gs: &InteractionTensor) -> ActiveGates {
-    let num_layers = gs.num_layers();
-    let num_qubits = gs.num_qubits();
-    let mut active_gates = vec![Vec::new(); num_layers];
-    for l in 0..num_layers {
-        for i in 0..num_qubits {
-            for j in 0..num_qubits {
-                let w = gs.weight(l, i, j);
-                if w > 0.0 {
-                    active_gates[l].push((i, j, w));
-                }
-            }
-        }
-    }
-    active_gates
-}
-
 /// Computes the lookahead matrix using sparse edge traversal and a truncated horizon.
-pub fn lookahead(
+fn lookahead(
     active_gates: &ActiveGates,
     current_layer: usize,
     num_qubits: usize,
@@ -62,9 +42,11 @@ pub fn lookahead(
     result
 }
 
-pub fn validate_partition(g: ArrayView2<f64>, p: &[i32]) -> bool {
-    g.indexed_iter()
-        .all(|((i, j), &weight)| weight <= 0.0 || p[i] == p[j])
+/// Validates that all interacting qubit pairs are co-located on the same core.
+fn validate_partition(layer_gates: &[(usize, usize, f64)], p: &[i32]) -> bool {
+    layer_gates
+        .iter()
+        .all(|&(i, j, w)| w <= 0.0 || p[i] == p[j])
 }
 
 pub fn hqa_mapping(
@@ -76,15 +58,13 @@ pub fn hqa_mapping(
 ) -> Array2<i32> {
     let num_layers = gs.num_layers();
     let num_qubits = gs.num_qubits();
-
-    // Build sparse edge lists once, reuse for all layers
-    let active_gates = build_active_gates(&gs);
+    let active_gates = gs.active_gates();
 
     for i in 0..num_layers {
         let mut next_ps: Vec<i32> = ps.row(i).to_vec();
+        let layer_gates = gs.layer_gates(i);
 
-        let l_matrix = lookahead(&active_gates, i, num_qubits, 1.0, 65536.0);
-        let g = gs.current_layer(i);
+        let l_matrix = lookahead(active_gates, i, num_qubits, 1.0, 65536.0);
 
         let mut free_spaces = core_capacities.to_vec();
         for q in 0..num_qubits {
@@ -99,57 +79,71 @@ pub fn hqa_mapping(
         let mut movable_qubits: Vec<Vec<usize>> = vec![Vec::new(); num_cores];
         let mut core_likelihood = vec![vec![0.0; num_cores]; num_qubits];
 
-        for q1 in 0..num_qubits {
-            let mut is_movable = true;
-            for j in 0..num_qubits {
-                if g[[q1, j]] > 0.0 {
-                    is_movable = false;
-                    break;
+        // Build set of qubits that participate in gates this layer (sparse)
+        let mut active_qubits: HashSet<usize> = HashSet::new();
+        for &(u, v, _) in layer_gates {
+            active_qubits.insert(u);
+            active_qubits.insert(v);
+        }
+
+        // Movable = assigned but not involved in any gate this layer
+        for q in 0..num_qubits {
+            if !active_qubits.contains(&q) && ps[[i, q]] >= 0 {
+                movable_qubits[ps[[i, q]] as usize].push(q);
+            }
+        }
+
+        // Conflict detection: iterate only over actual edges (sparse)
+        // Collect unique pairs sorted by (q1, q2) to match original dense loop order
+        let mut edge_pairs: Vec<(usize, usize)> = Vec::new();
+        let mut seen_pairs: HashSet<(usize, usize)> = HashSet::new();
+        for &(u, v, w) in layer_gates {
+            if w <= 0.0 {
+                continue;
+            }
+            let (hi, lo) = if u > v { (u, v) } else { (v, u) };
+            if seen_pairs.insert((hi, lo)) {
+                edge_pairs.push((hi, lo));
+            }
+        }
+        edge_pairs.sort_unstable();
+
+        for &(q1, q2) in &edge_pairs {
+            if ps[[i, q1]] != ps[[i, q2]] {
+                if next_ps[q1] != -1 {
+                    free_spaces[ps[[i, q1]] as usize] += 1;
+                    next_ps[q1] = -1;
                 }
-            }
-            if is_movable && ps[[i, q1]] >= 0 {
-                movable_qubits[ps[[i, q1]] as usize].push(q1);
-            }
+                if next_ps[q2] != -1 {
+                    free_spaces[ps[[i, q2]] as usize] += 1;
+                    next_ps[q2] = -1;
+                }
 
-            for q2 in 0..q1 {
-                if g[[q1, q2]] > 0.0 {
-                    if ps[[i, q1]] != ps[[i, q2]] {
-                        if next_ps[q1] != -1 {
-                            free_spaces[ps[[i, q1]] as usize] += 1;
-                            next_ps[q1] = -1;
-                        }
-                        if next_ps[q2] != -1 {
-                            free_spaces[ps[[i, q2]] as usize] += 1;
-                            next_ps[q2] = -1;
-                        }
+                unplaced_qubits.push([q1, q2]);
 
-                        unplaced_qubits.push([q1, q2]);
-
-                        for qaux in 0..num_qubits {
-                            if ps[[i, qaux]] >= 0 {
-                                let core_idx = ps[[i, qaux]] as usize;
-                                core_likelihood[q1][core_idx] += l_matrix[[q1, qaux]];
-                                core_likelihood[q2][core_idx] += l_matrix[[q2, qaux]];
-                            }
-                        }
-
-                        let sum_q1: f64 = core_likelihood[q1].iter().sum();
-                        if sum_q1 > 0.0 {
-                            for val in core_likelihood[q1].iter_mut() {
-                                *val /= sum_q1;
-                            }
-                        }
-                        let sum_q2: f64 = core_likelihood[q2].iter().sum();
-                        if sum_q2 > 0.0 {
-                            for val in core_likelihood[q2].iter_mut() {
-                                *val /= sum_q2;
-                            }
-                        }
-                    } else {
-                        well_placed_qubits.insert(q1);
-                        well_placed_qubits.insert(q2);
+                for qaux in 0..num_qubits {
+                    if ps[[i, qaux]] >= 0 {
+                        let core_idx = ps[[i, qaux]] as usize;
+                        core_likelihood[q1][core_idx] += l_matrix[[q1, qaux]];
+                        core_likelihood[q2][core_idx] += l_matrix[[q2, qaux]];
                     }
                 }
+
+                let sum_q1: f64 = core_likelihood[q1].iter().sum();
+                if sum_q1 > 0.0 {
+                    for val in core_likelihood[q1].iter_mut() {
+                        *val /= sum_q1;
+                    }
+                }
+                let sum_q2: f64 = core_likelihood[q2].iter().sum();
+                if sum_q2 > 0.0 {
+                    for val in core_likelihood[q2].iter_mut() {
+                        *val /= sum_q2;
+                    }
+                }
+            } else {
+                well_placed_qubits.insert(q1);
+                well_placed_qubits.insert(q2);
             }
         }
 
@@ -311,7 +305,7 @@ pub fn hqa_mapping(
             }
         }
 
-        if !validate_partition(g, &next_ps) {
+        if !validate_partition(layer_gates, &next_ps) {
             // Diagnostic: Heuristic failed to co-locate all gates in this slice
         }
 
@@ -325,29 +319,9 @@ pub fn hqa_mapping(
     ps
 }
 
-/// Reconstructs an Array3 from flat sparse JSON: each entry is [layer, q1, q2, weight].
-pub fn array3_from_sparse(
-    gs_sparse: &[[f64; 4]],
-    num_layers: usize,
-    num_qubits: usize,
-) -> Array3<f64> {
-    let mut gs = Array3::<f64>::zeros((num_layers, num_qubits, num_qubits));
-    for edge in gs_sparse {
-        let layer = edge[0] as usize;
-        let u = edge[1] as usize;
-        let v = edge[2] as usize;
-        let w = edge[3];
-        if layer < num_layers && u < num_qubits && v < num_qubits {
-            gs[[layer, u, v]] = w;
-        }
-    }
-    gs
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::Array2;
     use serde_json::Value;
     use std::fs;
     use std::path::Path;
@@ -365,7 +339,8 @@ mod tests {
 
         let gs_sparse: Vec<[f64; 4]> =
             serde_json::from_value(test_case["gs_sparse"].clone()).unwrap();
-        let gs_array = array3_from_sparse(&gs_sparse, num_layers, num_virtual_qubits);
+
+        let tensor = InteractionTensor::from_sparse(&gs_sparse, num_layers, num_virtual_qubits);
 
         let input_initial_partition: Vec<i32> =
             serde_json::from_value(test_case["input_initial_partition"].clone()).unwrap();
@@ -383,15 +358,7 @@ mod tests {
         let dist_array = Array2::from_shape_vec((num_cores, num_cores), dist_flat)
             .expect("Failed to reshape distance_matrix");
 
-        let interaction_tensor = InteractionTensor::new(gs_array.view());
-
-        let rust_output = hqa_mapping(
-            interaction_tensor,
-            ps,
-            num_cores,
-            &core_capacities,
-            dist_array.view(),
-        );
+        let rust_output = hqa_mapping(tensor, ps, num_cores, &core_capacities, dist_array.view());
 
         let rust_output_vecs: Vec<Vec<i32>> = rust_output
             .rows()

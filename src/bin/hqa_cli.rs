@@ -1,4 +1,4 @@
-use ndarray::{Array2, Array3};
+use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
 use std::time::Instant;
@@ -34,33 +34,21 @@ fn main() -> io::Result<()> {
     let num_qubits = input.num_virtual_qubits;
     let num_cores = input.num_cores;
 
-    let mut gs_array = Array3::<f64>::zeros((num_layers, num_qubits, num_qubits));
-    for edge in input.gs_sparse {
-        let layer = edge[0] as usize;
-        let u = edge[1] as usize;
-        let v = edge[2] as usize;
-        let w = edge[3];
-        if layer < num_layers && u < num_qubits && v < num_qubits {
-            gs_array[[layer, u, v]] = w;
-        }
-    }
+    let tensor = InteractionTensor::from_sparse(&input.gs_sparse, num_layers, num_qubits);
 
     let dist_flat: Vec<i32> = input.input_distance_matrix.into_iter().flatten().collect();
     let dist_array = Array2::from_shape_vec((num_cores, num_cores), dist_flat)
         .expect("Failed to reshape distance_matrix into Array2");
 
-    // Build ps as Array2: shape (num_layers + 1, num_qubits)
     let mut ps = Array2::<i32>::zeros((num_layers + 1, num_qubits));
     for (q, &val) in input.input_initial_partition.iter().enumerate() {
         ps[[0, q]] = val;
     }
 
-    let interaction_tensor = InteractionTensor::new(gs_array.view());
-
     let start = Instant::now();
 
     let result = hqa_mapping(
-        interaction_tensor,
+        tensor,
         ps,
         num_cores,
         &input.input_core_capacities,
