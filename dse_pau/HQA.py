@@ -34,7 +34,7 @@ def validate_partition(G, P, inf=2**16):
     return True
 
 def HQA(Gs, Ps, N, qubits, physical_qubits, distance_matrix=None):
-    if distance_matrix == None:
+    if distance_matrix is None:
         distance_matrix = [[1 if j != i else 0 for j in range(N)] for i in range(N)]
 
     for i in tqdm(range(len(Gs))):
@@ -96,11 +96,12 @@ def HQA(Gs, Ps, N, qubits, physical_qubits, distance_matrix=None):
             to_move_q1 = None
             to_move_q2 = None
 
-            if len(movable_qubits[core_1]) == 0 and len(movable_qubits[core_2]) != 0:
-                Ps[i+1][movable_qubits[core_2][-1]] = core_1
+            if len(movable_qubits[core_1]) == 0:
+                movable_qubits[core_1] = [q for q in range(qubits) if Ps[i+1][q] == core_1]
+            if len(movable_qubits[core_2]) == 0:
+                movable_qubits[core_2] = [q for q in range(qubits) if Ps[i+1][q] == core_2]
 
-                movable_qubits[core_1].append(movable_qubits[core_2][-1])
-                movable_qubits[core_2].pop()
+            if len(movable_qubits[core_1]) == 0 and len(movable_qubits[core_2]) != 0:
 
                 free_spaces[core_1] -= 1
                 free_spaces[core_2] += 1
@@ -191,7 +192,7 @@ def HQA(Gs, Ps, N, qubits, physical_qubits, distance_matrix=None):
     return Ps
 
 def HQA_variation(Gs, Ps, N, qubits, qubits_per_core, distance_matrix=None):
-    if distance_matrix == None:
+    if distance_matrix is None:
         distance_matrix = [[1 if j != i else 0 for j in range(N)] for i in range(N)]
 
     for i in tqdm(range(len(Gs))):
@@ -258,11 +259,12 @@ def HQA_variation(Gs, Ps, N, qubits, qubits_per_core, distance_matrix=None):
             to_move_q1 = None
             to_move_q2 = None
 
-            if len(movable_qubits[core_1]) == 0 and len(movable_qubits[core_2]) != 0:
-                Ps[i+1][movable_qubits[core_2][-1]] = core_1
+            if len(movable_qubits[core_1]) == 0:
+                movable_qubits[core_1] = [q for q in range(qubits) if Ps[i+1][q] == core_1]
+            if len(movable_qubits[core_2]) == 0:
+                movable_qubits[core_2] = [q for q in range(qubits) if Ps[i+1][q] == core_2]
 
-                movable_qubits[core_1].append(movable_qubits[core_2][-1])
-                movable_qubits[core_2].pop()
+            if len(movable_qubits[core_1]) == 0 and len(movable_qubits[core_2]) != 0:
 
                 free_spaces[core_1] -= 1
                 free_spaces[core_2] += 1

@@ -1,0 +1,25 @@
+[project]
+name = "qusim"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Alejandro Gonzalvo",email = "alejandrogonhid@gmail.com"}
+]
+requires-python = ">=3.12,<3.14.1"
+dependencies = [
+    "matplotlib (>=3.10.8,<4.0.0)",
+    "qiskit (>=2.3.0,<3.0.0)",
+    "sparse (>=0.18.0,<0.19.0)",
+    "networkx (>=3.6.1,<4.0.0)",
+    "tqdm (>=4.67.3,<5.0.0)",
+    "joblib (>=1.5.3,<2.0.0)",
+    "pytest (>=9.0.2,<10.0.0)",
+    "pytest-benchmark (>=5.2.3,<6.0.0)"
+]
+
+[tool.poetry]
+package-mode = false
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

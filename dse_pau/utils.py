@@ -489,8 +489,17 @@ def qiskit_circ_to_slices(circ):
     
     for i, layer_as_circuit in enumerate(layers):
 
-        adj_list_all = [((instruction.qubits[0].index, instruction.qubits[1].index), 1) for instruction in layer_as_circuit if instruction.operation.num_qubits == 2] + [((instruction.qubits[1].index, instruction.qubits[0].index), 1) for instruction in layer_as_circuit if instruction.operation.num_qubits == 2] + [((instruction.qubits[0].index, instruction.qubits[0].index), 1) for instruction in layer_as_circuit if instruction.operation.num_qubits == 1]
-        adj_list_two_qubit_gates = [((instruction.qubits[0].index, instruction.qubits[1].index), 1) for instruction in layer_as_circuit if instruction.operation.num_qubits == 2] + [((instruction.qubits[1].index, instruction.qubits[0].index), 1) for instruction in layer_as_circuit if instruction.operation.num_qubits == 2]
+        adj_list_all = []
+        adj_list_two_qubit_gates = []
+        for instruction in layer_as_circuit:
+            if instruction.operation.num_qubits == 2:
+                q0 = circ.find_bit(instruction.qubits[0]).index
+                q1 = circ.find_bit(instruction.qubits[1]).index
+                adj_list_all.extend([((q0, q1), 1), ((q1, q0), 1)])
+                adj_list_two_qubit_gates.extend([((q0, q1), 1), ((q1, q0), 1)])
+            elif instruction.operation.num_qubits == 1:
+                q0 = circ.find_bit(instruction.qubits[0]).index
+                adj_list_all.append(((q0, q0), 1))
     
         slices_all.append(sparse.COO(adj_list_all, shape=(circ.num_qubits, circ.num_qubits)))
         slices_two_qubit_gates.append(sparse.COO(adj_list_two_qubit_gates, shape=(circ.num_qubits, circ.num_qubits)))
