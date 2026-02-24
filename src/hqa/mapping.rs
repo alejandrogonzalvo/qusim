@@ -49,152 +49,204 @@ fn validate_partition(layer_gates: &[(usize, usize, f64)], p: &[i32]) -> bool {
         .all(|&(i, j, w)| w <= 0.0 || p[i] == p[j])
 }
 
-pub fn hqa_mapping(
-    gs: InteractionTensor,
-    mut ps: Array2<i32>,
+/// Collects the set of qubits that participate in at least one gate this layer.
+#[inline]
+fn collect_active_qubits(layer_gates: &[(usize, usize, f64)]) -> HashSet<usize> {
+    let mut active = HashSet::new();
+    for &(u, v, _) in layer_gates {
+        active.insert(u);
+        active.insert(v);
+    }
+    active
+}
+
+/// Deduplicates and sorts gate pairs with positive interaction weight.
+#[inline]
+fn collect_edge_pairs(layer_gates: &[(usize, usize, f64)]) -> Vec<(usize, usize)> {
+    let mut edge_pairs = Vec::new();
+    let mut seen = HashSet::new();
+    for &(u, v, w) in layer_gates {
+        if w <= 0.0 {
+            continue;
+        }
+        let (hi, lo) = if u > v { (u, v) } else { (v, u) };
+        if seen.insert((hi, lo)) {
+            edge_pairs.push((hi, lo));
+        }
+    }
+    edge_pairs.sort_unstable();
+    edge_pairs
+}
+
+/// Normalizes a distribution vector to sum to 1.0, leaving it unchanged if the sum is zero.
+#[inline]
+fn normalize_distribution(distribution: &mut [f64]) {
+    let sum: f64 = distribution.iter().sum();
+    if sum > 0.0 {
+        for val in distribution.iter_mut() {
+            *val /= sum;
+        }
+    }
+}
+
+/// Identifies cores with an odd number of free slots.
+#[inline]
+fn find_troubling_cores(free_spaces: &[usize]) -> Vec<usize> {
+    free_spaces
+        .iter()
+        .enumerate()
+        .filter(|(_, &s)| s % 2 != 0)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Mutable state for processing a single timeslice of the HQA algorithm.
+struct TimesliceState {
+    placement_row: Vec<i32>,
+    num_qubits: usize,
     num_cores: usize,
-    core_capacities: &[usize],
-    distance_matrix: ArrayView2<'_, i32>,
-) -> Array2<i32> {
-    let num_layers = gs.num_layers();
-    let num_qubits = gs.num_qubits();
-    let active_gates = gs.active_gates();
+    next_placement: Vec<i32>,
+    free_spaces: Vec<usize>,
+    well_placed_qubits: HashSet<usize>,
+    unplaced_qubits: Vec<[usize; 2]>,
+    movable_qubits: Vec<Vec<usize>>,
+    core_likelihood: Vec<Vec<f64>>,
+    lookahead_matrix: Array2<f64>,
+}
 
-    for i in 0..num_layers {
-        let mut next_ps: Vec<i32> = ps.row(i).to_vec();
-        let layer_gates = gs.layer_gates(i);
-
-        let l_matrix = lookahead(active_gates, i, num_qubits, 1.0, 65536.0);
+impl TimesliceState {
+    /// Initializes state from current placements, computing free spaces and movable qubits.
+    #[inline]
+    fn new(
+        placements: &Array2<i32>,
+        timeslice: usize,
+        num_qubits: usize,
+        num_cores: usize,
+        core_capacities: &[usize],
+        layer_gates: &[(usize, usize, f64)],
+        lookahead_matrix: Array2<f64>,
+    ) -> Self {
+        let placement_row = placements.row(timeslice).to_vec();
+        let next_placement = placement_row.clone();
 
         let mut free_spaces = core_capacities.to_vec();
-        for q in 0..num_qubits {
-            let assignment = ps[[i, q]];
+        for &assignment in &placement_row {
             if assignment >= 0 {
                 free_spaces[assignment as usize] -= 1;
             }
         }
 
-        let mut well_placed_qubits: HashSet<usize> = HashSet::new();
-        let mut unplaced_qubits: Vec<[usize; 2]> = Vec::new();
-        let mut movable_qubits: Vec<Vec<usize>> = vec![Vec::new(); num_cores];
-        let mut core_likelihood = vec![vec![0.0; num_cores]; num_qubits];
+        let active_qubits = collect_active_qubits(layer_gates);
 
-        // Build set of qubits that participate in gates this layer (sparse)
-        let mut active_qubits: HashSet<usize> = HashSet::new();
-        for &(u, v, _) in layer_gates {
-            active_qubits.insert(u);
-            active_qubits.insert(v);
-        }
-
-        // Movable = assigned but not involved in any gate this layer
-        for q in 0..num_qubits {
-            if !active_qubits.contains(&q) && ps[[i, q]] >= 0 {
-                movable_qubits[ps[[i, q]] as usize].push(q);
+        let mut movable_qubits = vec![Vec::new(); num_cores];
+        for (q, &assignment) in placement_row.iter().enumerate() {
+            if !active_qubits.contains(&q) && assignment >= 0 {
+                movable_qubits[assignment as usize].push(q);
             }
         }
 
-        // Conflict detection: iterate only over actual edges (sparse)
-        // Collect unique pairs sorted by (q1, q2) to match original dense loop order
-        let mut edge_pairs: Vec<(usize, usize)> = Vec::new();
-        let mut seen_pairs: HashSet<(usize, usize)> = HashSet::new();
-        for &(u, v, w) in layer_gates {
-            if w <= 0.0 {
+        Self {
+            placement_row,
+            num_qubits,
+            num_cores,
+            next_placement,
+            free_spaces,
+            well_placed_qubits: HashSet::new(),
+            unplaced_qubits: Vec::new(),
+            movable_qubits,
+            core_likelihood: vec![vec![0.0; num_cores]; num_qubits],
+            lookahead_matrix,
+        }
+    }
+
+    /// Removes a qubit from its current core assignment, freeing the slot.
+    #[inline]
+    fn evict_qubit(&mut self, qubit: usize) {
+        if self.next_placement[qubit] != -1 {
+            self.free_spaces[self.placement_row[qubit] as usize] += 1;
+            self.next_placement[qubit] = -1;
+        }
+    }
+
+    /// Accumulates future interaction weight toward each core for a qubit.
+    #[inline]
+    fn accumulate_likelihood(&mut self, qubit: usize) {
+        for qaux in 0..self.num_qubits {
+            if self.placement_row[qaux] >= 0 {
+                let core_idx = self.placement_row[qaux] as usize;
+                self.core_likelihood[qubit][core_idx] += self.lookahead_matrix[[qubit, qaux]];
+            }
+        }
+    }
+
+    /// Classifies each gate pair as co-located or conflicting, evicting and enqueuing conflicts.
+    #[inline]
+    fn detect_conflicts(&mut self, edge_pairs: &[(usize, usize)]) {
+        for &(q1, q2) in edge_pairs {
+            if self.placement_row[q1] == self.placement_row[q2] {
+                self.well_placed_qubits.insert(q1);
+                self.well_placed_qubits.insert(q2);
                 continue;
             }
-            let (hi, lo) = if u > v { (u, v) } else { (v, u) };
-            if seen_pairs.insert((hi, lo)) {
-                edge_pairs.push((hi, lo));
-            }
+
+            self.evict_qubit(q1);
+            self.evict_qubit(q2);
+            self.unplaced_qubits.push([q1, q2]);
+
+            self.accumulate_likelihood(q1);
+            self.accumulate_likelihood(q2);
+
+            normalize_distribution(&mut self.core_likelihood[q1]);
+            normalize_distribution(&mut self.core_likelihood[q2]);
         }
-        edge_pairs.sort_unstable();
+    }
 
-        for &(q1, q2) in &edge_pairs {
-            if ps[[i, q1]] != ps[[i, q2]] {
-                if next_ps[q1] != -1 {
-                    free_spaces[ps[[i, q1]] as usize] += 1;
-                    next_ps[q1] = -1;
-                }
-                if next_ps[q2] != -1 {
-                    free_spaces[ps[[i, q2]] as usize] += 1;
-                    next_ps[q2] = -1;
-                }
-
-                unplaced_qubits.push([q1, q2]);
-
-                for qaux in 0..num_qubits {
-                    if ps[[i, qaux]] >= 0 {
-                        let core_idx = ps[[i, qaux]] as usize;
-                        core_likelihood[q1][core_idx] += l_matrix[[q1, qaux]];
-                        core_likelihood[q2][core_idx] += l_matrix[[q2, qaux]];
-                    }
-                }
-
-                let sum_q1: f64 = core_likelihood[q1].iter().sum();
-                if sum_q1 > 0.0 {
-                    for val in core_likelihood[q1].iter_mut() {
-                        *val /= sum_q1;
-                    }
-                }
-                let sum_q2: f64 = core_likelihood[q2].iter().sum();
-                if sum_q2 > 0.0 {
-                    for val in core_likelihood[q2].iter_mut() {
-                        *val /= sum_q2;
-                    }
-                }
-            } else {
-                well_placed_qubits.insert(q1);
-                well_placed_qubits.insert(q2);
-            }
-        }
-
-        let mut troubling_cores = Vec::new();
-        for core_idx in 0..num_cores {
-            if free_spaces[core_idx] % 2 != 0 {
-                troubling_cores.push(core_idx);
-            }
-        }
+    /// Balances cores with odd free-slot counts by swapping idle qubits between paired cores.
+    #[inline]
+    fn balance_odd_capacity_cores(&mut self) {
+        let troubling_cores = find_troubling_cores(&self.free_spaces);
 
         for j in (0..troubling_cores.len().saturating_sub(1)).step_by(2) {
             let core_1 = troubling_cores[j];
             let core_2 = troubling_cores[j + 1];
 
+            if self.movable_qubits[core_1].is_empty() {
+                self.movable_qubits[core_1] = (0..self.num_qubits)
+                    .filter(|&q| self.next_placement[q] == core_1 as i32)
+                    .collect();
+            }
+            if self.movable_qubits[core_2].is_empty() {
+                self.movable_qubits[core_2] = (0..self.num_qubits)
+                    .filter(|&q| self.next_placement[q] == core_2 as i32)
+                    .collect();
+            }
+
+            if self.movable_qubits[core_1].is_empty() && !self.movable_qubits[core_2].is_empty() {
+                let q_to_move = self.movable_qubits[core_2].pop().unwrap();
+                self.next_placement[q_to_move] = core_1 as i32;
+                self.movable_qubits[core_1].push(q_to_move);
+                self.free_spaces[core_1] -= 1;
+                self.free_spaces[core_2] += 1;
+                continue;
+            }
+
+            if !self.movable_qubits[core_1].is_empty() && self.movable_qubits[core_2].is_empty() {
+                let q_to_move = self.movable_qubits[core_1].pop().unwrap();
+                self.next_placement[q_to_move] = core_2 as i32;
+                self.movable_qubits[core_2].push(q_to_move);
+                self.free_spaces[core_1] += 1;
+                self.free_spaces[core_2] -= 1;
+                continue;
+            }
+
             let mut interaction = 0.0;
             let mut to_move_q1_opt: Option<usize> = None;
             let mut to_move_q2_opt: Option<usize> = None;
 
-            if movable_qubits[core_1].is_empty() {
-                movable_qubits[core_1] = (0..num_qubits)
-                    .filter(|&q| next_ps[q] == core_1 as i32)
-                    .collect();
-            }
-            if movable_qubits[core_2].is_empty() {
-                movable_qubits[core_2] = (0..num_qubits)
-                    .filter(|&q| next_ps[q] == core_2 as i32)
-                    .collect();
-            }
-
-            if movable_qubits[core_1].is_empty() && !movable_qubits[core_2].is_empty() {
-                let q_to_move = movable_qubits[core_2].pop().unwrap();
-                next_ps[q_to_move] = core_1 as i32;
-                movable_qubits[core_1].push(q_to_move);
-                free_spaces[core_1] -= 1;
-                free_spaces[core_2] += 1;
-                continue;
-            }
-
-            if !movable_qubits[core_1].is_empty() && movable_qubits[core_2].is_empty() {
-                let q_to_move = movable_qubits[core_1].pop().unwrap();
-                next_ps[q_to_move] = core_2 as i32;
-                movable_qubits[core_2].push(q_to_move);
-                free_spaces[core_1] += 1;
-                free_spaces[core_2] -= 1;
-                continue;
-            }
-
-            for &q1 in &movable_qubits[core_1] {
-                for &q2 in &movable_qubits[core_2] {
-                    if interaction <= l_matrix[[q1, q2]] {
-                        interaction = l_matrix[[q1, q2]];
+            for &q1 in &self.movable_qubits[core_1] {
+                for &q2 in &self.movable_qubits[core_2] {
+                    if interaction <= self.lookahead_matrix[[q1, q2]] {
+                        interaction = self.lookahead_matrix[[q1, q2]];
                         to_move_q1_opt = Some(q1);
                         to_move_q2_opt = Some(q2);
                     }
@@ -202,76 +254,54 @@ pub fn hqa_mapping(
             }
 
             if let (Some(to_move_q1), Some(to_move_q2)) = (to_move_q1_opt, to_move_q2_opt) {
-                if next_ps[to_move_q1] != -1 {
-                    free_spaces[core_1] += 1;
-                    next_ps[to_move_q1] = -1;
-                }
-                if next_ps[to_move_q2] != -1 {
-                    free_spaces[core_2] += 1;
-                    next_ps[to_move_q2] = -1;
-                }
+                self.evict_qubit(to_move_q1);
+                self.evict_qubit(to_move_q2);
 
-                unplaced_qubits.push([to_move_q1, to_move_q2]);
+                self.unplaced_qubits.push([to_move_q1, to_move_q2]);
 
-                for qaux in 0..num_qubits {
-                    if ps[[i, qaux]] >= 0 {
-                        let core_idx = ps[[i, qaux]] as usize;
-                        core_likelihood[to_move_q1][core_idx] += l_matrix[[to_move_q1, qaux]];
-                        core_likelihood[to_move_q2][core_idx] += l_matrix[[to_move_q2, qaux]];
-                    }
-                }
+                self.accumulate_likelihood(to_move_q1);
+                self.accumulate_likelihood(to_move_q2);
 
-                let sum_q1: f64 = core_likelihood[to_move_q1].iter().sum();
-                if sum_q1 > 0.0 {
-                    for val in core_likelihood[to_move_q1].iter_mut() {
-                        *val /= sum_q1;
-                    }
-                }
-
-                let sum_q2: f64 = core_likelihood[to_move_q2].iter().sum();
-                if sum_q2 > 0.0 {
-                    for val in core_likelihood[to_move_q2].iter_mut() {
-                        *val /= sum_q2;
-                    }
-                }
+                normalize_distribution(&mut self.core_likelihood[to_move_q1]);
+                normalize_distribution(&mut self.core_likelihood[to_move_q2]);
             }
         }
+    }
 
-        // Assignation of qubits to cores
-        while !unplaced_qubits.is_empty() {
-            let scale_factor = 10_000_000.0;
-            let inf_cost = 100_000_000_000_i64;
-            let max_dim = std::cmp::max(unplaced_qubits.len(), num_cores);
+    /// Assigns unplaced qubit pairs to cores using the Hungarian algorithm.
+    #[inline]
+    fn assign_pairs_to_cores(&mut self, distance_matrix: ArrayView2<'_, i32>) {
+        let scale_factor = 10_000_000.0;
+        let inf_cost = 100_000_000_000_i64;
 
+        while !self.unplaced_qubits.is_empty() {
+            let max_dim = std::cmp::max(self.unplaced_qubits.len(), self.num_cores);
             let mut flat = Vec::with_capacity(max_dim * max_dim);
 
             for r in 0..max_dim {
                 for c in 0..max_dim {
-                    if r < unplaced_qubits.len() && c < num_cores {
-                        let [q1, q2] = unplaced_qubits[r];
-                        let core_1 = ps[[i, q1]] as usize;
-                        let core_2 = ps[[i, q2]] as usize;
+                    if r < self.unplaced_qubits.len() && c < self.num_cores {
+                        let [q1, q2] = self.unplaced_qubits[r];
+                        let core_1 = self.placement_row[q1] as usize;
+                        let core_2 = self.placement_row[q2] as usize;
 
-                        let cost;
-
-                        if free_spaces[c] < 2 {
-                            cost = inf_cost;
+                        let cost = if self.free_spaces[c] < 2 {
+                            inf_cost
                         } else if c == core_1 {
-                            cost = (distance_matrix[[core_2, core_1]] as f64 * scale_factor) as i64;
+                            (distance_matrix[[core_2, core_1]] as f64 * scale_factor) as i64
                         } else if c == core_2 {
-                            cost = (distance_matrix[[core_1, core_2]] as f64 * scale_factor) as i64;
+                            (distance_matrix[[core_1, core_2]] as f64 * scale_factor) as i64
                         } else {
-                            cost = ((distance_matrix[[core_1, c]] + distance_matrix[[core_2, c]])
-                                as f64
-                                * scale_factor) as i64;
-                        }
+                            ((distance_matrix[[core_1, c]] + distance_matrix[[core_2, c]]) as f64
+                                * scale_factor) as i64
+                        };
 
                         let likelihood_deduction =
-                            (core_likelihood[q1][c] + core_likelihood[q2][c]) / 2.0;
+                            (self.core_likelihood[q1][c] + self.core_likelihood[q2][c]) / 2.0;
                         let final_cost = cost - (likelihood_deduction * scale_factor) as i64;
 
                         flat.push(-final_cost);
-                    } else if r >= unplaced_qubits.len() {
+                    } else if r >= self.unplaced_qubits.len() {
                         flat.push(0_i64);
                     } else {
                         flat.push(-inf_cost);
@@ -284,39 +314,79 @@ pub fn hqa_mapping(
 
             let mut pairs_to_remove = Vec::new();
             for (row_idx, col_idx) in assignments.into_iter().enumerate() {
-                if row_idx < unplaced_qubits.len() && col_idx < num_cores {
-                    if free_spaces[col_idx] >= 2 {
-                        let [qubit_1, qubit_2] = unplaced_qubits[row_idx];
-                        next_ps[qubit_1] = col_idx as i32;
-                        next_ps[qubit_2] = col_idx as i32;
-                        free_spaces[col_idx] -= 2;
-
-                        well_placed_qubits.insert(qubit_1);
-                        well_placed_qubits.insert(qubit_2);
-
-                        pairs_to_remove.push(row_idx);
-                    }
+                if row_idx >= self.unplaced_qubits.len() || col_idx >= self.num_cores {
+                    continue;
                 }
+
+                if self.free_spaces[col_idx] < 2 {
+                    continue;
+                }
+
+                let [qubit_1, qubit_2] = self.unplaced_qubits[row_idx];
+                self.next_placement[qubit_1] = col_idx as i32;
+                self.next_placement[qubit_2] = col_idx as i32;
+                self.free_spaces[col_idx] -= 2;
+
+                self.well_placed_qubits.insert(qubit_1);
+                self.well_placed_qubits.insert(qubit_2);
+
+                pairs_to_remove.push(row_idx);
             }
 
             pairs_to_remove.sort_unstable_by(|a: &usize, b: &usize| b.cmp(a));
             for idx in pairs_to_remove {
-                unplaced_qubits.remove(idx);
+                self.unplaced_qubits.remove(idx);
             }
-        }
-
-        if !validate_partition(layer_gates, &next_ps) {
-            // Diagnostic: Heuristic failed to co-locate all gates in this slice
-        }
-
-        // Write next_ps into ps row i+1
-        let target_row = i + 1;
-        for q in 0..num_qubits {
-            ps[[target_row, q]] = next_ps[q];
         }
     }
 
-    ps
+    /// Writes the computed placement into the target row of the placements matrix.
+    #[inline]
+    fn commit(self, placements: &mut Array2<i32>, target_row: usize) {
+        for (q, &val) in self.next_placement.iter().enumerate() {
+            placements[[target_row, q]] = val;
+        }
+    }
+}
+
+pub fn hqa_mapping(
+    gate_interactions: InteractionTensor,
+    mut placements: Array2<i32>,
+    num_cores: usize,
+    core_capacities: &[usize],
+    distance_matrix: ArrayView2<'_, i32>,
+) -> Array2<i32> {
+    let num_layers = gate_interactions.num_layers();
+    let num_qubits = gate_interactions.num_qubits();
+    let active_gates = gate_interactions.active_gates();
+
+    for timeslice in 0..num_layers {
+        let layer_gates = gate_interactions.layer_gates(timeslice);
+        let lookahead_matrix = lookahead(&active_gates, timeslice, num_qubits, 1.0, 65536.0);
+        let edge_pairs = collect_edge_pairs(layer_gates);
+
+        let mut state = TimesliceState::new(
+            &placements,
+            timeslice,
+            num_qubits,
+            num_cores,
+            core_capacities,
+            layer_gates,
+            lookahead_matrix,
+        );
+
+        state.detect_conflicts(&edge_pairs);
+        state.balance_odd_capacity_cores();
+        state.assign_pairs_to_cores(distance_matrix);
+
+        if !validate_partition(layer_gates, &state.next_placement) {
+            // Diagnostic: Heuristic failed to co-locate all gates in this slice
+        }
+
+        state.commit(&mut placements, timeslice + 1);
+    }
+
+    placements
 }
 
 #[cfg(test)]
@@ -345,9 +415,9 @@ mod tests {
         let input_initial_partition: Vec<i32> =
             serde_json::from_value(test_case["input_initial_partition"].clone()).unwrap();
 
-        let mut ps = Array2::<i32>::zeros((num_layers + 1, num_virtual_qubits));
+        let mut placements = Array2::<i32>::zeros((num_layers + 1, num_virtual_qubits));
         for (q, &val) in input_initial_partition.iter().enumerate() {
-            ps[[0, q]] = val;
+            placements[[0, q]] = val;
         }
 
         let core_capacities: Vec<usize> =
@@ -358,7 +428,13 @@ mod tests {
         let dist_array = Array2::from_shape_vec((num_cores, num_cores), dist_flat)
             .expect("Failed to reshape distance_matrix");
 
-        let rust_output = hqa_mapping(tensor, ps, num_cores, &core_capacities, dist_array.view());
+        let rust_output = hqa_mapping(
+            tensor,
+            placements,
+            num_cores,
+            &core_capacities,
+            dist_array.view(),
+        );
 
         let rust_output_vecs: Vec<Vec<i32>> = rust_output
             .rows()
