@@ -1,6 +1,7 @@
 pub mod circuit;
 pub mod hqa;
 pub mod noise;
+pub mod python_api;
 pub mod routing;
 
 #[cfg(test)]

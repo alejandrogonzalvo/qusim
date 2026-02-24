@@ -57,6 +57,11 @@ pub struct FidelityReport {
     pub total_circuit_time: f64,
     /// Per-layer breakdown.
     pub layer_details: Vec<LayerFidelity>,
+
+    // Per-qubit, per-timeslice gridded data (flattened for easy Python NumPy conversion)
+    // Shape: (num_layers, num_qubits)
+    pub operational_fidelity_grid: Vec<f64>,
+    pub coherence_fidelity_grid: Vec<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -82,10 +87,6 @@ fn decoherence_fidelity(idle_time: f64, t1: f64, t2: f64) -> f64 {
 }
 
 /// Estimates the overall fidelity of a mapped quantum circuit.
-///
-/// Combines operational fidelity (gate + teleportation errors) with
-/// coherence fidelity (T1/T2 decoherence from idle time) to produce
-/// an overall fidelity estimate.
 pub fn estimate_fidelity(
     tensor: &InteractionTensor,
     routing: &RoutingSummary,
@@ -96,14 +97,19 @@ pub fn estimate_fidelity(
 
     let mut overall_operational = 1.0_f64;
     let mut total_circuit_time = 0.0_f64;
+
+    // Running sum of time each qubit has been actively occupied
     let mut qubit_busy_time = vec![0.0_f64; num_qubits];
+
     let mut layer_details = Vec::with_capacity(num_layers);
+
+    let mut operational_fidelity_grid = vec![1.0_f64; num_layers * num_qubits];
+    let mut coherence_fidelity_grid = vec![1.0_f64; num_layers * num_qubits];
 
     for layer in 0..num_layers {
         let gates = tensor.layer_gates(layer);
         let num_gates = gates.len();
 
-        // Teleportation events for this layer (timeslice = layer + 1)
         let layer_teleportations: Vec<_> = routing
             .events
             .iter()
@@ -111,12 +117,12 @@ pub fn estimate_fidelity(
             .collect();
         let num_teleportations = layer_teleportations.len();
 
-        // Timing: teleportation phase (limited by longest hop) + gate phase
         let max_distance = layer_teleportations
             .iter()
             .map(|e| e.network_distance)
             .max()
             .unwrap_or(0);
+
         let teleportation_time = max_distance as f64 * params.teleportation_time_per_hop;
         let gate_time = if num_gates > 0 {
             params.two_gate_time
@@ -124,31 +130,45 @@ pub fn estimate_fidelity(
             0.0
         };
         let layer_time = teleportation_time + gate_time;
-
-        // Operational fidelity for this layer
-        let mut layer_fidelity = 1.0_f64;
-        for _ in 0..num_gates {
-            layer_fidelity *= gate_fidelity(params.two_gate_error);
-        }
-        for event in &layer_teleportations {
-            layer_fidelity *=
-                teleportation_fidelity(params.teleportation_error_per_hop, event.network_distance);
-        }
-
-        overall_operational *= layer_fidelity;
         total_circuit_time += layer_time;
 
-        // Track which qubits are busy this layer
+        let mut layer_op_fidelity = 1.0_f64;
+
         let mut busy: HashSet<usize> = HashSet::new();
+
+        // 1. Process 2-qubit gates
         for &(u, v, _) in gates {
             busy.insert(u);
             busy.insert(v);
+
+            let f = gate_fidelity(params.two_gate_error);
+            operational_fidelity_grid[layer * num_qubits + u] *= f;
+            operational_fidelity_grid[layer * num_qubits + v] *= f;
+            layer_op_fidelity *= f;
         }
+
+        // 2. Process teleportations
         for event in &layer_teleportations {
             busy.insert(event.qubit);
+
+            let f =
+                teleportation_fidelity(params.teleportation_error_per_hop, event.network_distance);
+            operational_fidelity_grid[layer * num_qubits + event.qubit] *= f;
+            layer_op_fidelity *= f;
         }
-        for &q in &busy {
-            qubit_busy_time[q] += layer_time;
+
+        overall_operational *= layer_op_fidelity;
+
+        // 3. Update busy times and compute coherence based on cumulative idle time
+        for q in 0..num_qubits {
+            if busy.contains(&q) {
+                qubit_busy_time[q] += layer_time;
+            }
+
+            // Accumulated idle time up to this layer
+            let idle_time = (total_circuit_time - qubit_busy_time[q]).max(0.0);
+            let f_coh = decoherence_fidelity(idle_time, params.t1, params.t2);
+            coherence_fidelity_grid[layer * num_qubits + q] = f_coh;
         }
 
         layer_details.push(LayerFidelity {
@@ -156,23 +176,24 @@ pub fn estimate_fidelity(
             num_gates,
             num_teleportations,
             layer_time,
-            operational_fidelity: layer_fidelity,
+            operational_fidelity: layer_op_fidelity,
         });
     }
 
-    // Coherence fidelity: product of per-qubit decoherence
-    let mut coherence_fidelity = 1.0_f64;
+    // Overall global coherence is the product of final coherence for all qubits
+    let mut global_coherence = 1.0_f64;
     for q in 0..num_qubits {
-        let idle_time = (total_circuit_time - qubit_busy_time[q]).max(0.0);
-        coherence_fidelity *= decoherence_fidelity(idle_time, params.t1, params.t2);
+        global_coherence *= coherence_fidelity_grid[(num_layers - 1) * num_qubits + q];
     }
 
     FidelityReport {
         operational_fidelity: overall_operational,
-        coherence_fidelity,
-        overall_fidelity: overall_operational * coherence_fidelity,
+        coherence_fidelity: global_coherence,
+        overall_fidelity: overall_operational * global_coherence,
         total_circuit_time,
         layer_details,
+        operational_fidelity_grid,
+        coherence_fidelity_grid,
     }
 }
 
