@@ -22,5 +22,9 @@ numpy = "0.21.0"
 name = "hqa_benchmark"
 harness = false
 
+[[bench]]
+name = "noise_benchmark"
+harness = false
+
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

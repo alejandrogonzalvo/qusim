@@ -14,27 +14,52 @@ except ImportError:
 @dataclass
 class QusimResult:
     """
-    Results from a qusim mapping and fidelity estimation pass.
+    Data capsule returned by the Rust engine after completing the HQA mapping,
+    routing schedule, and hardware noise estimation calculations.
+
+    All grid arrays are natively returned via zero-copy bindings making them
+    ideal for direct charting/profiling with Matplotlib or Seaborn.
     """
     execution_success: bool
-    placements: np.ndarray  # Shape: (num_layers + 1, num_qubits)
+    """True if mapping completed successfully bounding all core capacities."""
+
+    placements: np.ndarray
+    """Physical core indices denoting where each virtual qubit resides at every layer step of the circuit. Shape: `(num_layers + 1, num_qubits)`"""
+
     total_teleportations: int
+    """Number of inter-core teleportations executed during the routing process."""
+
     total_epr_pairs: int
+    """Total EPR pairs consumed to accommodate teleportation. Equivalent to teleportations executed scaled by distance distance."""
+
     total_network_distance: int
+    """Cumulative distance of all communication tasks over the specified `distance_matrix` topology."""
+
     teleportations_per_slice: List[int]
+    """Array denoting the varying teleportation load per timeslice."""
     
     operational_fidelity: float
+    """Global reliability tracking purely 1-qubit, 2-qubit, and teleportation gate execution rates."""
+
     coherence_fidelity: float
+    """Global reliability modeling solely thermal decay profiles (T1/T2 times)."""
+
     overall_fidelity: float
+    """Total circuit execution fidelity (operational * coherence multiplied)."""
+
     total_circuit_time_ns: float
+    """Total simulated runtime spanning latency values specified."""
     
-    operational_fidelity_grid: np.ndarray  # Shape: (num_layers, num_qubits)
-    coherence_fidelity_grid: np.ndarray    # Shape: (num_layers, num_qubits)
+    operational_fidelity_grid: np.ndarray  
+    """Floating point progression tracking gate/operational errors isolated across time. Shape: `(num_layers, num_qubits)`"""
+
+    coherence_fidelity_grid: np.ndarray    
+    """Floating point exponential temporal decay matrix modeling phase and relaxation drops. Shape: `(num_layers, num_qubits)`"""
 
     def get_qubit_fidelity_over_time(self, qubit: int) -> tuple[np.ndarray, np.ndarray]:
         """
-        Returns the (operational, coherence) fidelity curves for a specific qubit
-        across all timeslices.
+        Extracts the (operational, coherence) fidelity curves for a specific virtual qubit
+        across all timeslices to graph hardware impacts dynamically.
         """
         op_curve = self.operational_fidelity_grid[:, qubit]
         coh_curve = self.coherence_fidelity_grid[:, qubit]
@@ -69,6 +94,7 @@ def _qiskit_circ_to_sparse_list(circ: qiskit.QuantumCircuit) -> np.ndarray:
 
 
 def _all_to_all_topology(n: int) -> np.ndarray:
+    """Fallback generator yielding an all-to-all topology structure of distance 1 hops."""
     dist = np.ones((n, n), dtype=np.int32)
     np.fill_diagonal(dist, 0)
     return dist
@@ -79,6 +105,7 @@ def map_circuit(
     num_cores: int,
     qubits_per_core: Union[int, List[int]],
     distance_matrix: Optional[np.ndarray] = None,
+    seed: Optional[int] = None,
     # Hardware defaults
     single_gate_error: float = 1e-4,
     two_gate_error: float = 1e-3,
@@ -92,14 +119,28 @@ def map_circuit(
     """
     Map a Qiskit quantum circuit using HQA and estimate teleportation routing and hardware fidelity.
 
+    This function calls the underlying compiled Rust engine for execution. The circuit is serialized
+    into a sparse interaction representation native to Numpy and fed across the ABI zero-copy layer
+    for nanosecond scalability profiling.
+
     Args:
-        circuit: A Qiskit QuantumCircuit.
-        num_cores: Number of physical communication cores available.
-        qubits_per_core: Number of qubits in each core (if int, assumed uniform for all cores).
-        distance_matrix: Custom core-to-core network distance matrix. If None, assumes all-to-all (distance 1 for all).
+        circuit (qiskit.QuantumCircuit): Qiskit QuantumCircuit comprising of your algorithms gate-suite.
+        num_cores (int): Number of physical nodes/communication cores available.
+        qubits_per_core (Union[int, List[int]]): Capacity limits of the quantum fabric mapping logic within a core.
+        distance_matrix (Optional[np.ndarray]): Int adjacency square matrix defining point-to-point networking penalties for teleportation routing.
+        seed (Optional[int]): If provided, ensures deterministic random seeding for the HQA initial state partition.
+        
+        single_gate_error (float): 1Q physical fidelity loss rate.
+        two_gate_error (float): 2Q local operational fidelity loss rate.
+        teleportation_error_per_hop (float): Inter-core spatial fidelity degradation factor crossing distance parameters.
+        single_gate_time (float): Nanosecond processing overhead per 1Q operation.
+        two_gate_time (float): Nanosecond latency duration for processing local entanglements.
+        teleportation_time_per_hop (float): Communication EPR networking traversal nanoseconds dictating `T1`/`T2` accumulation scaling rates.
+        t1 (float): Hardware T1 characteristic exponential scaling time constant.
+        t2 (float): Hardware T2 decoherence characteristic timeline.
 
     Returns:
-        QusimResult dataclass containing mapping arrays and granular fidelity grids.
+        QusimResult: Structured simulation payload metrics including multidimensional matrices isolating individual qubit drop footprints across layers.
     """
     # 1. Parse Circuit to NumPy slices
     gs_sparse = _qiskit_circ_to_sparse_list(circuit)
@@ -117,13 +158,16 @@ def map_circuit(
         
     num_virtual_qubits = circuit.num_qubits
         
-    # Generate random initial partition
-    # (Matches original utils.py behavior: random assignment up to core caps)
+    # Generate initial partition
     part = []
     for c_idx, cap in enumerate(core_caps):
         part.extend([c_idx] * cap)
     part = part[:num_virtual_qubits]
-    np.random.shuffle(part)
+    
+    import random
+    if seed is not None:
+        random.seed(seed)
+    random.shuffle(part)
     initial_partition = np.array(part, dtype=np.int32)
 
     # 3. Call Rust Engine
