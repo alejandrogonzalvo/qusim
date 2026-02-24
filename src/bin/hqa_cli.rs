@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
 use std::time::Instant;
 
-use qusim::hqa::{hqa_mapping, InteractionTensor};
+use qusim::circuit::InteractionTensor;
+use qusim::hqa::hqa_mapping;
+use qusim::noise::{estimate_fidelity, ArchitectureParams};
+use qusim::routing::extract_inter_core_communications;
 
 #[derive(Deserialize)]
 struct HqaInput {
@@ -22,6 +25,14 @@ struct HqaInput {
 struct HqaOutput {
     execution_time_ms: f64,
     final_partition: Vec<i32>,
+    total_teleportations: usize,
+    total_epr_pairs: usize,
+    total_network_distance: i64,
+    communications_per_timeslice: Vec<usize>,
+    operational_fidelity: f64,
+    coherence_fidelity: f64,
+    overall_fidelity: f64,
+    total_circuit_time_ns: f64,
 }
 
 fn main() -> io::Result<()> {
@@ -48,7 +59,7 @@ fn main() -> io::Result<()> {
     let start = Instant::now();
 
     let result = hqa_mapping(
-        tensor,
+        &tensor,
         ps,
         num_cores,
         &input.input_core_capacities,
@@ -57,9 +68,20 @@ fn main() -> io::Result<()> {
 
     let duration = start.elapsed();
 
+    let routing = extract_inter_core_communications(&result, dist_array.view());
+    let fidelity = estimate_fidelity(&tensor, &routing, &ArchitectureParams::default());
+
     let output = HqaOutput {
         execution_time_ms: duration.as_secs_f64() * 1000.0,
         final_partition: result.row(result.nrows() - 1).to_vec(),
+        total_teleportations: routing.total_teleportations,
+        total_epr_pairs: routing.total_epr_pairs,
+        total_network_distance: routing.total_network_distance,
+        communications_per_timeslice: routing.communications_per_timeslice,
+        operational_fidelity: fidelity.operational_fidelity,
+        coherence_fidelity: fidelity.coherence_fidelity,
+        overall_fidelity: fidelity.overall_fidelity,
+        total_circuit_time_ns: fidelity.total_circuit_time,
     };
 
     println!("{}", serde_json::to_string(&output).unwrap());

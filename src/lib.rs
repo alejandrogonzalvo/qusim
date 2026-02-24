@@ -1,4 +1,7 @@
+pub mod circuit;
 pub mod hqa;
+pub mod noise;
+pub mod routing;
 
 #[cfg(test)]
 mod tests {

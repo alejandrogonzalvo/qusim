@@ -1,6 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ndarray::Array2;
-use qusim::hqa::{hqa_mapping, InteractionTensor};
+use qusim::circuit::InteractionTensor;
+use qusim::hqa::hqa_mapping;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
@@ -54,17 +55,8 @@ fn bench_hqa_all_to_all(c: &mut Criterion) {
 
     c.bench_function("hqa_all_to_all_25q", |b| {
         b.iter(|| {
-            // Rebuild tensor each iteration (it's consumed by hqa_mapping)
-            let gs_sparse: Vec<[f64; 4]> =
-                serde_json::from_value(parsed["hqa_test_qft_25_all_to_all"]["gs_sparse"].clone())
-                    .unwrap();
-            let t = InteractionTensor::from_sparse(
-                &gs_sparse,
-                tensor.num_layers(),
-                tensor.num_qubits(),
-            );
             hqa_mapping(
-                t,
+                &tensor,
                 black_box(ps.clone()),
                 black_box(num_cores),
                 black_box(&core_caps),
@@ -84,16 +76,8 @@ fn bench_hqa_ring(c: &mut Criterion) {
 
     c.bench_function("hqa_ring_25q", |b| {
         b.iter(|| {
-            let gs_sparse: Vec<[f64; 4]> =
-                serde_json::from_value(parsed["hqa_test_qft_25_ring"]["gs_sparse"].clone())
-                    .unwrap();
-            let t = InteractionTensor::from_sparse(
-                &gs_sparse,
-                tensor.num_layers(),
-                tensor.num_qubits(),
-            );
             hqa_mapping(
-                t,
+                &tensor,
                 black_box(ps.clone()),
                 black_box(num_cores),
                 black_box(&core_caps),
@@ -133,6 +117,8 @@ fn bench_hqa_scalability(c: &mut Criterion) {
             }
         }
 
+        let tensor = InteractionTensor::from_sparse(&gs_sparse_flat, num_layers, num_qubits);
+
         let input_partitions: Vec<Vec<i32>> =
             serde_json::from_value(test_case["ps"].clone()).unwrap();
         let mut ps = Array2::<i32>::zeros((num_layers + 1, num_qubits));
@@ -153,13 +139,8 @@ fn bench_hqa_scalability(c: &mut Criterion) {
             &num_cores,
             |b, _| {
                 b.iter(|| {
-                    let tensor = InteractionTensor::from_sparse(
-                        black_box(&gs_sparse_flat),
-                        num_layers,
-                        num_qubits,
-                    );
                     hqa_mapping(
-                        tensor,
+                        &tensor,
                         black_box(ps.clone()),
                         black_box(num_cores),
                         black_box(&core_capacities),

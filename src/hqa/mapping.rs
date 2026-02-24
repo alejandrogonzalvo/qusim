@@ -3,8 +3,7 @@ use pathfinding::matrix::Matrix;
 use pathfinding::prelude::kuhn_munkres;
 use std::collections::HashSet;
 
-use super::interaction_tensor::ActiveGates;
-use super::InteractionTensor;
+use crate::circuit::{ActiveGates, InteractionTensor};
 
 /// Maximum number of future slices the lookahead considers.
 const LOOKAHEAD_HORIZON: usize = 20;
@@ -350,7 +349,7 @@ impl TimesliceState {
 }
 
 pub fn hqa_mapping(
-    gate_interactions: InteractionTensor,
+    gate_interactions: &InteractionTensor,
     mut placements: Array2<i32>,
     num_cores: usize,
     core_capacities: &[usize],
@@ -392,6 +391,7 @@ pub fn hqa_mapping(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::circuit::InteractionTensor;
     use serde_json::Value;
     use std::fs;
     use std::path::Path;
@@ -429,7 +429,7 @@ mod tests {
             .expect("Failed to reshape distance_matrix");
 
         let rust_output = hqa_mapping(
-            tensor,
+            &tensor,
             placements,
             num_cores,
             &core_capacities,
