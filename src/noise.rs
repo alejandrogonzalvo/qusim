@@ -47,11 +47,13 @@ pub struct LayerFidelity {
 /// Complete fidelity report for a mapped quantum circuit.
 #[derive(Debug, Clone)]
 pub struct FidelityReport {
-    /// Product of all gate and teleportation fidelities.
-    pub operational_fidelity: f64,
+    /// Product of all native 1Q/2Q gates present in the original circuit.
+    pub algorithmic_fidelity: f64,
+    /// Product of all routing overhead (SABRE SWAPs + HQA Teleportations).
+    pub routing_fidelity: f64,
     /// Fidelity loss from qubit idle time (T1/T2 decoherence).
     pub coherence_fidelity: f64,
-    /// Overall fidelity = operational × coherence.
+    /// Overall fidelity = algorithmic × routing × coherence.
     pub overall_fidelity: f64,
     /// Total circuit execution time in nanoseconds.
     pub total_circuit_time: f64,
@@ -60,7 +62,8 @@ pub struct FidelityReport {
 
     // Per-qubit, per-timeslice gridded data (flattened for easy Python NumPy conversion)
     // Shape: (num_layers, num_qubits)
-    pub operational_fidelity_grid: Vec<f64>,
+    pub algorithmic_fidelity_grid: Vec<f64>,
+    pub routing_fidelity_grid: Vec<f64>,
     pub coherence_fidelity_grid: Vec<f64>,
 }
 
@@ -91,11 +94,14 @@ pub fn estimate_fidelity(
     tensor: &InteractionTensor,
     routing: &RoutingSummary,
     params: &ArchitectureParams,
+    intra_core_swaps_grid: Option<ndarray::ArrayView2<f64>>,
 ) -> FidelityReport {
     let num_layers = tensor.num_layers();
     let num_qubits = tensor.num_qubits();
 
-    let mut overall_operational = 1.0_f64;
+    let mut overall_algorithmic = 1.0_f64;
+    let mut overall_routing = 1.0_f64;
+
     let mut total_circuit_time = 0.0_f64;
 
     // Running sum of time each qubit has been actively occupied
@@ -103,10 +109,20 @@ pub fn estimate_fidelity(
 
     let mut layer_details = Vec::with_capacity(num_layers);
 
-    let mut operational_fidelity_grid = vec![1.0_f64; num_layers * num_qubits];
+    let mut algorithmic_fidelity_grid = vec![1.0_f64; num_layers * num_qubits];
+    let mut routing_fidelity_grid = vec![1.0_f64; num_layers * num_qubits];
     let mut coherence_fidelity_grid = vec![1.0_f64; num_layers * num_qubits];
 
     for layer in 0..num_layers {
+        if layer > 0 {
+            for q in 0..num_qubits {
+                algorithmic_fidelity_grid[layer * num_qubits + q] =
+                    algorithmic_fidelity_grid[(layer - 1) * num_qubits + q];
+                routing_fidelity_grid[layer * num_qubits + q] =
+                    routing_fidelity_grid[(layer - 1) * num_qubits + q];
+            }
+        }
+
         let gates = tensor.layer_gates(layer);
         let num_gates = gates.len();
 
@@ -129,37 +145,64 @@ pub fn estimate_fidelity(
         } else {
             0.0
         };
-        let layer_time = teleportation_time + gate_time;
+        // Add extra time if SABRE injected SWAPs in this layer
+        let mut max_swaps_in_layer = 0.0;
+        if let Some(swaps) = intra_core_swaps_grid {
+            for q in 0..num_qubits {
+                if swaps[[layer, q]] > max_swaps_in_layer {
+                    max_swaps_in_layer = swaps[[layer, q]];
+                }
+            }
+        }
+        let swap_time = max_swaps_in_layer * params.two_gate_time * 3.0; // SWAP is ~3 CX gates
+
+        let layer_time = teleportation_time + gate_time + swap_time;
         total_circuit_time += layer_time;
 
-        let mut layer_op_fidelity = 1.0_f64;
+        let mut layer_algorithmic_fidelity = 1.0_f64;
+        let mut layer_routing_fidelity = 1.0_f64;
 
         let mut busy: HashSet<usize> = HashSet::new();
 
-        // 1. Process 2-qubit gates
+        // 1. Process 2-qubit native computational gates (Algorithmic)
         for &(u, v, _) in gates {
             busy.insert(u);
             busy.insert(v);
 
             let f = gate_fidelity(params.two_gate_error);
-            operational_fidelity_grid[layer * num_qubits + u] *= f;
-            operational_fidelity_grid[layer * num_qubits + v] *= f;
-            layer_op_fidelity *= f;
+            algorithmic_fidelity_grid[layer * num_qubits + u] *= f;
+            algorithmic_fidelity_grid[layer * num_qubits + v] *= f;
+            layer_algorithmic_fidelity *= f;
         }
 
-        // 2. Process teleportations
+        // 2. Process SabreRouting injected SWAP gates (Routing Overhead)
+        if let Some(swaps) = intra_core_swaps_grid {
+            for q in 0..num_qubits {
+                let num_swaps = swaps[[layer, q]];
+                if num_swaps > 0.0 {
+                    busy.insert(q);
+                    // SWAP requires ~3 native 2-qubit operations
+                    let f = (1.0 - 3.0 * params.two_gate_error).powf(num_swaps);
+                    routing_fidelity_grid[layer * num_qubits + q] *= f;
+                    layer_routing_fidelity *= f;
+                }
+            }
+        }
+
+        // 3. Process teleportations (Routing Overhead)
         for event in &layer_teleportations {
             busy.insert(event.qubit);
 
             let f =
                 teleportation_fidelity(params.teleportation_error_per_hop, event.network_distance);
-            operational_fidelity_grid[layer * num_qubits + event.qubit] *= f;
-            layer_op_fidelity *= f;
+            routing_fidelity_grid[layer * num_qubits + event.qubit] *= f;
+            layer_routing_fidelity *= f;
         }
 
-        overall_operational *= layer_op_fidelity;
+        overall_algorithmic *= layer_algorithmic_fidelity;
+        overall_routing *= layer_routing_fidelity;
 
-        // 3. Update busy times and compute coherence based on cumulative idle time
+        // 4. Update busy times and compute coherence based on cumulative idle time
         for q in 0..num_qubits {
             if busy.contains(&q) {
                 qubit_busy_time[q] += layer_time;
@@ -176,7 +219,7 @@ pub fn estimate_fidelity(
             num_gates,
             num_teleportations,
             layer_time,
-            operational_fidelity: layer_op_fidelity,
+            operational_fidelity: layer_algorithmic_fidelity * layer_routing_fidelity,
         });
     }
 
@@ -187,12 +230,14 @@ pub fn estimate_fidelity(
     }
 
     FidelityReport {
-        operational_fidelity: overall_operational,
+        algorithmic_fidelity: overall_algorithmic,
+        routing_fidelity: overall_routing,
         coherence_fidelity: global_coherence,
-        overall_fidelity: overall_operational * global_coherence,
+        overall_fidelity: overall_algorithmic * overall_routing * global_coherence,
         total_circuit_time,
         layer_details,
-        operational_fidelity_grid,
+        algorithmic_fidelity_grid,
+        routing_fidelity_grid,
         coherence_fidelity_grid,
     }
 }
@@ -242,22 +287,25 @@ mod tests {
             dist_array.view(),
         );
         let routing = extract_inter_core_communications(&result, dist_array.view());
-        let report = estimate_fidelity(&tensor, &routing, &ArchitectureParams::default());
+        let report = estimate_fidelity(&tensor, &routing, &ArchitectureParams::default(), None);
 
         // Structural invariants
         assert!(
-            report.operational_fidelity > 0.0 && report.operational_fidelity <= 1.0,
-            "operational fidelity must be in (0, 1]"
+            report.algorithmic_fidelity > 0.0 && report.algorithmic_fidelity <= 1.0,
+            "algorithmic fidelity must be in (0, 1]"
         );
         assert!(
             report.coherence_fidelity > 0.0 && report.coherence_fidelity <= 1.0,
             "coherence fidelity must be in (0, 1]"
         );
         assert!(
-            (report.overall_fidelity - report.operational_fidelity * report.coherence_fidelity)
+            (report.overall_fidelity
+                - report.algorithmic_fidelity
+                    * report.routing_fidelity
+                    * report.coherence_fidelity)
                 .abs()
                 < 1e-12,
-            "overall must equal operational × coherence"
+            "overall must equal algorithmic × routing × coherence"
         );
         assert!(
             report.total_circuit_time > 0.0,
@@ -344,10 +392,10 @@ mod tests {
             ..Default::default()
         };
 
-        let report = estimate_fidelity(&tensor, &routing, &perfect_params);
+        let report = estimate_fidelity(&tensor, &routing, &perfect_params, None);
         assert!(
-            (report.operational_fidelity - 1.0).abs() < 1e-12,
-            "zero error rates should give perfect operational fidelity"
+            (report.algorithmic_fidelity - 1.0).abs() < 1e-12,
+            "zero error rates should give perfect algorithmic fidelity"
         );
         assert!(
             (report.coherence_fidelity - 1.0).abs() < 1e-12,

@@ -6,7 +6,7 @@ from qiskit.converters import circuit_to_dag, dag_to_circuit
 
 # Import the compiled Rust extension
 try:
-    from qusim.rust_core import map_and_estimate
+    from qusim.rust_core import map_and_estimate, estimate_hardware_fidelity
 except ImportError:
     import warnings
     warnings.warn("qusim.rust_core not found. Ensure you have built the maturin extension.")
@@ -38,8 +38,11 @@ class QusimResult:
     teleportations_per_slice: List[int]
     """Array denoting the varying teleportation load per timeslice."""
     
-    operational_fidelity: float
-    """Global reliability tracking purely 1-qubit, 2-qubit, and teleportation gate execution rates."""
+    algorithmic_fidelity: float
+    """Global reliability tracking purely 1Q and 2Q native gates present in the logical user circuit."""
+
+    routing_fidelity: float
+    """Global reliability modeling overhead loss from HQA teleportations and SABRE SWAPs."""
 
     coherence_fidelity: float
     """Global reliability modeling solely thermal decay profiles (T1/T2 times)."""
@@ -50,20 +53,24 @@ class QusimResult:
     total_circuit_time_ns: float
     """Total simulated runtime spanning latency values specified."""
     
-    operational_fidelity_grid: np.ndarray  
-    """Floating point progression tracking gate/operational errors isolated across time. Shape: `(num_layers, num_qubits)`"""
+    algorithmic_fidelity_grid: np.ndarray  
+    """Floating point progression tracking logical algorithmic gate errors isolated across time. Shape: `(num_layers, num_qubits)`"""
+
+    routing_fidelity_grid: np.ndarray  
+    """Floating point progression tracking compilation-introduced physical routing errors isolated across time. Shape: `(num_layers, num_qubits)`"""
 
     coherence_fidelity_grid: np.ndarray    
     """Floating point exponential temporal decay matrix modeling phase and relaxation drops. Shape: `(num_layers, num_qubits)`"""
 
     def get_qubit_fidelity_over_time(self, qubit: int) -> tuple[np.ndarray, np.ndarray]:
         """
-        Extracts the (operational, coherence) fidelity curves for a specific virtual qubit
+        Extracts the (algorithmic, routing, coherence) fidelity curves for a specific virtual qubit
         across all timeslices to graph hardware impacts dynamically.
         """
-        op_curve = self.operational_fidelity_grid[:, qubit]
+        algo_curve = self.algorithmic_fidelity_grid[:, qubit]
+        route_curve = self.routing_fidelity_grid[:, qubit]
         coh_curve = self.coherence_fidelity_grid[:, qubit]
-        return op_curve, coh_curve
+        return algo_curve, route_curve, coh_curve
 
 
 def _qiskit_circ_to_sparse_list(circ: qiskit.QuantumCircuit) -> np.ndarray:
@@ -105,6 +112,7 @@ def map_circuit(
     num_cores: int,
     qubits_per_core: Union[int, List[int]],
     distance_matrix: Optional[np.ndarray] = None,
+    core_topologies: Optional[List[qiskit.transpiler.CouplingMap]] = None,
     seed: Optional[int] = None,
     # Hardware defaults
     single_gate_error: float = 1e-4,
@@ -128,6 +136,7 @@ def map_circuit(
         num_cores (int): Number of physical nodes/communication cores available.
         qubits_per_core (Union[int, List[int]]): Capacity limits of the quantum fabric mapping logic within a core.
         distance_matrix (Optional[np.ndarray]): Int adjacency square matrix defining point-to-point networking penalties for teleportation routing.
+        core_topologies (Optional[List[CouplingMap]]): If provided, executes SabreRouting to calculate localized swap overheads on constrained core layouts.
         seed (Optional[int]): If provided, ensures deterministic random seeding for the HQA initial state partition.
         
         single_gate_error (float): 1Q physical fidelity loss rate.
@@ -170,7 +179,7 @@ def map_circuit(
     random.shuffle(part)
     initial_partition = np.array(part, dtype=np.int32)
 
-    # 3. Call Rust Engine
+    # 3. Call Rust Engine for HQA pass and base estimations
     raw_dict = map_and_estimate(
         gs_sparse=gs_sparse,
         initial_partition=initial_partition,
@@ -187,20 +196,68 @@ def map_circuit(
         t2=t2
     )
 
-    # 4. Wrap Results
+    placements = raw_dict["placements"]
+    num_layers = placements.shape[0] - 1
+    intra_core_swaps_grid = np.zeros((num_layers, num_virtual_qubits), dtype=np.float64)
+
+    # 4. Sabre Orchestration Pass (if local topologies are restricted)
+    if core_topologies is not None:
+        from qusim.orchestrator import MultiCoreOrchestrator
+        
+        # HQA list is indexed [timeslice][qubit] -> core_id
+        hqa_list = placements.tolist()
+        orchestrator = MultiCoreOrchestrator(num_cores, core_topologies, dist_mat)
+        
+        # Slice DAG and route locals
+        sub_circuits = orchestrator._partition_circuit(circuit, hqa_list)
+        routed_circuits = orchestrator._route_locals(sub_circuits)
+        
+        # Extract inserted SWAP counts per core to factor into layout penalties
+        swaps_per_core = [dict(c.count_ops()).get('swap', 0) for c in routed_circuits]
+        
+        # Uniformly distribute hardware SWAPs logically onto the variables dwelling in those cores
+        placements_layers_only = placements[1:, :] # (num_layers, num_qubits)
+        for c in range(num_cores):
+            if swaps_per_core[c] > 0:
+                slots = (placements_layers_only == c)
+                total_slots_c = np.sum(slots)
+                # Spread out penalty across all activity slices within this physical core
+                if total_slots_c > 0:
+                    swap_rate_c = swaps_per_core[c] / total_slots_c
+                    intra_core_swaps_grid[slots] += swap_rate_c
+
+    # 5. Fast-Path Fidelity Re-Estimation (incorporates newly resolved SWAPs natively)
+    fidelity_dict = estimate_hardware_fidelity(
+        gs_sparse=gs_sparse,
+        placements=placements,
+        distance_matrix=dist_mat,
+        intra_core_swaps_grid=intra_core_swaps_grid,
+        single_gate_error=single_gate_error,
+        two_gate_error=two_gate_error,
+        teleportation_error_per_hop=teleportation_error_per_hop,
+        single_gate_time=single_gate_time,
+        two_gate_time=two_gate_time,
+        teleportation_time_per_hop=teleportation_time_per_hop,
+        t1=t1,
+        t2=t2
+    )
+
+    # 6. Wrap Results
     return QusimResult(
         execution_success=raw_dict.get("execution_success", False),
-        placements=raw_dict["placements"],
+        placements=placements,
         total_teleportations=raw_dict["total_teleportations"],
         total_epr_pairs=raw_dict["total_epr_pairs"],
         total_network_distance=raw_dict["total_network_distance"],
         teleportations_per_slice=raw_dict["teleportations_per_slice"],
         
-        operational_fidelity=raw_dict["operational_fidelity"],
-        coherence_fidelity=raw_dict["coherence_fidelity"],
-        overall_fidelity=raw_dict["overall_fidelity"],
-        total_circuit_time_ns=raw_dict["total_circuit_time_ns"],
+        algorithmic_fidelity=fidelity_dict["algorithmic_fidelity"],
+        routing_fidelity=fidelity_dict["routing_fidelity"],
+        coherence_fidelity=fidelity_dict["coherence_fidelity"],
+        overall_fidelity=fidelity_dict["overall_fidelity"],
+        total_circuit_time_ns=fidelity_dict["total_circuit_time_ns"],
         
-        operational_fidelity_grid=raw_dict["operational_fidelity_grid"],
-        coherence_fidelity_grid=raw_dict["coherence_fidelity_grid"],
+        algorithmic_fidelity_grid=fidelity_dict["algorithmic_fidelity_grid"],
+        routing_fidelity_grid=fidelity_dict["routing_fidelity_grid"],
+        coherence_fidelity_grid=fidelity_dict["coherence_fidelity_grid"],
     )

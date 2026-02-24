@@ -90,3 +90,45 @@ result = qusim.map_circuit(
     distance_matrix=linear_distance
 )
 ```
+
+## Fidelity Estimation Architecture
+
+The `qusim` noise module models quantum hardware execution by decoupling algorithm errors from physical compilation overhead.
+
+### Algorithm Overview
+
+Fidelity drops are isolated into three categories computed layer-by-layer:
+
+1. **Algorithmic Fidelity**: The cumulative reliability of the logical 1Q and 2Q gates originally requested by the user circuit.
+2. **Routing Fidelity**: The compilation overhead. This includes:
+   - **Inter-core Teleportations**: Injected by the HQA mapper to move logical states across physical fabric boundaries.
+   - **Intra-core SWAPs**: Injected by a secondary Qiskit SABRE routing pass to satisfy strictly constrained core topologies (e.g., Heavy-Hex).
+3. **Coherence Fidelity**: The thermal decoherence (T1 relaxation and T2 dephasing) applied to qubits based on their accumulated idle time waiting for operations or teleports to finish.
+
+### Pipeline Structure
+
+The estimation occurs via a localized two-pass pipeline over the `InteractionTensor`:
+
+1. **HQA First Pass**: Evaluates the circuit greedily to generate a static placement table (`ps`) and inter-core teleportation events.
+2. **Sabre Orchestration Pass (Optional)**: If `core_topologies` are provided, the `MultiCoreOrchestrator` slices the global DAG into localized fragments based on `ps` and routes them using `SabreSwap`. The inserted physical SWAP counts are uniformly distributed as mathematical penalties across the variables dwelling in those cores.
+3. **Fast-path Re-estimation**: A dedicated Rust endpoint (`estimate_hardware_fidelity`) rapidly aggregates the `placements` and `intra_core_swaps_grid` matrices to compute the final exponentially decaying `FidelityReport`.
+
+### Complexity
+
+Let:
+- N = number of virtual qubits
+- L = number of circuit layers
+- P = number of physical SWAPs/Teleportations per layer
+
+**Per layer:**
+
+| Step | Cost |
+|---|---|
+| Algorithmic Gate Evaluation | O(N) |
+| Sabre DAG Slicing & Routing | O(Python transpiler overhead) |
+| Routing Overhead Aggregation | O(P) |
+| Coherence Trace / Busy Time updates | O(N) |
+
+**Total Rust Estimation Pass: O(L * N)**
+
+The inner fidelity tensor estimator is fully parallelizable linear algebra executing in `< 1ms` for thousands of qubits, allowing lightning-fast hyperparameter sweeps over hardware noise values without re-running the costly `O(L * K^3)` HQA or SABRE mappers.

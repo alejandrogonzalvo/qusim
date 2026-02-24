@@ -29,7 +29,8 @@ struct HqaOutput {
     total_epr_pairs: usize,
     total_network_distance: i64,
     communications_per_timeslice: Vec<usize>,
-    operational_fidelity: f64,
+    algorithmic_fidelity: f64,
+    routing_fidelity: f64,
     coherence_fidelity: f64,
     overall_fidelity: f64,
     total_circuit_time_ns: f64,
@@ -69,7 +70,7 @@ fn main() -> io::Result<()> {
     let duration = start.elapsed();
 
     let routing = extract_inter_core_communications(&result, dist_array.view());
-    let fidelity = estimate_fidelity(&tensor, &routing, &ArchitectureParams::default());
+    let fidelity = estimate_fidelity(&tensor, &routing, &ArchitectureParams::default(), None);
 
     let output = HqaOutput {
         execution_time_ms: duration.as_secs_f64() * 1000.0,
@@ -78,7 +79,8 @@ fn main() -> io::Result<()> {
         total_epr_pairs: routing.total_epr_pairs,
         total_network_distance: routing.total_network_distance,
         communications_per_timeslice: routing.communications_per_timeslice,
-        operational_fidelity: fidelity.operational_fidelity,
+        algorithmic_fidelity: fidelity.algorithmic_fidelity,
+        routing_fidelity: fidelity.routing_fidelity,
         coherence_fidelity: fidelity.coherence_fidelity,
         overall_fidelity: fidelity.overall_fidelity,
         total_circuit_time_ns: fidelity.total_circuit_time,

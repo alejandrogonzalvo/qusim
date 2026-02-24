@@ -79,7 +79,14 @@ fn bench_noise_estimation_25q(c: &mut Criterion) {
     let (tensor, routing, params) = prepare_fidelity_inputs("hqa_test_qft_25_all_to_all");
 
     c.bench_function("noise_estimation_25q", |b| {
-        b.iter(|| estimate_fidelity(black_box(&tensor), black_box(&routing), black_box(&params)))
+        b.iter(|| {
+            estimate_fidelity(
+                black_box(&tensor),
+                black_box(&routing),
+                black_box(&params),
+                None,
+            )
+        })
     });
 }
 
@@ -150,7 +157,12 @@ fn bench_noise_scalability(c: &mut Criterion) {
             &num_cores,
             |b, _| {
                 b.iter(|| {
-                    estimate_fidelity(black_box(&tensor), black_box(&routing), black_box(&params))
+                    estimate_fidelity(
+                        black_box(&tensor),
+                        black_box(&routing),
+                        black_box(&params),
+                        None,
+                    )
                 })
             },
         );
