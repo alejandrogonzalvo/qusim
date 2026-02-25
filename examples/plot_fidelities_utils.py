@@ -13,6 +13,8 @@ class SimulationConfig:
     title: str = ""
     out_file: str = ""
     seed: int = 42
+    coupling_map: "CouplingMap | None" = None
+    core_mapping: "dict | None" = None
 
 
 def build_core_mapping(num_cores: int, qubits_per_core: int):
@@ -43,6 +45,66 @@ def build_core_mapping(num_cores: int, qubits_per_core: int):
     return full_coupling_map, core_mapping
 
 
+def build_all_to_all_core_mapping(num_cores: int, qubits_per_core: int):
+    """Build a fully-connected topology: all-to-all intra-core and inter-core."""
+    total_qubits = num_cores * qubits_per_core
+    full_coupling_map = CouplingMap()
+    for i in range(total_qubits):
+        full_coupling_map.add_physical_qubit(i)
+
+    core_mapping = {}
+
+    # All-to-all intra-core connections
+    for c in range(num_cores):
+        offset = c * qubits_per_core
+        for q in range(qubits_per_core):
+            core_mapping[offset + q] = c
+            for r in range(q + 1, qubits_per_core):
+                full_coupling_map.add_edge(offset + q, offset + r)
+                full_coupling_map.add_edge(offset + r, offset + q)
+
+    # All-to-all inter-core connections (one link per core pair)
+    for c1 in range(num_cores):
+        for c2 in range(c1 + 1, num_cores):
+            p1 = c1 * qubits_per_core + (qubits_per_core - 1)
+            p2 = c2 * qubits_per_core
+            full_coupling_map.add_edge(p1, p2)
+            full_coupling_map.add_edge(p2, p1)
+
+    return full_coupling_map, core_mapping
+
+
+def build_single_core_all_to_all(num_qubits: int):
+    """Build a single-core, fully-connected topology with no inter-core communication."""
+    full_coupling_map = CouplingMap()
+    for i in range(num_qubits):
+        full_coupling_map.add_physical_qubit(i)
+
+    core_mapping = {q: 0 for q in range(num_qubits)}
+
+    for q in range(num_qubits):
+        for r in range(q + 1, num_qubits):
+            full_coupling_map.add_edge(q, r)
+            full_coupling_map.add_edge(r, q)
+
+    return full_coupling_map, core_mapping
+
+
+def build_single_core_grid(rows: int, cols: int):
+    """Build a single-core 2D grid topology with no inter-core communication."""
+    num_qubits = rows * cols
+    grid = CouplingMap.from_grid(rows, cols)
+
+    full_coupling_map = CouplingMap()
+    for i in range(num_qubits):
+        full_coupling_map.add_physical_qubit(i)
+    for edge in grid.get_edges():
+        full_coupling_map.add_edge(edge[0], edge[1])
+
+    core_mapping = {q: 0 for q in range(num_qubits)}
+    return full_coupling_map, core_mapping
+
+
 from qusim.hqa.placement import InitialPlacement
 
 def simulate(circuit, config: SimulationConfig):
@@ -54,9 +116,13 @@ def simulate(circuit, config: SimulationConfig):
         seed_transpiler=config.seed,
     )
 
-    full_coupling_map, core_mapping = build_core_mapping(
-        config.num_cores, config.qubits_per_core
-    )
+    if config.coupling_map and config.core_mapping:
+        full_coupling_map = config.coupling_map
+        core_mapping = config.core_mapping
+    else:
+        full_coupling_map, core_mapping = build_core_mapping(
+            config.num_cores, config.qubits_per_core
+        )
 
     print(
         f"Running qusim (Cores: {config.num_cores}, Qubits/Core: {config.qubits_per_core}, SABRE Enabled, Policy: {config.initial_placement.value})..."

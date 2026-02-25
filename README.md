@@ -103,7 +103,7 @@ The estimation occurs via a localized two-pass pipeline over the `InteractionTen
 
 1. **HQA First Pass**: Evaluates the circuit greedily to generate a static placement table (`ps`) and inter-core teleportation events.
 2. **Sabre Orchestration Pass (Optional)**: If `core_topologies` are provided, the `MultiCoreOrchestrator` slices the global DAG into localized fragments based on `ps` and routes them using `SabreSwap`. The orchestrator linearly scans the newly routed schedules to extract a precise, sparse timeline of exactly when and where physical SWAPs were injected.
-3. **Fast-path Re-estimation**: A dedicated Rust endpoint (`estimate_hardware_fidelity`) rapidly aggregates the `placements` and the exact sparse SWAP timeline events to compute the final exponentially decaying `FidelityReport`.
+3. **Fast-path Re-estimation**: A dedicated Rust endpoint (`estimate_hardware_fidelity`) aggregates the `placements` and the SWAP timeline events to compute the final exponentially decaying `FidelityReport`.
 
 ### Complexity
 
@@ -124,3 +124,15 @@ Let:
 **Total Rust Estimation Pass: O(L * N)**
 
 The inner fidelity tensor estimator is fully parallelizable linear algebra executing in `< 1ms` for thousands of qubits, allowing lightning-fast hyperparameter sweeps over hardware noise values without re-running the costly `O(L * K^3)` HQA or SABRE mappers.
+
+## Examples
+
+All runnable scripts live in `examples/`. They share the helpers in `plot_fidelities_utils.py` (`SimulationConfig`, `simulate`, `build_core_mapping`, `build_all_to_all_core_mapping`).
+
+| Script | Description |
+|---|---|
+| `plot_qft_fidelities.py` | Single QFT run — plots overall, algorithmic, routing, and coherence fidelity per qubit over time. |
+| `plot_ghz_fidelities.py` | Same breakdown for a GHZ circuit. |
+| `plot_qft_comparison.py` | Side-by-side comparison of **Random vs Spectral Clustering** placement on a QFT-30 circuit (grid+ring topology). |
+| `plot_qft_topology_comparison.py` | Four-way comparison of **Grid+Ring vs Multi-core All-to-All vs Single Core All-to-All vs Single Core 2D Grid** connectivity, all using Spectral Clustering placement on a QFT-30 circuit. |
+| `dse_qft_cores.py` | Design-space exploration sweeping number of cores for a fixed qubit budget. |
