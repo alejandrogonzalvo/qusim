@@ -1,5 +1,5 @@
 from qiskit import QuantumCircuit
-from plot_fidelities_utils import simulate_and_plot
+from plot_fidelities_utils import simulate_and_plot, SimulationConfig
 
 def generate_ghz(nq: int) -> QuantumCircuit:
     qc = QuantumCircuit(nq)
@@ -7,6 +7,8 @@ def generate_ghz(nq: int) -> QuantumCircuit:
     for i in range(nq - 1):
         qc.cx(i, i + 1)
     return qc
+
+from qusim.hqa.placement import InitialPlacement
 
 def plot_ghz_fidelities():
     nq = 30
@@ -17,13 +19,15 @@ def plot_ghz_fidelities():
     num_cores = 5
     qubits_per_core = 6
     
-    simulate_and_plot(
-        circuit=circ,
+    config = SimulationConfig(
         num_cores=num_cores,
         qubits_per_core=qubits_per_core,
+        initial_placement=InitialPlacement.SPECTRAL_CLUSTERING,
         title=f"Algorithmic vs Architectural Fidelity Breakdown (GHZ {nq} on {num_cores} constrained cores)",
         out_file="ghz30_fidelity_split.png"
     )
+    
+    simulate_and_plot(circ, config)
 
 if __name__ == "__main__":
     plot_ghz_fidelities()

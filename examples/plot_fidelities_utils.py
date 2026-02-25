@@ -3,6 +3,16 @@ from qiskit import transpile
 from qiskit.transpiler import CouplingMap
 
 import qusim
+from dataclasses import dataclass
+
+@dataclass
+class SimulationConfig:
+    num_cores: int
+    qubits_per_core: int
+    initial_placement: "InitialPlacement"
+    title: str = ""
+    out_file: str = ""
+    seed: int = 42
 
 
 def build_core_mapping(num_cores: int, qubits_per_core: int):
@@ -33,28 +43,36 @@ def build_core_mapping(num_cores: int, qubits_per_core: int):
     return full_coupling_map, core_mapping
 
 
-def simulate_and_plot(
-    circuit, num_cores: int, qubits_per_core: int, title: str, out_file: str
-):
-    print("Transpiling to basis gates...")
+from qusim.hqa.placement import InitialPlacement
+
+def simulate(circuit, config: SimulationConfig):
+    print(f"Transpiling to basis gates for {config.initial_placement.value} placement...")
     transp_circ = transpile(
         circuit,
         basis_gates=["x", "cx", "cp", "rz", "h", "s", "sdg", "t", "tdg", "measure"],
         optimization_level=0,
-        seed_transpiler=42,
+        seed_transpiler=config.seed,
     )
 
-    full_coupling_map, core_mapping = build_core_mapping(num_cores, qubits_per_core)
+    full_coupling_map, core_mapping = build_core_mapping(
+        config.num_cores, config.qubits_per_core
+    )
 
     print(
-        f"Running qusim (Cores: {num_cores}, Qubits/Core: {qubits_per_core}, SABRE Enabled)..."
+        f"Running qusim (Cores: {config.num_cores}, Qubits/Core: {config.qubits_per_core}, SABRE Enabled, Policy: {config.initial_placement.value})..."
     )
     result = qusim.map_circuit(
         circuit=transp_circ,
         full_coupling_map=full_coupling_map,
         core_mapping=core_mapping,
-        seed=42,
+        seed=config.seed,
+        initial_placement=config.initial_placement
     )
+    return result
+
+def simulate_and_plot(circuit, config: SimulationConfig):
+    result = simulate(circuit, config)
+
 
     print(f"Execution Success: {result.execution_success}")
     print(f"Overall Fidelity:     {result.overall_fidelity:.4e}")
@@ -86,8 +104,8 @@ def simulate_and_plot(
 
     axes[3].set_xlabel("Circuit Layer")
 
-    plt.suptitle(title)
+    plt.suptitle(config.title)
     plt.tight_layout()
 
-    plt.savefig(out_file, dpi=300)
-    print(f"Split plots saved to {out_file}")
+    plt.savefig(config.out_file, dpi=300)
+    print(f"Split plots saved to {config.out_file}")

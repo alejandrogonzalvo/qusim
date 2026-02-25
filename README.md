@@ -29,6 +29,7 @@ import qiskit
 from qiskit.circuit.library import QFT
 from qiskit import transpile
 import qusim
+from qusim.hqa.placement import InitialPlacement
 
 # 1. Create and transpile your circuit
 circ = QFT(30)
@@ -48,6 +49,7 @@ result: qusim.QusimResult = qusim.map_circuit(
     circuit=transp_circ,
     num_cores=num_cores,
     qubits_per_core=qubits_per_core,
+    initial_placement=InitialPlacement.SPECTRAL_CLUSTERING,
     # Optional hardware tuning parameters
     single_gate_error=1e-4,
     two_gate_error=1e-3,
@@ -100,8 +102,8 @@ The `qusim` noise module models quantum hardware execution by decoupling algorit
 The estimation occurs via a localized two-pass pipeline over the `InteractionTensor`:
 
 1. **HQA First Pass**: Evaluates the circuit greedily to generate a static placement table (`ps`) and inter-core teleportation events.
-2. **Sabre Orchestration Pass (Optional)**: If `core_topologies` are provided, the `MultiCoreOrchestrator` slices the global DAG into localized fragments based on `ps` and routes them using `SabreSwap`. The inserted physical SWAP counts are uniformly distributed as mathematical penalties across the variables dwelling in those cores.
-3. **Fast-path Re-estimation**: A dedicated Rust endpoint (`estimate_hardware_fidelity`) rapidly aggregates the `placements` and `intra_core_swaps_grid` matrices to compute the final exponentially decaying `FidelityReport`.
+2. **Sabre Orchestration Pass (Optional)**: If `core_topologies` are provided, the `MultiCoreOrchestrator` slices the global DAG into localized fragments based on `ps` and routes them using `SabreSwap`. The orchestrator linearly scans the newly routed schedules to extract a precise, sparse timeline of exactly when and where physical SWAPs were injected.
+3. **Fast-path Re-estimation**: A dedicated Rust endpoint (`estimate_hardware_fidelity`) rapidly aggregates the `placements` and the exact sparse SWAP timeline events to compute the final exponentially decaying `FidelityReport`.
 
 ### Complexity
 

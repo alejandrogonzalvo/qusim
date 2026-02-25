@@ -167,7 +167,7 @@ pub fn map_and_estimate<'py>(
     gs_sparse,
     placements,
     distance_matrix,
-    intra_core_swaps_grid,
+    sparse_swaps,
     single_gate_error = 1e-4,
     two_gate_error = 1e-3,
     teleportation_error_per_hop = 1e-2,
@@ -183,7 +183,7 @@ pub fn estimate_hardware_fidelity<'py>(
     gs_sparse: &Bound<'py, PyArray2<f64>>,
     placements: &Bound<'py, PyArray2<i32>>,
     distance_matrix: &Bound<'py, PyArray2<i32>>,
-    intra_core_swaps_grid: &Bound<'py, PyArray2<f64>>,
+    sparse_swaps: &Bound<'py, PyArray2<i32>>,
     single_gate_error: f64,
     two_gate_error: f64,
     teleportation_error_per_hop: f64,
@@ -221,8 +221,8 @@ pub fn estimate_hardware_fidelity<'py>(
 
     let placements_arr = placements.readonly().as_array().to_owned();
     let dist_array = distance_matrix.readonly().as_array().to_owned();
-    let swaps_readonly = intra_core_swaps_grid.readonly();
-    let swaps_arr = swaps_readonly.as_array();
+    let swaps_readonly = sparse_swaps.readonly();
+    let sparse_swaps_arr = swaps_readonly.as_array();
 
     let routing = extract_inter_core_communications(&placements_arr, dist_array.view());
 
@@ -236,7 +236,7 @@ pub fn estimate_hardware_fidelity<'py>(
         t1,
         t2,
     };
-    let fidelity = estimate_fidelity(&tensor, &routing, &params, Some(swaps_arr));
+    let fidelity = estimate_fidelity(&tensor, &routing, &params, Some(sparse_swaps_arr));
 
     let dict = PyDict::new_bound(py);
 

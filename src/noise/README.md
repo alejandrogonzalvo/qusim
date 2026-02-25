@@ -20,9 +20,9 @@ $$ F_{algo} = \prod_{g \in C} (1 - \epsilon_{g}) $$
 Moving quantum information across the constrained topological map degrades fidelity through network losses. We simulate routing from two distinct mechanisms:
 
 #### A. SABRE Intra-Core SWAPs
-SABRE iteratively routes logical qubits through classical adjacent physical links by inserting $SWAP$ gates. Since physical devices rarely support native SWAP instructions, they are typically decomposed into $3 \times CNOT$ gates. 
-$$ F_{\text{SWAP}} = (1 - 3 \epsilon_{\text{2Q}} )^{N_{\text{swaps}}} $$
-If $SWAP$ insertion causes cascading delays, this compounds the idle time in Eq 3.
+SABRE iteratively routes logical qubits through classical adjacent physical links by inserting $SWAP$ gates. The Python orchestrator extracts the exact timeline of these physical insertions and passes them to Rust as a sparse tensor list. Since physical devices rarely support native SWAP instructions, they are typically decomposed into $3 \times CNOT$ gates. 
+$$ F_{\text{layer}} = F_{\text{layer}} \times (1 - 3 \epsilon_{\text{2Q}} ) $$
+Each precise SWAP occurrence statically degrades the fidelity of the participating physical qubits and contributes to their exact temporal busy-time independently, resolving cascading topological delays across circuits seamlessly.
 
 #### B. Inter-Core Teleportation (HQA Boundaries)
 When the Hungarian Qubit Assignment (HQA) algorithm elects to slice an entangled link across a multi-core array, it bridges the physical nodes via EPR teleportation. The fidelity of these external optical/microwave links scales exponentially with distance:

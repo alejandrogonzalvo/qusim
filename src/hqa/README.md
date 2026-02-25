@@ -8,10 +8,11 @@ Rust implementation of the HQA algorithm for optimized mapping of quantum circui
 
 HQA solves the qubit-to-core assignment problem for modular quantum processors. Given a quantum circuit decomposed into L temporal layers (time slices), HQA iteratively:
 
-1. **Lookahead**: builds a spatio-temporal interaction matrix combining hard constraints from the current layer with exponentially decaying future interactions.
-2. **Conflict detection**: identifies qubit pairs that interact but sit on different cores.
-3. **Core balancing**: resolves odd free-space parity between cores by swapping movable qubits.
-4. **Hungarian matching**: uses Kuhn-Munkres to optimally assign conflicting qubit pairs to cores, minimizing inter-core communication cost.
+1. **Initial Placement**: Qubits are initially distributed among cores. In `qusim`, this is configurable (e.g., `RANDOM` or `SPECTRAL_CLUSTERING` graph partitioning via the Python API) to minimize initial layout penalties before temporal mapping begins.
+2. **Lookahead**: builds a spatio-temporal interaction matrix combining hard constraints from the current layer with exponentially decaying future interactions.
+3. **Conflict detection**: identifies qubit pairs that interact but sit on different cores.
+4. **Core balancing**: resolves odd free-space parity between cores by swapping movable qubits.
+5. **Hungarian matching**: uses Kuhn-Munkres to optimally assign conflicting qubit pairs to cores, minimizing inter-core communication cost.
 
 ## Complexity
 

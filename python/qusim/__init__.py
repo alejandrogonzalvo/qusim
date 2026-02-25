@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import List, Union, Optional
 import qiskit
 from qiskit.converters import circuit_to_dag, dag_to_circuit
+from qusim.orchestrator import MultiCoreOrchestrator
 
 # Import the compiled Rust extension
 try:
@@ -73,6 +74,8 @@ class QusimResult:
         return algo_curve, route_curve, coh_curve
 
 
+from qusim.hqa.placement import InitialPlacement, PlacementConfig, generate_initial_placement
+
 def _qiskit_circ_to_sparse_list(circ: qiskit.QuantumCircuit) -> np.ndarray:
     """
     Parses a Qiskit circuit's DAG into layers, and extracts interaction edges.
@@ -89,7 +92,6 @@ def _qiskit_circ_to_sparse_list(circ: qiskit.QuantumCircuit) -> np.ndarray:
                 q0 = circ.find_bit(instruction.qubits[0]).index
                 q1 = circ.find_bit(instruction.qubits[1]).index
                 edges.append([float(layer_idx), float(q0), float(q1), 1.0])
-                edges.append([float(layer_idx), float(q1), float(q0), 1.0])
             elif instruction.operation.num_qubits == 1:
                 q0 = circ.find_bit(instruction.qubits[0]).index
                 edges.append([float(layer_idx), float(q0), float(q0), 1.0])
@@ -112,6 +114,7 @@ def map_circuit(
     full_coupling_map: qiskit.transpiler.CouplingMap,
     core_mapping: dict[int, int],
     seed: Optional[int] = None,
+    initial_placement: InitialPlacement = InitialPlacement.RANDOM,
     # Hardware defaults
     single_gate_error: float = 1e-4,
     two_gate_error: float = 1e-3,
@@ -134,6 +137,7 @@ def map_circuit(
         full_coupling_map (qiskit.transpiler.CouplingMap): Hardware graph of the entire multi-core system.
         core_mapping (dict[int, int]): Dictionary assigning physical qubit indices to core IDs.
         seed (Optional[int]): If provided, ensures deterministic random seeding for the HQA initial state partition.
+        initial_placement (InitialPlacement): Policy for generating the layer 0 assignment heuristic.
         
         single_gate_error (float): 1Q physical fidelity loss rate.
         two_gate_error (float): 2Q local operational fidelity loss rate.
@@ -181,17 +185,14 @@ def map_circuit(
         
     num_virtual_qubits = circuit.num_qubits
         
-    # Generate initial partition
-    part = []
-    for c_idx, cap in enumerate(core_caps):
-        part.extend([c_idx] * cap)
-    part = part[:num_virtual_qubits]
-    
-    import random
-    if seed is not None:
-        random.seed(seed)
-    random.shuffle(part)
-    initial_partition = np.array(part, dtype=np.int32)
+    config = PlacementConfig(
+        policy=initial_placement,
+        interaction_tensor=gs_sparse,
+        num_virtual_qubits=num_virtual_qubits,
+        core_caps=core_caps,
+        seed=seed
+    )
+    initial_partition = generate_initial_placement(config)
 
     # 3. Call Rust Engine for HQA pass and base estimations
     raw_dict = map_and_estimate(
@@ -212,40 +213,29 @@ def map_circuit(
 
     placements = raw_dict["placements"]
     num_layers = placements.shape[0] - 1
-    intra_core_swaps_grid = np.zeros((num_layers, num_virtual_qubits), dtype=np.float64)
+    sparse_swaps_list = []
 
     # 4. Sabre Orchestration Pass
     if full_coupling_map is not None:
-        from qusim.orchestrator import MultiCoreOrchestrator
         
         # HQA list is indexed [timeslice][qubit] -> core_id
         hqa_list = placements.tolist()
         orchestrator = MultiCoreOrchestrator(num_cores, full_coupling_map, core_mapping, dist_mat)
         
-        # Slice DAG and route locals
-        sub_circuits = orchestrator._partition_circuit(circuit, hqa_list)
-        routed_circuits = orchestrator._route_locals(sub_circuits)
-        
-        # Extract inserted SWAP counts per core to factor into layout penalties
-        swaps_per_core = [dict(c.count_ops()).get('swap', 0) for c in routed_circuits]
-        
-        # Uniformly distribute hardware SWAPs logically onto the variables dwelling in those cores
-        placements_layers_only = placements[1:, :] # (num_layers, num_qubits)
-        for c in range(num_cores):
-            if swaps_per_core[c] > 0:
-                slots = (placements_layers_only == c)
-                total_slots_c = np.sum(slots)
-                # Spread out penalty across all activity slices within this physical core
-                if total_slots_c > 0:
-                    swap_rate_c = swaps_per_core[c] / total_slots_c
-                    intra_core_swaps_grid[slots] += swap_rate_c
+        # Run orchestrator and grab the exact logical timestamps of where SABRE injected SWAPs!
+        _, sparse_swaps_list = orchestrator.orchestrate(circuit, hqa_list)
 
     # 5. Fast-Path Fidelity Re-Estimation (incorporates newly resolved SWAPs natively)
+    if not sparse_swaps_list:
+        sparse_swaps_arr = np.zeros((0, 3), dtype=np.int32)
+    else:
+        sparse_swaps_arr = np.array(sparse_swaps_list, dtype=np.int32)
+
     fidelity_dict = estimate_hardware_fidelity(
         gs_sparse=gs_sparse,
         placements=placements,
         distance_matrix=dist_mat,
-        intra_core_swaps_grid=intra_core_swaps_grid,
+        sparse_swaps=sparse_swaps_arr,
         single_gate_error=single_gate_error,
         two_gate_error=two_gate_error,
         teleportation_error_per_hop=teleportation_error_per_hop,
