@@ -35,10 +35,54 @@ class TelegateHalf(Instruction):
 # =====================================================================
 
 class MultiCoreOrchestrator:
-    def __init__(self, num_cores: int, core_topologies: List[CouplingMap], distance_matrix: np.ndarray):
+    def __init__(self, num_cores: int, full_coupling_map: CouplingMap, core_mapping: dict[int, int], distance_matrix: np.ndarray):
         self.num_cores = num_cores
-        self.core_topologies = core_topologies
+        self.full_coupling_map = full_coupling_map
+        self.core_mapping = core_mapping
         self.distance_matrix = distance_matrix
+        
+        # Build local core topologies from the global graph
+        # For SabreSwap to route a 30-qubit circuit where 10 qubits might visit a 6-qubit core,
+        # we CANNOT use a 6-node CouplingMap (Sabre requires 1:1 mapping mapping for all 30 qubits simultaneously).
+        # We solve this by passing a "Star-Graph Padded CouplingMap" for each core:
+        # The core's internal edges remain.
+        # Edges between this core and foreign cores remain (communication links).
+        # All extra nodes (foreign cores) are stripped of their internal edges, acting as "parking space"
+        # for inactive virtual qubits. SABRE routes them in/out of the core through valid communication links!
+        self.core_topologies = []
+        
+        nq = max([max(edge) for edge in full_coupling_map.get_edges()]) + 1 if full_coupling_map.get_edges() else len(core_mapping)
+        
+        for c in range(num_cores):
+            cmap = CouplingMap()
+            for i in range(nq):
+                cmap.add_physical_qubit(i)
+                
+            c_nodes = [p for p, core in core_mapping.items() if core == c]
+            
+            # Add all internal edges
+            for edge in full_coupling_map.get_edges():
+                if core_mapping[edge[0]] == c and core_mapping[edge[1]] == c:
+                    cmap.add_edge(edge[0], edge[1])
+
+            # Find boundary nodes of c in the full topology
+            boundary_nodes = []
+            for node in c_nodes:
+                if any(core_mapping[neighbor] != c for neighbor in full_coupling_map.neighbors(node)):
+                    boundary_nodes.append(node)
+                    
+            if not boundary_nodes:
+                boundary_nodes = c_nodes # Fallback
+                
+            # Connect ALL foreign nodes to the boundary nodes!
+            # This ensures they are in the same component and routes them through the physical boundary
+            for i in range(nq):
+                if i not in c_nodes:
+                    for b in boundary_nodes:
+                        cmap.add_edge(i, b)
+                        cmap.add_edge(b, i)
+                        
+            self.core_topologies.append(cmap)
 
     def orchestrate(self, global_circuit: QuantumCircuit, hqa_mapping: List[List[int]]) -> QuantumCircuit:
         """
@@ -58,6 +102,18 @@ class MultiCoreOrchestrator:
         Splits the global DAG into C local DAGs, injecting physical I/O primitives 
         wherever the HQA mapping demands a cross-core boundary event.
         """
+        from qiskit.transpiler import Layout
+        self.global_layout_dict = {}
+        core_phys_available = {c: sorted([p for p, core in self.core_mapping.items() if core == c]) for c in range(self.num_cores)}
+        for q in range(global_circuit.num_qubits):
+            c = hqa_mapping[0][q]
+            if len(core_phys_available[c]) > 0:
+                p = core_phys_available[c].pop(0)
+                self.global_layout_dict[global_circuit.qubits[q]] = p
+            else:
+                # Fallback if oversubscribed (shouldn't happen with valid HQA)
+                self.global_layout_dict[global_circuit.qubits[q]] = 0
+
         dag = circuit_to_dag(global_circuit)
         layers = list(dag.layers())
         
@@ -81,6 +137,17 @@ class MultiCoreOrchestrator:
                     src_core, dst_core = prev_mapping[q_idx], current_mapping[q_idx]
                     if src_core != dst_core:
                         qubit = global_circuit.qubits[q_idx]
+                        
+                        # Find a magnet qubit in dst_core to pull this qubit to the boundary
+                        magnets_in_dst = [i for i, c in enumerate(prev_mapping) if c == dst_core]
+                        if magnets_in_dst:
+                            magnet_q = global_circuit.qubits[magnets_in_dst[0]]
+                            dummy_cx = Instruction("dummy_cx", 2, 0, [])
+                            # Add the "pull" to src_core before it leaves
+                            sub_dags[src_core].apply_operation_back(dummy_cx, [qubit, magnet_q])
+                            # Add the "pull" to dst_core as it enters
+                            sub_dags[dst_core].apply_operation_back(dummy_cx, [qubit, magnet_q])
+                            
                         # Inject corresponding I/O primitives
                         sub_dags[src_core].apply_operation_back(TeledataSend(dst_core), [qubit])
                         sub_dags[dst_core].apply_operation_back(TeledataRecv(src_core), [qubit])
@@ -108,6 +175,8 @@ class MultiCoreOrchestrator:
         """
         Executes Qiskit's SabreRouting pass heavily constrained by the physical topologies.
         """
+        from qiskit.transpiler import Layout
+        from qiskit.transpiler.passes import SetLayout
         routed_circuits = []
         for i, circ in enumerate(sub_circuits):
             if not circ.data:
@@ -115,15 +184,21 @@ class MultiCoreOrchestrator:
                 continue
                 
             # Configure Sabre to respect the core's constrained topology.
-            # 1-qubit custom ops (TelegateHalf/Teledata) are treated as transparent anchors by SABRE,
-            # allowing it to freely route around them while still SWAPing the logical qubit
-            # to the necessary physical communication edges.
+            layout = Layout(self.global_layout_dict)
             pm = PassManager([
+                SetLayout(layout),
                 SabreSwap(coupling_map=self.core_topologies[i], heuristic='basic', seed=42)
             ])
             try:
-                routed_circuits.append(pm.run(circ))
-            except Exception:
+                routed = pm.run(circ)
+                # Strip out the dummy_cx gates we injected for routing attraction
+                cleaned_routed = QuantumCircuit(*routed.qregs, *routed.cregs)
+                for inst in routed.data:
+                    if inst.operation.name != "dummy_cx":
+                        cleaned_routed.append(inst)
+                routed_circuits.append(cleaned_routed)
+            except Exception as e:
+                print(f"Warning: SABRE routing failed on core {i}: {e}")
                 # Fallback if SABRE throws on unmapped virtual qubits (would require dynamic Layout in prod)
                 routed_circuits.append(circ)
                 

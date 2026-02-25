@@ -109,10 +109,8 @@ def _all_to_all_topology(n: int) -> np.ndarray:
 
 def map_circuit(
     circuit: qiskit.QuantumCircuit,
-    num_cores: int,
-    qubits_per_core: Union[int, List[int]],
-    distance_matrix: Optional[np.ndarray] = None,
-    core_topologies: Optional[List[qiskit.transpiler.CouplingMap]] = None,
+    full_coupling_map: qiskit.transpiler.CouplingMap,
+    core_mapping: dict[int, int],
     seed: Optional[int] = None,
     # Hardware defaults
     single_gate_error: float = 1e-4,
@@ -133,10 +131,8 @@ def map_circuit(
 
     Args:
         circuit (qiskit.QuantumCircuit): Qiskit QuantumCircuit comprising of your algorithms gate-suite.
-        num_cores (int): Number of physical nodes/communication cores available.
-        qubits_per_core (Union[int, List[int]]): Capacity limits of the quantum fabric mapping logic within a core.
-        distance_matrix (Optional[np.ndarray]): Int adjacency square matrix defining point-to-point networking penalties for teleportation routing.
-        core_topologies (Optional[List[CouplingMap]]): If provided, executes SabreRouting to calculate localized swap overheads on constrained core layouts.
+        full_coupling_map (qiskit.transpiler.CouplingMap): Hardware graph of the entire multi-core system.
+        core_mapping (dict[int, int]): Dictionary assigning physical qubit indices to core IDs.
         seed (Optional[int]): If provided, ensures deterministic random seeding for the HQA initial state partition.
         
         single_gate_error (float): 1Q physical fidelity loss rate.
@@ -155,15 +151,33 @@ def map_circuit(
     gs_sparse = _qiskit_circ_to_sparse_list(circuit)
 
     # 2. Setup inputs
-    if isinstance(qubits_per_core, int):
-        core_caps = np.array([qubits_per_core] * num_cores, dtype=np.uint64)
-    else:
-        core_caps = np.array(qubits_per_core, dtype=np.uint64)
+    num_cores = max(core_mapping.values()) + 1 if core_mapping else 0
+    core_caps = np.zeros(num_cores, dtype=np.uint64)
+    for q, c in core_mapping.items():
+        core_caps[c] += 1
         
-    if distance_matrix is None:
-        dist_mat = _all_to_all_topology(num_cores)
-    else:
-        dist_mat = np.array(distance_matrix, dtype=np.int32)
+    # Derive distance matrix from full_coupling_map
+    core_adj = np.zeros((num_cores, num_cores), dtype=np.int32)
+    for edge in full_coupling_map.get_edges():
+        c1 = core_mapping[edge[0]]
+        c2 = core_mapping[edge[1]]
+        if c1 != c2:
+            core_adj[c1, c2] = 1
+            core_adj[c2, c1] = 1
+            
+    dist_mat = np.full((num_cores, num_cores), fill_value=9999, dtype=np.int32)
+    for c in range(num_cores):
+        dist_mat[c, c] = 0
+    for c1 in range(num_cores):
+        for c2 in range(num_cores):
+            if core_adj[c1, c2]:
+                dist_mat[c1, c2] = 1
+    
+    for k in range(num_cores):
+        for i in range(num_cores):
+            for j in range(num_cores):
+                if dist_mat[i, k] + dist_mat[k, j] < dist_mat[i, j]:
+                    dist_mat[i, j] = dist_mat[i, k] + dist_mat[k, j]
         
     num_virtual_qubits = circuit.num_qubits
         
@@ -200,13 +214,13 @@ def map_circuit(
     num_layers = placements.shape[0] - 1
     intra_core_swaps_grid = np.zeros((num_layers, num_virtual_qubits), dtype=np.float64)
 
-    # 4. Sabre Orchestration Pass (if local topologies are restricted)
-    if core_topologies is not None:
+    # 4. Sabre Orchestration Pass
+    if full_coupling_map is not None:
         from qusim.orchestrator import MultiCoreOrchestrator
         
         # HQA list is indexed [timeslice][qubit] -> core_id
         hqa_list = placements.tolist()
-        orchestrator = MultiCoreOrchestrator(num_cores, core_topologies, dist_mat)
+        orchestrator = MultiCoreOrchestrator(num_cores, full_coupling_map, core_mapping, dist_mat)
         
         # Slice DAG and route locals
         sub_circuits = orchestrator._partition_circuit(circuit, hqa_list)

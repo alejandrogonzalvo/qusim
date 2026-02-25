@@ -1,6 +1,6 @@
 # qusim: Quantum Architecture HQA Mapping & Fidelity Estimation
 
-`qusim` is a high-performance simulator written in Rust with native Python bindings. It maps Qiskit quantum circuits onto multi-core modular quantum architectures using a specialized Heuristic Quantum Architecture (HQA) mapping algorithm, and then performs fine-grained hardware noise and fidelity estimation.
+`qusim` is a high-performance simulator written in Rust with native Python bindings. It maps Qiskit quantum circuits onto multi-core modular quantum architectures using a specialized Hungarian Qubit Assignment (HQA) mapping algorithm, and then performs fine-grained hardware noise and fidelity estimation.
 
 ## Installation
 
@@ -93,17 +93,7 @@ result = qusim.map_circuit(
 
 ## Fidelity Estimation Architecture
 
-The `qusim` noise module models quantum hardware execution by decoupling algorithm errors from physical compilation overhead.
-
-### Algorithm Overview
-
-Fidelity drops are isolated into three categories computed layer-by-layer:
-
-1. **Algorithmic Fidelity**: The cumulative reliability of the logical 1Q and 2Q gates originally requested by the user circuit.
-2. **Routing Fidelity**: The compilation overhead. This includes:
-   - **Inter-core Teleportations**: Injected by the HQA mapper to move logical states across physical fabric boundaries.
-   - **Intra-core SWAPs**: Injected by a secondary Qiskit SABRE routing pass to satisfy strictly constrained core topologies (e.g., Heavy-Hex).
-3. **Coherence Fidelity**: The thermal decoherence (T1 relaxation and T2 dephasing) applied to qubits based on their accumulated idle time waiting for operations or teleports to finish.
+The `qusim` noise module models quantum hardware execution by decoupling algorithm errors from physical compilation overhead. **For a detailed breakdown of the mathematical equations governing Algorithmic, Routing, and Coherence (T1/T2) decay modeling, please refer to the [Noise Module Documentation](src/noise/README.md).**
 
 ### Pipeline Structure
 

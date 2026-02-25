@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::circuit::InteractionTensor;
 use crate::routing::RoutingSummary;
 
@@ -162,12 +160,12 @@ pub fn estimate_fidelity(
         let mut layer_algorithmic_fidelity = 1.0_f64;
         let mut layer_routing_fidelity = 1.0_f64;
 
-        let mut busy: HashSet<usize> = HashSet::new();
+        let mut layer_busy_time = vec![0.0_f64; num_qubits];
 
         // 1. Process 2-qubit native computational gates (Algorithmic)
         for &(u, v, _) in gates {
-            busy.insert(u);
-            busy.insert(v);
+            layer_busy_time[u] += params.two_gate_time;
+            layer_busy_time[v] += params.two_gate_time;
 
             let f = gate_fidelity(params.two_gate_error);
             algorithmic_fidelity_grid[layer * num_qubits + u] *= f;
@@ -180,7 +178,7 @@ pub fn estimate_fidelity(
             for q in 0..num_qubits {
                 let num_swaps = swaps[[layer, q]];
                 if num_swaps > 0.0 {
-                    busy.insert(q);
+                    layer_busy_time[q] += num_swaps * params.two_gate_time * 3.0;
                     // SWAP requires ~3 native 2-qubit operations
                     let f = (1.0 - 3.0 * params.two_gate_error).powf(num_swaps);
                     routing_fidelity_grid[layer * num_qubits + q] *= f;
@@ -191,7 +189,8 @@ pub fn estimate_fidelity(
 
         // 3. Process teleportations (Routing Overhead)
         for event in &layer_teleportations {
-            busy.insert(event.qubit);
+            layer_busy_time[event.qubit] +=
+                event.network_distance as f64 * params.teleportation_time_per_hop;
 
             let f =
                 teleportation_fidelity(params.teleportation_error_per_hop, event.network_distance);
@@ -204,9 +203,8 @@ pub fn estimate_fidelity(
 
         // 4. Update busy times and compute coherence based on cumulative idle time
         for q in 0..num_qubits {
-            if busy.contains(&q) {
-                qubit_busy_time[q] += layer_time;
-            }
+            let actual_busy = layer_busy_time[q].min(layer_time);
+            qubit_busy_time[q] += actual_busy;
 
             // Accumulated idle time up to this layer
             let idle_time = (total_circuit_time - qubit_busy_time[q]).max(0.0);

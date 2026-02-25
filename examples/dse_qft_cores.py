@@ -36,10 +36,37 @@ def run_dse_qft():
     for num_cores in cores_to_test:
         qubits_per_core = nq // num_cores
         
+        from qiskit.transpiler import CouplingMap
+        full_coupling_map = CouplingMap()
+        for i in range(num_cores * qubits_per_core):
+            full_coupling_map.add_physical_qubit(i)
+            
+        core_mapping = {}
+        
+        # Intra-core connection (ring topology for each core)
+        for c in range(num_cores):
+            offset = c * qubits_per_core
+            if qubits_per_core > 1:
+                for q in range(qubits_per_core):
+                    next_q = (q + 1) % qubits_per_core
+                    full_coupling_map.add_edge(offset + q, offset + next_q)
+                    full_coupling_map.add_edge(offset + next_q, offset + q)
+            for q in range(qubits_per_core):
+                core_mapping[offset + q] = c
+                
+        # Inter-core connection (ring topology between cores)
+        if num_cores > 1:
+            for c in range(num_cores):
+                next_c = (c + 1) % num_cores
+                p1 = c * qubits_per_core + 0
+                p2 = next_c * qubits_per_core + 0
+                full_coupling_map.add_edge(p1, p2)
+                full_coupling_map.add_edge(p2, p1)
+        
         result = qusim.map_circuit(
             circuit=transp_circ,
-            num_cores=num_cores,
-            qubits_per_core=qubits_per_core,
+            full_coupling_map=full_coupling_map,
+            core_mapping=core_mapping,
             seed=42
         )
         
