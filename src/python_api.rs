@@ -24,7 +24,9 @@ use crate::routing::extract_inter_core_communications;
     two_gate_time = 100.0,
     teleportation_time_per_hop = 1000.0,
     t1 = 100_000.0,
-    t2 = 50_000.0
+    t2 = 50_000.0,
+    t1_per_qubit = None,
+    t2_per_qubit = None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn map_and_estimate<'py>(
@@ -42,6 +44,8 @@ pub fn map_and_estimate<'py>(
     teleportation_time_per_hop: f64,
     t1: f64,
     t2: f64,
+    t1_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    t2_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     // Convert PyArray to Rust ArrayView (zero-copy)
     let gs_sparse_rust = gs_sparse.readonly().as_array().to_owned();
@@ -113,8 +117,8 @@ pub fn map_and_estimate<'py>(
         teleportation_time_per_hop,
         t1,
         t2,
-        t1_per_qubit: None,
-        t2_per_qubit: None,
+        t1_per_qubit: t1_per_qubit.map(|a| a.readonly().as_array().to_vec()),
+        t2_per_qubit: t2_per_qubit.map(|a| a.readonly().as_array().to_vec()),
     };
     let fidelity = estimate_fidelity(&tensor, &routing, &params, None);
 
@@ -177,7 +181,9 @@ pub fn map_and_estimate<'py>(
     two_gate_time = 100.0,
     teleportation_time_per_hop = 1000.0,
     t1 = 100_000.0,
-    t2 = 50_000.0
+    t2 = 50_000.0,
+    t1_per_qubit = None,
+    t2_per_qubit = None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn estimate_hardware_fidelity<'py>(
@@ -194,6 +200,8 @@ pub fn estimate_hardware_fidelity<'py>(
     teleportation_time_per_hop: f64,
     t1: f64,
     t2: f64,
+    t1_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    t2_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let gs_sparse_rust = gs_sparse.readonly().as_array().to_owned();
     let mut num_layers = 0;
@@ -237,8 +245,8 @@ pub fn estimate_hardware_fidelity<'py>(
         teleportation_time_per_hop,
         t1,
         t2,
-        t1_per_qubit: None,
-        t2_per_qubit: None,
+        t1_per_qubit: t1_per_qubit.map(|a| a.readonly().as_array().to_vec()),
+        t2_per_qubit: t2_per_qubit.map(|a| a.readonly().as_array().to_vec()),
     };
     let fidelity = estimate_fidelity(&tensor, &routing, &params, Some(sparse_swaps_arr));
 
