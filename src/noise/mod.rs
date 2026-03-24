@@ -538,4 +538,73 @@ mod tests {
             "infinite T1/T2 should give perfect coherence"
         );
     }
+
+    #[test]
+    fn per_qubit_t1t2_differs_from_uniform() {
+        let path = Path::new("dse_pau/test_vectors.json");
+        let data = fs::read_to_string(path).unwrap();
+        let parsed: Value = serde_json::from_str(&data).unwrap();
+        let tc = &parsed["hqa_test_qft_25_all_to_all"];
+
+        let num_qubits = tc["num_virtual_qubits"].as_u64().unwrap() as usize;
+        let num_cores = tc["num_cores"].as_u64().unwrap() as usize;
+        let num_layers = tc["num_layers"].as_u64().unwrap() as usize;
+
+        let gs_sparse: Vec<[f64; 4]> = serde_json::from_value(tc["gs_sparse"].clone()).unwrap();
+        let tensor = InteractionTensor::from_sparse(&gs_sparse, num_layers, num_qubits);
+
+        let initial_partition: Vec<i32> =
+            serde_json::from_value(tc["input_initial_partition"].clone()).unwrap();
+        let mut placements = Array2::<i32>::zeros((num_layers + 1, num_qubits));
+        for (q, &val) in initial_partition.iter().enumerate() {
+            placements[[0, q]] = val;
+        }
+
+        let core_caps: Vec<usize> =
+            serde_json::from_value(tc["input_core_capacities"].clone()).unwrap();
+        let dist_vecs: Vec<Vec<i32>> =
+            serde_json::from_value(tc["input_distance_matrix"].clone()).unwrap();
+        let dist_flat: Vec<i32> = dist_vecs.into_iter().flatten().collect();
+        let dist_array = Array2::from_shape_vec((num_cores, num_cores), dist_flat).unwrap();
+
+        let result = hqa_mapping(
+            &tensor,
+            placements,
+            num_cores,
+            &core_caps,
+            dist_array.view(),
+        );
+        let routing = extract_inter_core_communications(&result, dist_array.view());
+
+        // Uniform T1/T2
+        let uniform_params = ArchitectureParams::default();
+        let uniform_report = estimate_fidelity(&tensor, &routing, &uniform_params, None);
+
+        // Per-qubit: give qubit 0 much worse T1/T2
+        let mut t1_vec = vec![100_000.0; num_qubits];
+        let mut t2_vec = vec![50_000.0; num_qubits];
+        t1_vec[0] = 10_000.0; // 10x worse
+        t2_vec[0] = 5_000.0;
+
+        let per_qubit_params = ArchitectureParams {
+            t1_per_qubit: Some(t1_vec),
+            t2_per_qubit: Some(t2_vec),
+            ..Default::default()
+        };
+        let per_qubit_report = estimate_fidelity(&tensor, &routing, &per_qubit_params, None);
+
+        // Per-qubit with one bad qubit should have worse coherence
+        assert!(
+            per_qubit_report.coherence_fidelity < uniform_report.coherence_fidelity,
+            "per-qubit with one degraded qubit should have worse coherence: {} vs {}",
+            per_qubit_report.coherence_fidelity,
+            uniform_report.coherence_fidelity
+        );
+
+        // Algorithmic fidelity should be identical (not affected by T1/T2)
+        assert!(
+            (per_qubit_report.algorithmic_fidelity - uniform_report.algorithmic_fidelity).abs() < 1e-12,
+            "algorithmic fidelity should be unaffected by T1/T2 changes"
+        );
+    }
 }
