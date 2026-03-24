@@ -72,8 +72,8 @@ def plot_qft_topology_comparison():
     print(f"[SC-2D-GRID]     Overall Fidelity: {result_sg.overall_fidelity:.4e}")
     print("----------------\n")
 
-    # Plot side by side (4 rows x 4 cols)
-    fig, axes = plt.subplots(4, 4, figsize=(30, 16), sharex=True, sharey="row")
+    # Plot: 4 rows x 5 cols (last col = overlap of all topologies)
+    fig, axes = plt.subplots(4, 5, figsize=(36, 16), sharex=True, sharey="row")
 
     for q in range(nq):
         # Grid/ring curves
@@ -116,11 +116,29 @@ def plot_qft_topology_comparison():
         axes[2, 3].plot(r_g, alpha=0.5, linewidth=1.0)
         axes[3, 3].plot(c_g, alpha=0.5, linewidth=1.0)
 
+    # Circuit-level fidelity for the overlap column
+    overlap_topologies = [
+        (result_sc,   "SC All-to-All",   "C0"),
+        (result_sg,   "SC 2D Grid",       "C1"),
+        (result_ata,  "MC All-to-All",   "C2"),
+        (result_grid, "MC Grid+Ring",     "C3"),
+    ]
+    for result, label, color in overlap_topologies:
+        a_c, r_c, coh_c = result.get_circuit_fidelity_over_time()
+        o_c = a_c * r_c * coh_c
+        axes[0, 4].plot(o_c,   label=label, color=color, linewidth=1.5)
+        axes[1, 4].plot(a_c,   label=label, color=color, linewidth=1.5)
+        axes[2, 4].plot(r_c,   label=label, color=color, linewidth=1.5)
+        axes[3, 4].plot(coh_c, label=label, color=color, linewidth=1.5)
+
+    axes[0, 4].legend(fontsize=8, loc="upper right")
+
     col_labels = [
         f"Single Core All-to-All\n(1 core × {nq} qubits)",
         f"Single Core 2D Grid (5×6)\n(1 core × {nq} qubits)",
         f"Multi-core All-to-All\n({num_cores} cores × {qubits_per_core} qubits)",
         f"Multi-core Grid+Ring\n({num_cores} cores × {qubits_per_core} qubits)",
+        "All Topologies\n(circuit fidelity)",
     ]
     row_labels = ["Overall Fidelity", "Algorithmic Fidelity", "Routing Fidelity", "Coherence Fidelity"]
 
@@ -129,10 +147,10 @@ def plot_qft_topology_comparison():
 
     for i, label in enumerate(row_labels):
         axes[i, 0].set_ylabel(label)
-        for j in range(4):
+        for j in range(5):
             axes[i, j].grid(True, linestyle="--", alpha=0.7)
 
-    for j in range(4):
+    for j in range(5):
         axes[3, j].set_xlabel("Circuit Layer")
 
     plt.suptitle(

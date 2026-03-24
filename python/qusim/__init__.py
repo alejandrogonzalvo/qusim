@@ -63,7 +63,7 @@ class QusimResult:
     coherence_fidelity_grid: np.ndarray    
     """Floating point exponential temporal decay matrix modeling phase and relaxation drops. Shape: `(num_layers, num_qubits)`"""
 
-    def get_qubit_fidelity_over_time(self, qubit: int) -> tuple[np.ndarray, np.ndarray]:
+    def get_qubit_fidelity_over_time(self, qubit: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Extracts the (algorithmic, routing, coherence) fidelity curves for a specific virtual qubit
         across all timeslices to graph hardware impacts dynamically.
@@ -71,6 +71,16 @@ class QusimResult:
         algo_curve = self.algorithmic_fidelity_grid[:, qubit]
         route_curve = self.routing_fidelity_grid[:, qubit]
         coh_curve = self.coherence_fidelity_grid[:, qubit]
+        return algo_curve, route_curve, coh_curve
+
+    def get_circuit_fidelity_over_time(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Computes circuit-level fidelity curves by taking the product across all qubits at each
+        layer. Returns (algorithmic, routing, coherence) arrays of shape (num_layers,).
+        """
+        algo_curve = np.prod(self.algorithmic_fidelity_grid, axis=1)
+        route_curve = np.prod(self.routing_fidelity_grid, axis=1)
+        coh_curve = np.prod(self.coherence_fidelity_grid, axis=1)
         return algo_curve, route_curve, coh_curve
 
 

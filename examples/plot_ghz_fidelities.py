@@ -1,5 +1,6 @@
 from qiskit import QuantumCircuit
 from plot_fidelities_utils import simulate_and_plot, SimulationConfig
+from qusim.hqa.placement import InitialPlacement
 
 def generate_ghz(nq: int) -> QuantumCircuit:
     qc = QuantumCircuit(nq)
@@ -8,7 +9,6 @@ def generate_ghz(nq: int) -> QuantumCircuit:
         qc.cx(i, i + 1)
     return qc
 
-from qusim.hqa.placement import InitialPlacement
 
 def plot_ghz_fidelities():
     nq = 30
