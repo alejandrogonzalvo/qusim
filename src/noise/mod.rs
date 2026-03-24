@@ -143,9 +143,6 @@ pub fn estimate_fidelity(
 
     let mut total_circuit_time = 0.0_f64;
 
-    // Running sum of time each qubit has been actively occupied
-    let mut qubit_busy_time = vec![0.0_f64; num_qubits];
-
     let mut layer_details = Vec::with_capacity(num_layers);
 
     let layer_swaps = parse_sparse_swaps(sparse_swaps, num_layers);
@@ -211,15 +208,13 @@ pub fn estimate_fidelity(
 
         overall_routing *= layer_routing_fidelity;
 
-        // 4. Update busy times and compute coherence based on cumulative idle time
+        // 4. Update coherence based on per-layer idle time
         let layer_coh_grid =
             &mut coherence_fidelity_grid[layer * num_qubits..(layer + 1) * num_qubits];
         update_busy_and_coherence(
             layer_time,
-            total_circuit_time,
             params,
             &layer_busy_time,
-            &mut qubit_busy_time,
             layer_coh_grid,
         );
 
@@ -394,20 +389,18 @@ fn process_teleportations(
 #[inline]
 fn update_busy_and_coherence(
     layer_time: f64,
-    total_circuit_time: f64,
     params: &ArchitectureParams,
     layer_busy_time: &[f64],
-    qubit_busy_time: &mut [f64],
     layer_coh_grid: &mut [f64],
 ) {
-    for q in 0..qubit_busy_time.len() {
-        let actual_busy = layer_busy_time[q].min(layer_time);
-        qubit_busy_time[q] += actual_busy;
-
-        let idle_time = (total_circuit_time - qubit_busy_time[q]).max(0.0);
-        let q_t1 = params.t1_per_qubit.as_ref().map_or(params.t1, |v| v[q]);
-        let q_t2 = params.t2_per_qubit.as_ref().map_or(params.t2, |v| v[q]);
-        layer_coh_grid[q] = decoherence_fidelity(idle_time, q_t1, q_t2);
+    for q in 0..layer_coh_grid.len() {
+        // Idle time is how long the qubit was idle during THIS layer only
+        let layer_idle = (layer_time - layer_busy_time[q]).max(0.0);
+        if layer_idle > 0.0 {
+            let q_t1 = params.t1_per_qubit.as_ref().map_or(params.t1, |v| v[q]);
+            let q_t2 = params.t2_per_qubit.as_ref().map_or(params.t2, |v| v[q]);
+            layer_coh_grid[q] *= decoherence_fidelity(layer_idle, q_t1, q_t2);
+        }
     }
 }
 
