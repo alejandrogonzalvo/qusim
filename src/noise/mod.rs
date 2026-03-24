@@ -81,10 +81,10 @@ fn teleportation_fidelity(error_per_hop: f64, distance: i32) -> f64 {
     (1.0 - error_per_hop).powi(distance)
 }
 
-/// Idle-qubit decoherence from T1 relaxation and T2 dephasing.
+/// Idle-qubit decoherence from T1 relaxation and T2 dephasing (paper Eq. 41).
 #[inline]
 fn decoherence_fidelity(idle_time: f64, t1: f64, t2: f64) -> f64 {
-    (-idle_time / t1).exp() * (-idle_time / t2).exp()
+    (-idle_time / t1).exp() * (0.5 * (-idle_time / t2).exp() + 0.5)
 }
 
 fn parse_sparse_swaps(
