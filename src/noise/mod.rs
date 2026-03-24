@@ -82,6 +82,13 @@ fn gate_fidelity(error_rate: f64) -> f64 {
     1.0 - error_rate
 }
 
+/// Convert a gate error rate to the depolarization parameter λ (paper Eq. 39).
+/// d = 2 for single-qubit gates, d = 4 for two-qubit gates.
+#[inline]
+fn depolarization_lambda(gate_error: f64, d: f64) -> f64 {
+    d * gate_error / (d - 1.0)
+}
+
 /// Teleportation fidelity decays exponentially with network distance.
 #[inline]
 fn teleportation_fidelity(error_per_hop: f64, distance: i32) -> f64 {
@@ -132,7 +139,6 @@ pub fn estimate_fidelity(
     let num_layers = tensor.num_layers();
     let num_qubits = tensor.num_qubits();
 
-    let mut overall_algorithmic = 1.0_f64;
     let mut overall_routing = 1.0_f64;
 
     let mut total_circuit_time = 0.0_f64;
@@ -203,7 +209,6 @@ pub fn estimate_fidelity(
             layer_routing_grid,
         );
 
-        overall_algorithmic *= layer_algorithmic_fidelity;
         overall_routing *= layer_routing_fidelity;
 
         // 4. Update busy times and compute coherence based on cumulative idle time
@@ -233,11 +238,19 @@ pub fn estimate_fidelity(
         global_coherence *= coherence_fidelity_grid[(num_layers - 1) * num_qubits + q];
     }
 
+    // Overall algorithmic fidelity = product of per-qubit fidelities at final layer (paper Eq. 40)
+    let mut overall_algorithmic_from_grid = 1.0_f64;
+    if num_layers > 0 {
+        for q in 0..num_qubits {
+            overall_algorithmic_from_grid *= algorithmic_fidelity_grid[(num_layers - 1) * num_qubits + q];
+        }
+    }
+
     FidelityReport {
-        algorithmic_fidelity: overall_algorithmic,
+        algorithmic_fidelity: overall_algorithmic_from_grid,
         routing_fidelity: overall_routing,
         coherence_fidelity: global_coherence,
-        overall_fidelity: overall_algorithmic * overall_routing * global_coherence,
+        overall_fidelity: overall_algorithmic_from_grid * overall_routing * global_coherence,
         total_circuit_time,
         layer_details,
         algorithmic_fidelity_grid,
@@ -295,17 +308,37 @@ fn process_computational_gates(
     let mut layer_algo_fidelity = 1.0;
     for &(u, v, _) in gates {
         if u == v {
+            // Single-qubit gate: F_q = (1-λ)·F_q + λ/d, with d=2 (paper Algorithm 1)
             layer_busy_time[u] += params.single_gate_time;
-            let f = gate_fidelity(params.single_gate_error);
-            layer_algo_grid[u] *= f;
-            layer_algo_fidelity *= f;
+            let lam = depolarization_lambda(params.single_gate_error, 2.0);
+            let f_before = layer_algo_grid[u];
+            layer_algo_grid[u] = (1.0 - lam) * layer_algo_grid[u] + lam / 2.0;
+            if f_before > 0.0 {
+                layer_algo_fidelity *= layer_algo_grid[u] / f_before;
+            }
         } else {
+            // Two-qubit gate: η correction (paper Eq. 25, Algorithm 1)
             layer_busy_time[u] += params.two_gate_time;
             layer_busy_time[v] += params.two_gate_time;
-            let f = gate_fidelity(params.two_gate_error);
-            layer_algo_grid[u] *= f;
-            layer_algo_grid[v] *= f;
-            layer_algo_fidelity *= f;
+            let lam = depolarization_lambda(params.two_gate_error, 4.0);
+            let f1 = layer_algo_grid[u];
+            let f2 = layer_algo_grid[v];
+            let f1_before = f1;
+            let f2_before = f2;
+
+            let sqrt_1_lam = (1.0 - lam).sqrt();
+            let eta = 0.5 * (((1.0 - lam) * (f1 + f2).powi(2) + lam).sqrt()
+                           - sqrt_1_lam * (f1 + f2));
+
+            layer_algo_grid[u] = sqrt_1_lam * f1 + eta;
+            layer_algo_grid[v] = sqrt_1_lam * f2 + eta;
+
+            if f1_before > 0.0 {
+                layer_algo_fidelity *= layer_algo_grid[u] / f1_before;
+            }
+            if f2_before > 0.0 {
+                layer_algo_fidelity *= layer_algo_grid[v] / f2_before;
+            }
         }
     }
     layer_algo_fidelity
