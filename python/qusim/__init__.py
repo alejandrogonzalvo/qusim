@@ -134,6 +134,8 @@ def map_circuit(
     teleportation_time_per_hop: float = 1000.0,
     t1: float = 100_000.0,
     t2: float = 50_000.0,
+    t1_per_qubit: Optional[np.ndarray] = None,
+    t2_per_qubit: Optional[np.ndarray] = None,
 ) -> QusimResult:
     """
     Map a Qiskit quantum circuit using HQA and estimate teleportation routing and hardware fidelity.
@@ -218,7 +220,9 @@ def map_circuit(
         two_gate_time=two_gate_time,
         teleportation_time_per_hop=teleportation_time_per_hop,
         t1=t1,
-        t2=t2
+        t2=t2,
+        t1_per_qubit=t1_per_qubit,
+        t2_per_qubit=t2_per_qubit,
     )
 
     placements = raw_dict["placements"]
@@ -253,7 +257,9 @@ def map_circuit(
         two_gate_time=two_gate_time,
         teleportation_time_per_hop=teleportation_time_per_hop,
         t1=t1,
-        t2=t2
+        t2=t2,
+        t1_per_qubit=t1_per_qubit,
+        t2_per_qubit=t2_per_qubit,
     )
 
     # 6. Wrap Results
