@@ -113,6 +113,8 @@ pub fn map_and_estimate<'py>(
         teleportation_time_per_hop,
         t1,
         t2,
+        t1_per_qubit: None,
+        t2_per_qubit: None,
     };
     let fidelity = estimate_fidelity(&tensor, &routing, &params, None);
 
@@ -235,6 +237,8 @@ pub fn estimate_hardware_fidelity<'py>(
         teleportation_time_per_hop,
         t1,
         t2,
+        t1_per_qubit: None,
+        t2_per_qubit: None,
     };
     let fidelity = estimate_fidelity(&tensor, &routing, &params, Some(sparse_swaps_arr));
 

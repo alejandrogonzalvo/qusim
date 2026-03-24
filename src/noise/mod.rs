@@ -15,6 +15,11 @@ pub struct ArchitectureParams {
     pub teleportation_time_per_hop: f64,
     pub t1: f64,
     pub t2: f64,
+    // TODO: Add per-qubit single_gate_error and per-qubit-pair two_gate_error arrays
+    /// Per-qubit T1 relaxation times in nanoseconds. Falls back to scalar `t1` if None.
+    pub t1_per_qubit: Option<Vec<f64>>,
+    /// Per-qubit T2 dephasing times in nanoseconds. Falls back to scalar `t2` if None.
+    pub t2_per_qubit: Option<Vec<f64>>,
 }
 
 impl Default for ArchitectureParams {
@@ -28,6 +33,8 @@ impl Default for ArchitectureParams {
             teleportation_time_per_hop: 1000.0,
             t1: 100_000.0,
             t2: 50_000.0,
+            t1_per_qubit: None,
+            t2_per_qubit: None,
         }
     }
 }
@@ -365,7 +372,9 @@ fn update_busy_and_coherence(
         qubit_busy_time[q] += actual_busy;
 
         let idle_time = (total_circuit_time - qubit_busy_time[q]).max(0.0);
-        layer_coh_grid[q] = decoherence_fidelity(idle_time, params.t1, params.t2);
+        let q_t1 = params.t1_per_qubit.as_ref().map_or(params.t1, |v| v[q]);
+        let q_t2 = params.t2_per_qubit.as_ref().map_or(params.t2, |v| v[q]);
+        layer_coh_grid[q] = decoherence_fidelity(idle_time, q_t1, q_t2);
     }
 }
 
