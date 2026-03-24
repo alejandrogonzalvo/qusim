@@ -158,6 +158,8 @@ pub fn estimate_fidelity(
                     algorithmic_fidelity_grid[(layer - 1) * num_qubits + q];
                 routing_fidelity_grid[layer * num_qubits + q] =
                     routing_fidelity_grid[(layer - 1) * num_qubits + q];
+                coherence_fidelity_grid[layer * num_qubits + q] =
+                    coherence_fidelity_grid[(layer - 1) * num_qubits + q];
             }
         }
 
