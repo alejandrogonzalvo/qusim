@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::circuit::InteractionTensor;
 use crate::routing::RoutingSummary;
 
@@ -15,7 +17,10 @@ pub struct ArchitectureParams {
     pub teleportation_time_per_hop: f64,
     pub t1: f64,
     pub t2: f64,
-    // TODO: Add per-qubit single_gate_error and per-qubit-pair two_gate_error arrays
+    /// Per-qubit single-gate error rates. Falls back to scalar `single_gate_error` if None.
+    pub single_gate_error_per_qubit: Option<Vec<f64>>,
+    /// Per-pair two-gate error rates keyed by (q1, q2). Falls back to scalar `two_gate_error` if None or pair missing.
+    pub two_gate_error_per_pair: Option<HashMap<(usize, usize), f64>>,
     /// Per-qubit T1 relaxation times in nanoseconds. Falls back to scalar `t1` if None.
     pub t1_per_qubit: Option<Vec<f64>>,
     /// Per-qubit T2 dephasing times in nanoseconds. Falls back to scalar `t2` if None.
@@ -33,9 +38,30 @@ impl Default for ArchitectureParams {
             teleportation_time_per_hop: 1000.0,
             t1: 100_000.0,
             t2: 50_000.0,
+            single_gate_error_per_qubit: None,
+            two_gate_error_per_pair: None,
             t1_per_qubit: None,
             t2_per_qubit: None,
         }
+    }
+}
+
+impl ArchitectureParams {
+    /// Returns the single-gate error for qubit `q`, using per-qubit value if available.
+    #[inline]
+    pub fn single_gate_error_for(&self, q: usize) -> f64 {
+        self.single_gate_error_per_qubit
+            .as_ref()
+            .map_or(self.single_gate_error, |v| v[q])
+    }
+
+    /// Returns the two-gate error for the pair `(u, v)`, using per-pair value if available.
+    #[inline]
+    pub fn two_gate_error_for(&self, u: usize, v: usize) -> f64 {
+        self.two_gate_error_per_pair
+            .as_ref()
+            .and_then(|m| m.get(&(u, v)).copied())
+            .unwrap_or(self.two_gate_error)
     }
 }
 
@@ -307,7 +333,8 @@ fn process_computational_gates(
         if u == v {
             // Single-qubit gate: F_q = (1-λ)·F_q + λ/d, with d=2 (paper Algorithm 1)
             layer_busy_time[u] += params.single_gate_time;
-            let lam = depolarization_lambda(params.single_gate_error, 2.0);
+            let error = params.single_gate_error_for(u);
+            let lam = depolarization_lambda(error, 2.0);
             let f_before = layer_algo_grid[u];
             layer_algo_grid[u] = (1.0 - lam) * layer_algo_grid[u] + lam / 2.0;
             if f_before > 0.0 {
@@ -317,7 +344,8 @@ fn process_computational_gates(
             // Two-qubit gate: η correction (paper Eq. 25, Algorithm 1)
             layer_busy_time[u] += params.two_gate_time;
             layer_busy_time[v] += params.two_gate_time;
-            let lam = depolarization_lambda(params.two_gate_error, 4.0);
+            let error = params.two_gate_error_for(u, v);
+            let lam = depolarization_lambda(error, 4.0);
             let f1 = layer_algo_grid[u];
             let f2 = layer_algo_grid[v];
             let f1_before = f1;
@@ -353,9 +381,10 @@ fn process_sabre_swaps(
     }
 
     let mut layer_routing_fidelity = 1.0;
-    let f_swap = gate_fidelity(3.0 * params.two_gate_error); // SWAP is ~3 CX gates
 
     for &(q1, q2) in swaps {
+        let error = params.two_gate_error_for(q1, q2);
+        let f_swap = gate_fidelity(3.0 * error); // SWAP is ~3 CX gates
         if q1 < layer_busy_time.len() {
             layer_busy_time[q1] += params.two_gate_time * 3.0;
             layer_routing_grid[q1] *= f_swap;

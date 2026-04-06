@@ -117,6 +117,8 @@ pub fn map_and_estimate<'py>(
         teleportation_time_per_hop,
         t1,
         t2,
+        single_gate_error_per_qubit: None,
+        two_gate_error_per_pair: None,
         t1_per_qubit: t1_per_qubit.map(|a| a.readonly().as_array().to_vec()),
         t2_per_qubit: t2_per_qubit.map(|a| a.readonly().as_array().to_vec()),
     };
@@ -245,6 +247,8 @@ pub fn estimate_hardware_fidelity<'py>(
         teleportation_time_per_hop,
         t1,
         t2,
+        single_gate_error_per_qubit: None,
+        two_gate_error_per_pair: None,
         t1_per_qubit: t1_per_qubit.map(|a| a.readonly().as_array().to_vec()),
         t2_per_qubit: t2_per_qubit.map(|a| a.readonly().as_array().to_vec()),
     };
