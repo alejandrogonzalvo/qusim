@@ -567,6 +567,224 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Helper: set up tensor + routing from a test vector for reuse
+    // -----------------------------------------------------------------------
+    fn setup_from_test_vector(test_case_name: &str) -> (InteractionTensor, RoutingSummary, usize) {
+        let path = Path::new("dse_pau/test_vectors.json");
+        let data = fs::read_to_string(path).unwrap();
+        let parsed: Value = serde_json::from_str(&data).unwrap();
+        let tc = &parsed[test_case_name];
+
+        let num_qubits = tc["num_virtual_qubits"].as_u64().unwrap() as usize;
+        let num_cores = tc["num_cores"].as_u64().unwrap() as usize;
+        let num_layers = tc["num_layers"].as_u64().unwrap() as usize;
+
+        let gs_sparse: Vec<[f64; 4]> = serde_json::from_value(tc["gs_sparse"].clone()).unwrap();
+        let tensor = InteractionTensor::from_sparse(&gs_sparse, num_layers, num_qubits);
+
+        let initial_partition: Vec<i32> =
+            serde_json::from_value(tc["input_initial_partition"].clone()).unwrap();
+        let mut placements = Array2::<i32>::zeros((num_layers + 1, num_qubits));
+        for (q, &val) in initial_partition.iter().enumerate() {
+            placements[[0, q]] = val;
+        }
+
+        let core_caps: Vec<usize> =
+            serde_json::from_value(tc["input_core_capacities"].clone()).unwrap();
+        let dist_vecs: Vec<Vec<i32>> =
+            serde_json::from_value(tc["input_distance_matrix"].clone()).unwrap();
+        let dist_flat: Vec<i32> = dist_vecs.into_iter().flatten().collect();
+        let dist_array = Array2::from_shape_vec((num_cores, num_cores), dist_flat).unwrap();
+
+        let result = hqa_mapping(
+            &tensor,
+            placements,
+            num_cores,
+            &core_caps,
+            dist_array.view(),
+        );
+        let routing = extract_inter_core_communications(&result, dist_array.view());
+
+        (tensor, routing, num_qubits)
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: uniform per-qubit gate-error arrays == scalar gate errors
+    // -----------------------------------------------------------------------
+    #[test]
+    fn uniform_per_qubit_gate_errors_match_scalar() {
+        let (tensor, routing, num_qubits) = setup_from_test_vector("hqa_test_qft_25_all_to_all");
+
+        let scalar_params = ArchitectureParams::default();
+        let scalar_report = estimate_fidelity(&tensor, &routing, &scalar_params, None);
+
+        // Build per-qubit arrays that are identical to the scalar defaults
+        let per_qubit_params = ArchitectureParams {
+            single_gate_error_per_qubit: Some(vec![scalar_params.single_gate_error; num_qubits]),
+            two_gate_error_per_pair: None,
+            ..Default::default()
+        };
+        let per_qubit_report = estimate_fidelity(&tensor, &routing, &per_qubit_params, None);
+
+        assert!(
+            (scalar_report.algorithmic_fidelity - per_qubit_report.algorithmic_fidelity).abs() < 1e-12,
+            "uniform per-qubit 1Q errors must match scalar: {} vs {}",
+            scalar_report.algorithmic_fidelity,
+            per_qubit_report.algorithmic_fidelity
+        );
+        assert!(
+            (scalar_report.routing_fidelity - per_qubit_report.routing_fidelity).abs() < 1e-12,
+            "routing fidelity must be identical when only 1Q errors differ in representation"
+        );
+        assert!(
+            (scalar_report.coherence_fidelity - per_qubit_report.coherence_fidelity).abs() < 1e-12,
+            "coherence must be identical"
+        );
+        assert!(
+            (scalar_report.overall_fidelity - per_qubit_report.overall_fidelity).abs() < 1e-12,
+            "overall fidelity must match"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: uniform per-pair 2Q error map == scalar two_gate_error
+    // -----------------------------------------------------------------------
+    #[test]
+    fn uniform_per_pair_two_gate_errors_match_scalar() {
+        let (tensor, routing, _num_qubits) = setup_from_test_vector("hqa_test_qft_25_all_to_all");
+
+        let scalar_params = ArchitectureParams::default();
+        let scalar_report = estimate_fidelity(&tensor, &routing, &scalar_params, None);
+
+        // Build a per-pair map where every pair has the same error as the scalar default.
+        // We use an empty map to signal "use scalar fallback" — same as None.
+        // But here we explicitly set the map to verify the lookup path works.
+        use std::collections::HashMap;
+        let mut pair_map = HashMap::new();
+        // Populate with all pairs that appear in the tensor
+        for layer in 0..tensor.num_layers() {
+            for &(u, v, _) in tensor.layer_gates(layer) {
+                if u != v {
+                    pair_map.insert((u, v), scalar_params.two_gate_error);
+                    pair_map.insert((v, u), scalar_params.two_gate_error);
+                }
+            }
+        }
+
+        let per_pair_params = ArchitectureParams {
+            two_gate_error_per_pair: Some(pair_map),
+            ..Default::default()
+        };
+        let per_pair_report = estimate_fidelity(&tensor, &routing, &per_pair_params, None);
+
+        assert!(
+            (scalar_report.algorithmic_fidelity - per_pair_report.algorithmic_fidelity).abs() < 1e-12,
+            "uniform per-pair 2Q errors must match scalar: {} vs {}",
+            scalar_report.algorithmic_fidelity,
+            per_pair_report.algorithmic_fidelity
+        );
+        assert!(
+            (scalar_report.overall_fidelity - per_pair_report.overall_fidelity).abs() < 1e-12,
+            "overall fidelity must match"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // New behavior: worse per-qubit 1Q error on one qubit degrades fidelity
+    // -----------------------------------------------------------------------
+    #[test]
+    fn per_qubit_single_gate_error_degrades_fidelity() {
+        let (tensor, routing, num_qubits) = setup_from_test_vector("hqa_test_qft_25_all_to_all");
+
+        let uniform_params = ArchitectureParams::default();
+        let uniform_report = estimate_fidelity(&tensor, &routing, &uniform_params, None);
+
+        // Give qubit 0 a 100x worse single-gate error
+        let mut sq_errors = vec![uniform_params.single_gate_error; num_qubits];
+        sq_errors[0] = uniform_params.single_gate_error * 100.0;
+
+        let degraded_params = ArchitectureParams {
+            single_gate_error_per_qubit: Some(sq_errors),
+            ..Default::default()
+        };
+        let degraded_report = estimate_fidelity(&tensor, &routing, &degraded_params, None);
+
+        assert!(
+            degraded_report.algorithmic_fidelity < uniform_report.algorithmic_fidelity,
+            "degraded qubit 0 should lower algorithmic fidelity: {} vs {}",
+            degraded_report.algorithmic_fidelity,
+            uniform_report.algorithmic_fidelity
+        );
+        // Coherence should be unchanged (gate errors don't affect T1/T2)
+        assert!(
+            (degraded_report.coherence_fidelity - uniform_report.coherence_fidelity).abs() < 1e-12,
+            "coherence must be unaffected by gate error changes"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // New behavior: worse per-pair 2Q error on specific pairs degrades fidelity
+    // -----------------------------------------------------------------------
+    #[test]
+    fn per_pair_two_gate_error_degrades_fidelity() {
+        let (tensor, routing, _num_qubits) = setup_from_test_vector("hqa_test_qft_25_all_to_all");
+
+        let uniform_params = ArchitectureParams::default();
+        let uniform_report = estimate_fidelity(&tensor, &routing, &uniform_params, None);
+
+        // Make ALL pairs 10x worse
+        use std::collections::HashMap;
+        let mut pair_map = HashMap::new();
+        for layer in 0..tensor.num_layers() {
+            for &(u, v, _) in tensor.layer_gates(layer) {
+                if u != v {
+                    let bad_error = (uniform_params.two_gate_error * 10.0).min(1.0);
+                    pair_map.insert((u, v), bad_error);
+                    pair_map.insert((v, u), bad_error);
+                }
+            }
+        }
+
+        let degraded_params = ArchitectureParams {
+            two_gate_error_per_pair: Some(pair_map),
+            ..Default::default()
+        };
+        let degraded_report = estimate_fidelity(&tensor, &routing, &degraded_params, None);
+
+        assert!(
+            degraded_report.algorithmic_fidelity < uniform_report.algorithmic_fidelity,
+            "worse per-pair 2Q error should lower algorithmic fidelity: {} vs {}",
+            degraded_report.algorithmic_fidelity,
+            uniform_report.algorithmic_fidelity
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // New behavior: zero per-qubit errors give perfect fidelity
+    // -----------------------------------------------------------------------
+    #[test]
+    fn zero_per_qubit_errors_give_perfect_algorithmic_fidelity() {
+        let (tensor, routing, num_qubits) = setup_from_test_vector("hqa_test_qft_25_all_to_all");
+
+        let perfect_params = ArchitectureParams {
+            single_gate_error: 0.0,
+            two_gate_error: 0.0,
+            teleportation_error_per_hop: 0.0,
+            single_gate_error_per_qubit: Some(vec![0.0; num_qubits]),
+            two_gate_error_per_pair: Some(std::collections::HashMap::new()),
+            t1: f64::INFINITY,
+            t2: f64::INFINITY,
+            ..Default::default()
+        };
+        let report = estimate_fidelity(&tensor, &routing, &perfect_params, None);
+
+        assert!(
+            (report.algorithmic_fidelity - 1.0).abs() < 1e-12,
+            "zero per-qubit errors should give perfect algorithmic fidelity"
+        );
+    }
+
     #[test]
     fn per_qubit_t1t2_differs_from_uniform() {
         let path = Path::new("dse_pau/test_vectors.json");
