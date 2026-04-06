@@ -134,6 +134,8 @@ def map_circuit(
     teleportation_time_per_hop: float = 1000.0,
     t1: float = 100_000.0,
     t2: float = 50_000.0,
+    single_gate_error_per_qubit: Optional[np.ndarray] = None,
+    two_gate_error_per_pair: Optional[dict[tuple[int, int], float]] = None,
     t1_per_qubit: Optional[np.ndarray] = None,
     t2_per_qubit: Optional[np.ndarray] = None,
 ) -> QusimResult:
@@ -159,6 +161,10 @@ def map_circuit(
         teleportation_time_per_hop (float): Communication EPR networking traversal nanoseconds dictating `T1`/`T2` accumulation scaling rates.
         t1 (float): Hardware T1 characteristic exponential scaling time constant.
         t2 (float): Hardware T2 decoherence characteristic timeline.
+        single_gate_error_per_qubit (Optional[np.ndarray]): Per-qubit 1Q error rates, shape (num_qubits,). Falls back to scalar single_gate_error if None.
+        two_gate_error_per_pair (Optional[dict[tuple[int,int], float]]): Per-pair 2Q error rates keyed by (q1, q2). Falls back to scalar two_gate_error for missing pairs.
+        t1_per_qubit (Optional[np.ndarray]): Per-qubit T1 relaxation times in ns.
+        t2_per_qubit (Optional[np.ndarray]): Per-qubit T2 dephasing times in ns.
 
     Returns:
         QusimResult: Structured simulation payload metrics including multidimensional matrices isolating individual qubit drop footprints across layers.
@@ -221,6 +227,8 @@ def map_circuit(
         teleportation_time_per_hop=teleportation_time_per_hop,
         t1=t1,
         t2=t2,
+        single_gate_error_per_qubit=single_gate_error_per_qubit,
+        two_gate_error_per_pair=two_gate_error_per_pair,
         t1_per_qubit=t1_per_qubit,
         t2_per_qubit=t2_per_qubit,
     )
@@ -258,6 +266,8 @@ def map_circuit(
         teleportation_time_per_hop=teleportation_time_per_hop,
         t1=t1,
         t2=t2,
+        single_gate_error_per_qubit=single_gate_error_per_qubit,
+        two_gate_error_per_pair=two_gate_error_per_pair,
         t1_per_qubit=t1_per_qubit,
         t2_per_qubit=t2_per_qubit,
     )
