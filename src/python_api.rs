@@ -40,6 +40,9 @@ fn build_params<'py>(
     t2_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
     gate_error_per_type: Option<&Bound<'py, PyArray1<f64>>>,
     gate_time_per_type: Option<&Bound<'py, PyArray1<f64>>>,
+    dynamic_decoupling: bool,
+    readout_error_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    readout_mitigation_factor: f64,
 ) -> PyResult<ArchitectureParams> {
     Ok(ArchitectureParams {
         single_gate_error,
@@ -59,6 +62,9 @@ fn build_params<'py>(
         t2_per_qubit: t2_per_qubit.map(|a| a.readonly().as_array().to_vec()),
         gate_error_per_type: gate_error_per_type.map(|a| a.readonly().as_array().to_vec()),
         gate_time_per_type: gate_time_per_type.map(|a| a.readonly().as_array().to_vec()),
+        dynamic_decoupling,
+        readout_error_per_qubit: readout_error_per_qubit.map(|a| a.readonly().as_array().to_vec()),
+        readout_mitigation_factor,
     })
 }
 
@@ -116,7 +122,10 @@ fn parse_sparse_tensor(gs_sparse: &Bound<'_, PyArray2<f64>>, extra_qubits: usize
     t1_per_qubit = None,
     t2_per_qubit = None,
     gate_error_per_type = None,
-    gate_time_per_type = None
+    gate_time_per_type = None,
+    dynamic_decoupling = false,
+    readout_error_per_qubit = None,
+    readout_mitigation_factor = 0.0
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn map_and_estimate<'py>(
@@ -140,6 +149,9 @@ pub fn map_and_estimate<'py>(
     t2_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
     gate_error_per_type: Option<&Bound<'py, PyArray1<f64>>>,
     gate_time_per_type: Option<&Bound<'py, PyArray1<f64>>>,
+    dynamic_decoupling: bool,
+    readout_error_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    readout_mitigation_factor: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
     let part_len = initial_partition.len().unwrap_or(0);
     let (num_layers, num_qubits, edge_list) = parse_sparse_tensor(gs_sparse, part_len);
@@ -177,6 +189,9 @@ pub fn map_and_estimate<'py>(
         single_gate_error_per_qubit, two_gate_error_per_pair,
         t1_per_qubit, t2_per_qubit,
         gate_error_per_type, gate_time_per_type,
+        dynamic_decoupling,
+        readout_error_per_qubit,
+        readout_mitigation_factor,
     )?;
     let fidelity = estimate_fidelity(&tensor, &routing, &params, None);
 
@@ -196,6 +211,7 @@ pub fn map_and_estimate<'py>(
     dict.set_item("algorithmic_fidelity", fidelity.algorithmic_fidelity)?;
     dict.set_item("routing_fidelity", fidelity.routing_fidelity)?;
     dict.set_item("coherence_fidelity", fidelity.coherence_fidelity)?;
+    dict.set_item("readout_fidelity", fidelity.readout_fidelity)?;
     dict.set_item("overall_fidelity", fidelity.overall_fidelity)?;
     dict.set_item("total_circuit_time_ns", fidelity.total_circuit_time)?;
 
@@ -236,7 +252,10 @@ pub fn map_and_estimate<'py>(
     t1_per_qubit = None,
     t2_per_qubit = None,
     gate_error_per_type = None,
-    gate_time_per_type = None
+    gate_time_per_type = None,
+    dynamic_decoupling = false,
+    readout_error_per_qubit = None,
+    readout_mitigation_factor = 0.0
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn estimate_hardware_fidelity<'py>(
@@ -259,6 +278,9 @@ pub fn estimate_hardware_fidelity<'py>(
     t2_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
     gate_error_per_type: Option<&Bound<'py, PyArray1<f64>>>,
     gate_time_per_type: Option<&Bound<'py, PyArray1<f64>>>,
+    dynamic_decoupling: bool,
+    readout_error_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    readout_mitigation_factor: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
     let (num_layers, num_qubits, edge_list) = parse_sparse_tensor(gs_sparse, 0);
 
@@ -278,6 +300,9 @@ pub fn estimate_hardware_fidelity<'py>(
         single_gate_error_per_qubit, two_gate_error_per_pair,
         t1_per_qubit, t2_per_qubit,
         gate_error_per_type, gate_time_per_type,
+        dynamic_decoupling,
+        readout_error_per_qubit,
+        readout_mitigation_factor,
     )?;
     let fidelity = estimate_fidelity(&tensor, &routing, &params, Some(sparse_swaps_arr));
 
@@ -286,6 +311,7 @@ pub fn estimate_hardware_fidelity<'py>(
     dict.set_item("algorithmic_fidelity", fidelity.algorithmic_fidelity)?;
     dict.set_item("routing_fidelity", fidelity.routing_fidelity)?;
     dict.set_item("coherence_fidelity", fidelity.coherence_fidelity)?;
+    dict.set_item("readout_fidelity", fidelity.readout_fidelity)?;
     dict.set_item("overall_fidelity", fidelity.overall_fidelity)?;
     dict.set_item("total_circuit_time_ns", fidelity.total_circuit_time)?;
 

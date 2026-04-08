@@ -246,6 +246,8 @@ def estimate_qusim(transp, params, per_qubit=False):
         teleportation_time_per_hop=1000.0,
         t1=params['t1'],
         t2=params['t2'],
+        dynamic_decoupling=True,
+        readout_mitigation_factor=0.95,
     )
 
     if per_qubit:
@@ -257,6 +259,7 @@ def estimate_qusim(transp, params, per_qubit=False):
             for (q1, q2), err in params['two_gate_error_per_pair'].items()
             if q1 < n and q2 < n
         }
+        kwargs['readout_error_per_qubit'] = params['readout_error_per_qubit'][:n]
 
     result = map_circuit(**kwargs)
 
@@ -267,10 +270,15 @@ def estimate_qusim(transp, params, per_qubit=False):
 
     if measured_qubits:
         fid = 1.0
+        readout_errors = kwargs.get('readout_error_per_qubit')
+        mitigation = kwargs.get('readout_mitigation_factor', 0.0)
+        residual = 1.0 - mitigation
         for q in measured_qubits:
             fid *= result.algorithmic_fidelity_grid[-1, q]
             fid *= result.routing_fidelity_grid[-1, q]
             fid *= result.coherence_fidelity_grid[-1, q]
+            if readout_errors is not None and q < len(readout_errors):
+                fid *= 1.0 - readout_errors[q] * residual
         return fid
     return result.overall_fidelity
 

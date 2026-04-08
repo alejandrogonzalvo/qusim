@@ -161,6 +161,9 @@ def map_circuit(
     t2_per_qubit: Optional[np.ndarray] = None,
     gate_error_per_type: Optional[dict[str, float]] = None,
     gate_time_per_type: Optional[dict[str, float]] = None,
+    dynamic_decoupling: bool = False,
+    readout_error_per_qubit: Optional[np.ndarray] = None,
+    readout_mitigation_factor: float = 0.0,
 ) -> QusimResult:
     """
     Map a Qiskit quantum circuit using HQA and estimate teleportation routing and hardware fidelity.
@@ -264,6 +267,9 @@ def map_circuit(
         t2_per_qubit=t2_per_qubit,
         gate_error_per_type=gate_error_arr,
         gate_time_per_type=gate_time_arr,
+        dynamic_decoupling=dynamic_decoupling,
+        readout_error_per_qubit=readout_error_per_qubit,
+        readout_mitigation_factor=readout_mitigation_factor,
     )
 
     placements = raw_dict["placements"]
@@ -305,6 +311,9 @@ def map_circuit(
         t2_per_qubit=t2_per_qubit,
         gate_error_per_type=gate_error_arr,
         gate_time_per_type=gate_time_arr,
+        dynamic_decoupling=dynamic_decoupling,
+        readout_error_per_qubit=readout_error_per_qubit,
+        readout_mitigation_factor=readout_mitigation_factor,
     )
 
     # 6. Wrap Results

@@ -29,6 +29,12 @@ pub struct ArchitectureParams {
     pub gate_error_per_type: Option<Vec<f64>>,
     /// Per-gate-type duration overrides.
     pub gate_time_per_type: Option<Vec<f64>>,
+    /// Whether dynamic decoupling is enabled (caps T2 at 2*T1).
+    pub dynamic_decoupling: bool,
+    /// Per-qubit readout error rates. Applied as (1 - err) at measurement.
+    pub readout_error_per_qubit: Option<Vec<f64>>,
+    /// How much of the readout error is mitigated (0.0 = none, 1.0 = fully mitigated).
+    pub readout_mitigation_factor: f64,
 }
 
 impl Default for ArchitectureParams {
@@ -48,6 +54,9 @@ impl Default for ArchitectureParams {
             t2_per_qubit: None,
             gate_error_per_type: None,
             gate_time_per_type: None,
+            dynamic_decoupling: false,
+            readout_error_per_qubit: None,
+            readout_mitigation_factor: 0.0,
         }
     }
 }
@@ -90,7 +99,9 @@ pub struct FidelityReport {
     pub routing_fidelity: f64,
     /// Fidelity loss from qubit idle time (T1/T2 decoherence).
     pub coherence_fidelity: f64,
-    /// Overall fidelity = algorithmic × routing × coherence.
+    /// Product of per-qubit (1 - readout_error) at measurement.
+    pub readout_fidelity: f64,
+    /// Overall fidelity = algorithmic × routing × coherence × readout.
     pub overall_fidelity: f64,
     /// Total circuit execution time in nanoseconds.
     pub total_circuit_time: f64,
@@ -173,8 +184,6 @@ pub fn estimate_fidelity(
 
     let mut overall_routing = 1.0_f64;
 
-    let mut total_circuit_time = 0.0_f64;
-
     let mut layer_details = Vec::with_capacity(num_layers);
 
     let layer_swaps = parse_sparse_swaps(sparse_swaps, num_layers);
@@ -182,6 +191,8 @@ pub fn estimate_fidelity(
     let mut algorithmic_fidelity_grid = vec![1.0_f64; num_layers * num_qubits];
     let mut routing_fidelity_grid = vec![1.0_f64; num_layers * num_qubits];
     let mut coherence_fidelity_grid = vec![1.0_f64; num_layers * num_qubits];
+
+    let mut qubit_timeline_ns = vec![0.0_f64; num_qubits];
 
     for layer in 0..num_layers {
         if layer > 0 {
@@ -205,60 +216,61 @@ pub fn estimate_fidelity(
             .collect();
         let num_teleportations = layer_teleportations.len();
 
-        let layer_time = calculate_layer_time(
-            &layer_teleportations,
-            gates,
-            &layer_swaps[layer],
-            num_qubits,
-            params,
-        );
-        total_circuit_time += layer_time;
-
-        let mut layer_busy_time = vec![0.0_f64; num_qubits];
-
-        // 1. Process computational gates (Algorithmic)
         let layer_algo_grid =
             &mut algorithmic_fidelity_grid[layer * num_qubits..(layer + 1) * num_qubits];
-        let layer_algorithmic_fidelity =
-            process_computational_gates(gates, params, &mut layer_busy_time, layer_algo_grid);
+        let layer_coh_grid =
+            &mut coherence_fidelity_grid[layer * num_qubits..(layer + 1) * num_qubits];
+        
+        let layer_algorithmic_fidelity = process_computational_gates(
+            gates,
+            params,
+            &mut qubit_timeline_ns,
+            layer_algo_grid,
+            layer_coh_grid,
+        );
 
-        // 2. Process SabreRouting injected SWAP gates (Routing Overhead)
         let layer_routing_grid =
             &mut routing_fidelity_grid[layer * num_qubits..(layer + 1) * num_qubits];
+        
         let mut layer_routing_fidelity = process_sabre_swaps(
             &layer_swaps[layer],
             params,
-            &mut layer_busy_time,
+            &mut qubit_timeline_ns,
             layer_routing_grid,
+            layer_coh_grid,
         );
 
-        // 3. Process teleportations (Routing Overhead)
         layer_routing_fidelity *= process_teleportations(
             &layer_teleportations,
             params,
-            &mut layer_busy_time,
+            &mut qubit_timeline_ns,
             layer_routing_grid,
+            layer_coh_grid,
         );
 
         overall_routing *= layer_routing_fidelity;
-
-        // 4. Update coherence based on per-layer idle time
-        let layer_coh_grid =
-            &mut coherence_fidelity_grid[layer * num_qubits..(layer + 1) * num_qubits];
-        update_busy_and_coherence(
-            layer_time,
-            params,
-            &layer_busy_time,
-            layer_coh_grid,
-        );
 
         layer_details.push(LayerFidelity {
             layer,
             num_gates,
             num_teleportations,
-            layer_time,
+            layer_time: 0.0, // Replaced by global timeline
             operational_fidelity: layer_algorithmic_fidelity * layer_routing_fidelity,
         });
+    }
+
+    // Apply trailing idle decoherence for all qubits up to the final total_circuit_time
+    let total_circuit_time = qubit_timeline_ns.iter().copied().fold(f64::NAN, f64::max);
+    if num_layers > 0 {
+        let last_layer_coh = &mut coherence_fidelity_grid[(num_layers - 1) * num_qubits..num_layers * num_qubits];
+        for q in 0..num_qubits {
+            let idle = total_circuit_time - qubit_timeline_ns[q];
+            if idle > 0.0 {
+                let q_t1 = params.t1_per_qubit.as_ref().map_or(params.t1, |v| v[q]);
+                let q_t2 = params.t2_per_qubit.as_ref().map_or(params.t2, |v| v[q]);
+                last_layer_coh[q] *= decoherence_fidelity(idle, q_t1, q_t2);
+            }
+        }
     }
 
     // Overall global coherence is the product of final coherence for all qubits
@@ -275,11 +287,20 @@ pub fn estimate_fidelity(
         }
     }
 
+    let mut readout_fidelity = 1.0_f64;
+    if let Some(ref readout_errors) = params.readout_error_per_qubit {
+        let residual = 1.0 - params.readout_mitigation_factor;
+        for q in 0..num_qubits.min(readout_errors.len()) {
+            readout_fidelity *= 1.0 - readout_errors[q] * residual;
+        }
+    }
+
     FidelityReport {
         algorithmic_fidelity: overall_algorithmic_from_grid,
         routing_fidelity: overall_routing,
         coherence_fidelity: global_coherence,
-        overall_fidelity: overall_algorithmic_from_grid * overall_routing * global_coherence,
+        readout_fidelity,
+        overall_fidelity: overall_algorithmic_from_grid * overall_routing * global_coherence * readout_fidelity,
         total_circuit_time,
         layer_details,
         algorithmic_fidelity_grid,
@@ -288,63 +309,36 @@ pub fn estimate_fidelity(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Private SRP Helpers for Hardware Fidelity Estimation
-// ---------------------------------------------------------------------------
+/// Minimum idle gap (ns) required to fit a DD echo sequence.
+/// IBM Heron XY4 needs ~4 SX gates × 35 ns ≈ 140 ns; we use a conservative 100 ns.
+const DD_MIN_IDLE_NS: f64 = 100.0;
 
 #[inline]
-fn calculate_layer_time(
-    layer_teleportations: &[&crate::routing::TeleportationEvent],
-    gates: &[(usize, usize, f64, usize)],
-    swaps: &[(usize, usize)],
-    num_qubits: usize,
+fn apply_idle_decoherence(
+    q: usize,
+    idle: f64,
     params: &ArchitectureParams,
-) -> f64 {
-    let max_distance = layer_teleportations
-        .iter()
-        .map(|e| e.network_distance)
-        .max()
-        .unwrap_or(0);
-
-    let teleportation_time = max_distance as f64 * params.teleportation_time_per_hop;
-
-    let mut gate_time = 0.0;
-    for &(u, v, _, gate_type) in gates {
-        let mut t = if u == v {
-            params.single_gate_time
-        } else {
-            params.two_gate_time
-        };
-        if let Some(ref types) = params.gate_time_per_type {
-            if gate_type < types.len() && !types[gate_type].is_nan() {
-                t = types[gate_type];
-            }
+    layer_coh_grid: &mut [f64],
+) {
+    if idle > 0.0 {
+        let q_t1 = params.t1_per_qubit.as_ref().map_or(params.t1, |v| v[q]);
+        let mut q_t2 = params.t2_per_qubit.as_ref().map_or(params.t2, |v| v[q]);
+        
+        if params.dynamic_decoupling && idle >= DD_MIN_IDLE_NS {
+            q_t2 = q_t2.max(2.0 * q_t1);
         }
-        if t > gate_time {
-            gate_time = t;
-        }
+
+        layer_coh_grid[q] *= decoherence_fidelity(idle, q_t1, q_t2);
     }
-
-    let mut swap_counts = vec![0; num_qubits];
-    for &(q1, q2) in swaps {
-        if q1 < num_qubits {
-            swap_counts[q1] += 1;
-        }
-        if q2 < num_qubits {
-            swap_counts[q2] += 1;
-        }
-    }
-    let max_swaps_in_layer = swap_counts.into_iter().max().unwrap_or(0);
-    let swap_time = max_swaps_in_layer as f64 * params.two_gate_time * 3.0; // SWAP is ~3 CX gates
-    teleportation_time + gate_time + swap_time
 }
 
 #[inline]
 fn process_computational_gates(
     gates: &[(usize, usize, f64, usize)],
     params: &ArchitectureParams,
-    layer_busy_time: &mut [f64],
+    timeline: &mut [f64],
     layer_algo_grid: &mut [f64],
+    layer_coh_grid: &mut [f64],
 ) -> f64 {
     let mut layer_algo_fidelity = 1.0;
     for &(u, v, _, gate_type) in gates {
@@ -363,8 +357,8 @@ fn process_computational_gates(
         }
 
         if u == v {
-            // Single-qubit gate: F_q = (1-λ)·F_q + λ/d, with d=2 (paper Algorithm 1)
-            layer_busy_time[u] += time;
+            apply_idle_decoherence(u, 0.0, params, layer_coh_grid); // Time shifts handled simultaneously, wait: 1Q gap is just 0 since start = timeline[u].
+            timeline[u] += time;
             let lam = depolarization_lambda(error, 2.0);
             let f_before = layer_algo_grid[u];
             layer_algo_grid[u] = (1.0 - lam) * layer_algo_grid[u] + lam / 2.0;
@@ -372,9 +366,13 @@ fn process_computational_gates(
                 layer_algo_fidelity *= layer_algo_grid[u] / f_before;
             }
         } else {
-            // Two-qubit gate: η correction (paper Eq. 25, Algorithm 1)
-            layer_busy_time[u] += time;
-            layer_busy_time[v] += time;
+            let start = timeline[u].max(timeline[v]);
+            apply_idle_decoherence(u, start - timeline[u], params, layer_coh_grid);
+            apply_idle_decoherence(v, start - timeline[v], params, layer_coh_grid);
+
+            timeline[u] = start + time;
+            timeline[v] = start + time;
+
             let lam = depolarization_lambda(error, 4.0);
             let f1 = layer_algo_grid[u];
             let f2 = layer_algo_grid[v];
@@ -403,8 +401,9 @@ fn process_computational_gates(
 fn process_sabre_swaps(
     swaps: &[(usize, usize)],
     params: &ArchitectureParams,
-    layer_busy_time: &mut [f64],
+    timeline: &mut [f64],
     layer_routing_grid: &mut [f64],
+    layer_coh_grid: &mut [f64],
 ) -> f64 {
     if swaps.is_empty() {
         return 1.0;
@@ -415,12 +414,26 @@ fn process_sabre_swaps(
     for &(q1, q2) in swaps {
         let error = params.two_gate_error_for(q1, q2);
         let f_swap = gate_fidelity(3.0 * error); // SWAP is ~3 CX gates
-        if q1 < layer_busy_time.len() {
-            layer_busy_time[q1] += params.two_gate_time * 3.0;
+        let time = params.two_gate_time * 3.0;
+        
+        let start = if q1 < timeline.len() && q2 < timeline.len() {
+            timeline[q1].max(timeline[q2])
+        } else if q1 < timeline.len() {
+            timeline[q1]
+        } else if q2 < timeline.len() {
+            timeline[q2]
+        } else {
+            0.0
+        };
+
+        if q1 < timeline.len() {
+            apply_idle_decoherence(q1, start - timeline[q1], params, layer_coh_grid);
+            timeline[q1] = start + time;
             layer_routing_grid[q1] *= f_swap;
         }
-        if q2 < layer_busy_time.len() {
-            layer_busy_time[q2] += params.two_gate_time * 3.0;
+        if q2 < timeline.len() {
+            apply_idle_decoherence(q2, start - timeline[q2], params, layer_coh_grid);
+            timeline[q2] = start + time;
             layer_routing_grid[q2] *= f_swap;
         }
         layer_routing_fidelity *= f_swap;
@@ -432,12 +445,13 @@ fn process_sabre_swaps(
 fn process_teleportations(
     layer_teleportations: &[&crate::routing::TeleportationEvent],
     params: &ArchitectureParams,
-    layer_busy_time: &mut [f64],
+    timeline: &mut [f64],
     layer_routing_grid: &mut [f64],
+    _layer_coh_grid: &mut [f64],
 ) -> f64 {
     let mut layer_routing_fidelity = 1.0;
     for event in layer_teleportations {
-        layer_busy_time[event.qubit] +=
+        timeline[event.qubit] +=
             event.network_distance as f64 * params.teleportation_time_per_hop;
 
         let f = teleportation_fidelity(params.teleportation_error_per_hop, event.network_distance);
@@ -445,24 +459,6 @@ fn process_teleportations(
         layer_routing_fidelity *= f;
     }
     layer_routing_fidelity
-}
-
-#[inline]
-fn update_busy_and_coherence(
-    layer_time: f64,
-    params: &ArchitectureParams,
-    layer_busy_time: &[f64],
-    layer_coh_grid: &mut [f64],
-) {
-    for q in 0..layer_coh_grid.len() {
-        // Idle time is how long the qubit was idle during THIS layer only
-        let layer_idle = (layer_time - layer_busy_time[q]).max(0.0);
-        if layer_idle > 0.0 {
-            let q_t1 = params.t1_per_qubit.as_ref().map_or(params.t1, |v| v[q]);
-            let q_t2 = params.t2_per_qubit.as_ref().map_or(params.t2, |v| v[q]);
-            layer_coh_grid[q] *= decoherence_fidelity(layer_idle, q_t1, q_t2);
-        }
-    }
 }
 
 #[cfg(test)]
