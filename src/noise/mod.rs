@@ -814,6 +814,47 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Bug fix: calculate_layer_time should distinguish 1Q-only vs 2Q layers
+    // -----------------------------------------------------------------------
+    #[test]
+    fn layer_with_only_1q_gates_uses_single_gate_time() {
+        // Build a minimal tensor: 2 layers, 4 qubits.
+        // Layer 0: only 1Q gates (u==v), Layer 1: has a 2Q gate (u!=v).
+        let edges = vec![
+            [0.0, 0.0, 0.0, 1.0], // layer 0: 1Q gate on q0
+            [0.0, 1.0, 1.0, 1.0], // layer 0: 1Q gate on q1
+            [1.0, 0.0, 1.0, 1.0], // layer 1: 2Q gate on (q0, q1)
+        ];
+        let tensor = InteractionTensor::from_sparse(&edges, 2, 4);
+        let routing = RoutingSummary {
+            total_teleportations: 0,
+            total_epr_pairs: 0,
+            total_network_distance: 0,
+            communications_per_timeslice: vec![0, 0],
+            events: vec![],
+        };
+
+        let params = ArchitectureParams {
+            single_gate_time: 36.0,
+            two_gate_time: 68.0,
+            t1: f64::INFINITY,
+            t2: f64::INFINITY,
+            ..Default::default()
+        };
+
+        let report = estimate_fidelity(&tensor, &routing, &params, None);
+
+        // Layer 0 (1Q only) should take single_gate_time (36ns), NOT two_gate_time (68ns).
+        // Layer 1 (has 2Q) should take two_gate_time (68ns).
+        // Total = 36 + 68 = 104ns.
+        assert!(
+            (report.total_circuit_time - 104.0).abs() < 1e-6,
+            "1Q-only layer should use single_gate_time: expected 104ns, got {}ns",
+            report.total_circuit_time
+        );
+    }
+
     #[test]
     fn per_qubit_t1t2_differs_from_uniform() {
         let path = Path::new("dse_pau/test_vectors.json");

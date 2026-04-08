@@ -235,3 +235,91 @@ class TestPerQubitBehavior:
         final_algo = result.algorithmic_fidelity_grid[-1, :]
         assert final_algo[0] < np.min(final_algo[1:]), \
             f"qubit 0 should have worst algo fidelity: {final_algo}"
+
+
+# ---------------------------------------------------------------------------
+# Virtual gate filtering (rz should not contribute error or time)
+# ---------------------------------------------------------------------------
+
+class TestVirtualGateFiltering:
+    """Virtual gates (rz, id) must be excluded from the sparse tensor."""
+
+    def test_rz_gates_excluded_from_sparse_tensor(self):
+        """rz gates should not appear in the sparse interaction tensor."""
+        from qusim import _qiskit_circ_to_sparse_list
+
+        # Build a circuit with both rz (virtual) and sx (physical) gates
+        circ = qiskit.QuantumCircuit(2)
+        circ.rz(0.5, 0)
+        circ.rz(1.0, 1)
+        circ.sx(0)
+        circ.cx(0, 1)
+
+        sparse = _qiskit_circ_to_sparse_list(circ)
+
+        # Should have 1 sx (1Q) + 1 cx (2Q) = 2 entries, NOT 4 (which includes 2 rz)
+        assert len(sparse) == 2, \
+            f"rz gates should be filtered out: expected 2 entries, got {len(sparse)}"
+
+    def test_rz_only_circuit_produces_empty_tensor(self):
+        """A circuit with only rz gates should produce an empty sparse tensor."""
+        from qusim import _qiskit_circ_to_sparse_list
+
+        circ = qiskit.QuantumCircuit(3)
+        circ.rz(0.5, 0)
+        circ.rz(1.0, 1)
+        circ.rz(0.3, 2)
+
+        sparse = _qiskit_circ_to_sparse_list(circ)
+        assert len(sparse) == 0, \
+            f"rz-only circuit should produce empty tensor, got {len(sparse)} entries"
+
+    def test_rz_does_not_affect_fidelity(self):
+        """Adding rz gates should NOT change fidelity (they are virtual/free)."""
+        nq = 3
+
+        # Circuit without rz
+        circ_no_rz = qiskit.QuantumCircuit(nq)
+        circ_no_rz.sx(0)
+        circ_no_rz.cx(0, 1)
+        circ_no_rz.sx(2)
+
+        # Same circuit with rz gates added
+        circ_with_rz = qiskit.QuantumCircuit(nq)
+        circ_with_rz.rz(0.5, 0)
+        circ_with_rz.sx(0)
+        circ_with_rz.rz(1.0, 1)
+        circ_with_rz.cx(0, 1)
+        circ_with_rz.rz(0.3, 2)
+        circ_with_rz.sx(2)
+        circ_with_rz.rz(0.7, 0)
+
+        edges = [(i, j) for i in range(nq) for j in range(i+1, nq)]
+        edges += [(j, i) for i, j in edges]
+        cmap = CouplingMap(edges)
+        core_map = {i: 0 for i in range(nq)}
+
+        kwargs = dict(
+            full_coupling_map=cmap, core_mapping=core_map,
+            seed=42, initial_placement=InitialPlacement.RANDOM,
+            single_gate_error=1e-3, two_gate_error=1e-2,
+            teleportation_error_per_hop=0.0,
+            single_gate_time=36.0, two_gate_time=68.0,
+            teleportation_time_per_hop=1000.0,
+            t1=100_000.0, t2=50_000.0,
+        )
+
+        result_no_rz = map_circuit(circuit=circ_no_rz, **kwargs)
+        result_with_rz = map_circuit(circuit=circ_with_rz, **kwargs)
+
+        assert result_no_rz.algorithmic_fidelity == pytest.approx(
+            result_with_rz.algorithmic_fidelity, abs=1e-12
+        ), "rz gates must not affect algorithmic fidelity"
+
+        assert result_no_rz.total_circuit_time_ns == pytest.approx(
+            result_with_rz.total_circuit_time_ns, abs=1e-6
+        ), "rz gates must not affect circuit time"
+
+        assert result_no_rz.overall_fidelity == pytest.approx(
+            result_with_rz.overall_fidelity, abs=1e-12
+        ), "rz gates must not affect overall fidelity"
