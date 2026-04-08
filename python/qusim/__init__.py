@@ -86,18 +86,29 @@ class QusimResult:
 
 from qusim.hqa.placement import InitialPlacement, PlacementConfig, generate_initial_placement
 
+# Gates that are virtual (zero error, zero duration) and should be excluded
+# from the interaction tensor. These are frame rotations implemented in
+# classical control electronics, not physical operations on the qubit.
+VIRTUAL_GATES = frozenset({'rz', 'id', 'delay', 'barrier', 'measure'})
+
+
 def _qiskit_circ_to_sparse_list(circ: qiskit.QuantumCircuit) -> np.ndarray:
     """
     Parses a Qiskit circuit's DAG into layers, and extracts interaction edges.
     Returns a flat (E, 4) numpy array of [layer, q1, q2, weight].
+
+    Virtual gates (rz, id, delay) are excluded — they have zero error and
+    zero duration on real hardware and must not contribute to the noise model.
     """
     dag = circuit_to_dag(circ)
     layers = [dag_to_circuit(layer['graph']) for layer in dag.layers()]
-    
+
     edges = []
-    
+
     for layer_idx, layer_as_circuit in enumerate(layers):
         for instruction in layer_as_circuit:
+            if instruction.operation.name in VIRTUAL_GATES:
+                continue
             if instruction.operation.num_qubits == 2:
                 q0 = circ.find_bit(instruction.qubits[0]).index
                 q1 = circ.find_bit(instruction.qubits[1]).index
@@ -105,10 +116,10 @@ def _qiskit_circ_to_sparse_list(circ: qiskit.QuantumCircuit) -> np.ndarray:
             elif instruction.operation.num_qubits == 1:
                 q0 = circ.find_bit(instruction.qubits[0]).index
                 edges.append([float(layer_idx), float(q0), float(q0), 1.0])
-                
+
     if len(edges) == 0:
         return np.empty((0, 4), dtype=np.float64)
-    
+
     return np.array(edges, dtype=np.float64)
 
 

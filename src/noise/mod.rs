@@ -201,7 +201,7 @@ pub fn estimate_fidelity(
 
         let layer_time = calculate_layer_time(
             &layer_teleportations,
-            num_gates,
+            gates,
             &layer_swaps[layer],
             num_qubits,
             params,
@@ -289,7 +289,7 @@ pub fn estimate_fidelity(
 #[inline]
 fn calculate_layer_time(
     layer_teleportations: &[&crate::routing::TeleportationEvent],
-    num_gates: usize,
+    gates: &[(usize, usize, f64)],
     swaps: &[(usize, usize)],
     num_qubits: usize,
     params: &ArchitectureParams,
@@ -301,8 +301,13 @@ fn calculate_layer_time(
         .unwrap_or(0);
 
     let teleportation_time = max_distance as f64 * params.teleportation_time_per_hop;
-    let gate_time = if num_gates > 0 {
+
+    let has_2q = gates.iter().any(|&(u, v, _)| u != v);
+    let has_1q = gates.iter().any(|&(u, v, _)| u == v);
+    let gate_time = if has_2q {
         params.two_gate_time
+    } else if has_1q {
+        params.single_gate_time
     } else {
         0.0
     };
