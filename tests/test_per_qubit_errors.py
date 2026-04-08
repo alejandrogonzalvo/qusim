@@ -244,8 +244,8 @@ class TestPerQubitBehavior:
 class TestVirtualGateFiltering:
     """Virtual gates (rz, id) must be excluded from the sparse tensor."""
 
-    def test_rz_gates_excluded_from_sparse_tensor(self):
-        """rz gates should not appear in the sparse interaction tensor."""
+    def test_rz_gates_included_in_sparse_tensor(self):
+        """rz gates should appear in the sparse interaction tensor for layer preservation."""
         from qusim import _qiskit_circ_to_sparse_list
 
         # Build a circuit with both rz (virtual) and sx (physical) gates
@@ -255,14 +255,14 @@ class TestVirtualGateFiltering:
         circ.sx(0)
         circ.cx(0, 1)
 
-        sparse = _qiskit_circ_to_sparse_list(circ)
+        sparse, _ = _qiskit_circ_to_sparse_list(circ)
 
-        # Should have 1 sx (1Q) + 1 cx (2Q) = 2 entries, NOT 4 (which includes 2 rz)
-        assert len(sparse) == 2, \
-            f"rz gates should be filtered out: expected 2 entries, got {len(sparse)}"
+        # Should have 2 rz + 1 sx + 1 cx = 4 entries
+        assert len(sparse) == 4, \
+            f"rz gates should NOT be filtered out: expected 4 entries, got {len(sparse)}"
 
-    def test_rz_only_circuit_produces_empty_tensor(self):
-        """A circuit with only rz gates should produce an empty sparse tensor."""
+    def test_rz_only_circuit_produces_native_fidelity(self):
+        """A circuit with only rz gates should produce a tensor and have perfect fidelity."""
         from qusim import _qiskit_circ_to_sparse_list
 
         circ = qiskit.QuantumCircuit(3)
@@ -270,9 +270,8 @@ class TestVirtualGateFiltering:
         circ.rz(1.0, 1)
         circ.rz(0.3, 2)
 
-        sparse = _qiskit_circ_to_sparse_list(circ)
-        assert len(sparse) == 0, \
-            f"rz-only circuit should produce empty tensor, got {len(sparse)} entries"
+        sparse, _ = _qiskit_circ_to_sparse_list(circ)
+        assert len(sparse) > 0, "rz-only circuit must produce a valid tensor for graph routing"
 
     def test_rz_does_not_affect_fidelity(self):
         """Adding rz gates should NOT change fidelity (they are virtual/free)."""

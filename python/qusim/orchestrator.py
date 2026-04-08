@@ -118,10 +118,13 @@ class MultiCoreOrchestrator:
         sub_dags = self._init_sub_dags(global_circuit)
                 
         for t, layer in enumerate(dag.layers()):
+            t_prev = min(t - 1, len(hqa_mapping) - 1) if t > 0 else 0
+            t_curr = min(t, len(hqa_mapping) - 1)
+            
             if t > 0:
-                self._inject_teleportation_if_moved(sub_dags, global_circuit, hqa_mapping[t-1], hqa_mapping[t], t)
+                self._inject_teleportation_if_moved(sub_dags, global_circuit, hqa_mapping[t_prev], hqa_mapping[t_curr], t)
                 
-            self._distribute_layer_ops(sub_dags, global_circuit, layer, hqa_mapping[t], t)
+            self._distribute_layer_ops(sub_dags, global_circuit, layer, hqa_mapping[t_curr], t)
                     
         return [dag_to_circuit(d) for d in sub_dags]
 

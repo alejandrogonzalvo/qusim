@@ -38,6 +38,8 @@ fn build_params<'py>(
     two_gate_error_per_pair: Option<&Bound<'py, PyDict>>,
     t1_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
     t2_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    gate_error_per_type: Option<&Bound<'py, PyArray1<f64>>>,
+    gate_time_per_type: Option<&Bound<'py, PyArray1<f64>>>,
 ) -> PyResult<ArchitectureParams> {
     Ok(ArchitectureParams {
         single_gate_error,
@@ -55,11 +57,13 @@ fn build_params<'py>(
             .transpose()?,
         t1_per_qubit: t1_per_qubit.map(|a| a.readonly().as_array().to_vec()),
         t2_per_qubit: t2_per_qubit.map(|a| a.readonly().as_array().to_vec()),
+        gate_error_per_type: gate_error_per_type.map(|a| a.readonly().as_array().to_vec()),
+        gate_time_per_type: gate_time_per_type.map(|a| a.readonly().as_array().to_vec()),
     })
 }
 
 /// Parse gs_sparse into (num_layers, num_qubits, edge_list).
-fn parse_sparse_tensor(gs_sparse: &Bound<'_, PyArray2<f64>>, extra_qubits: usize) -> (usize, usize, Vec<[f64; 4]>) {
+fn parse_sparse_tensor(gs_sparse: &Bound<'_, PyArray2<f64>>, extra_qubits: usize) -> (usize, usize, Vec<[f64; 5]>) {
     let gs_sparse_rust = gs_sparse.readonly().as_array().to_owned();
     let mut num_layers = 0;
     let mut num_qubits = 0;
@@ -83,9 +87,10 @@ fn parse_sparse_tensor(gs_sparse: &Bound<'_, PyArray2<f64>>, extra_qubits: usize
         num_qubits = extra_qubits;
     }
 
-    let mut edge_list: Vec<[f64; 4]> = Vec::with_capacity(gs_sparse_rust.shape()[0]);
+    let mut edge_list: Vec<[f64; 5]> = Vec::with_capacity(gs_sparse_rust.shape()[0]);
     for row in gs_sparse_rust.rows() {
-        edge_list.push([row[0], row[1], row[2], row[3]]);
+        let gate_type = if row.len() > 4 { row[4] } else { 0.0 };
+        edge_list.push([row[0], row[1], row[2], row[3], gate_type]);
     }
 
     (num_layers, num_qubits, edge_list)
@@ -109,7 +114,9 @@ fn parse_sparse_tensor(gs_sparse: &Bound<'_, PyArray2<f64>>, extra_qubits: usize
     single_gate_error_per_qubit = None,
     two_gate_error_per_pair = None,
     t1_per_qubit = None,
-    t2_per_qubit = None
+    t2_per_qubit = None,
+    gate_error_per_type = None,
+    gate_time_per_type = None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn map_and_estimate<'py>(
@@ -131,6 +138,8 @@ pub fn map_and_estimate<'py>(
     two_gate_error_per_pair: Option<&Bound<'py, PyDict>>,
     t1_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
     t2_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    gate_error_per_type: Option<&Bound<'py, PyArray1<f64>>>,
+    gate_time_per_type: Option<&Bound<'py, PyArray1<f64>>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let part_len = initial_partition.len().unwrap_or(0);
     let (num_layers, num_qubits, edge_list) = parse_sparse_tensor(gs_sparse, part_len);
@@ -167,6 +176,7 @@ pub fn map_and_estimate<'py>(
         t1, t2,
         single_gate_error_per_qubit, two_gate_error_per_pair,
         t1_per_qubit, t2_per_qubit,
+        gate_error_per_type, gate_time_per_type,
     )?;
     let fidelity = estimate_fidelity(&tensor, &routing, &params, None);
 
@@ -224,7 +234,9 @@ pub fn map_and_estimate<'py>(
     single_gate_error_per_qubit = None,
     two_gate_error_per_pair = None,
     t1_per_qubit = None,
-    t2_per_qubit = None
+    t2_per_qubit = None,
+    gate_error_per_type = None,
+    gate_time_per_type = None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn estimate_hardware_fidelity<'py>(
@@ -245,6 +257,8 @@ pub fn estimate_hardware_fidelity<'py>(
     two_gate_error_per_pair: Option<&Bound<'py, PyDict>>,
     t1_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
     t2_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    gate_error_per_type: Option<&Bound<'py, PyArray1<f64>>>,
+    gate_time_per_type: Option<&Bound<'py, PyArray1<f64>>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let (num_layers, num_qubits, edge_list) = parse_sparse_tensor(gs_sparse, 0);
 
@@ -263,6 +277,7 @@ pub fn estimate_hardware_fidelity<'py>(
         t1, t2,
         single_gate_error_per_qubit, two_gate_error_per_pair,
         t1_per_qubit, t2_per_qubit,
+        gate_error_per_type, gate_time_per_type,
     )?;
     let fidelity = estimate_fidelity(&tensor, &routing, &params, Some(sparse_swaps_arr));
 

@@ -24,7 +24,7 @@ fn lookahead(
     }
 
     // W: current layer — only iterate over actual gates
-    for &(i, j, _) in &active_gates[current_layer] {
+    for &(i, j, _, _) in &active_gates[current_layer] {
         result[[i, j]] = inf;
     }
 
@@ -33,7 +33,7 @@ fn lookahead(
     for l in (current_layer + 1)..end_layer {
         let distance = l - current_layer;
         let decay = 2.0_f64.powf(-(distance as f64) / sigma);
-        for &(i, j, weight) in &active_gates[l] {
+        for &(i, j, weight, _) in &active_gates[l] {
             result[[i, j]] += weight * decay;
         }
     }
@@ -42,17 +42,17 @@ fn lookahead(
 }
 
 /// Validates that all interacting qubit pairs are co-located on the same core.
-fn validate_partition(layer_gates: &[(usize, usize, f64)], p: &[i32]) -> bool {
+fn validate_partition(layer_gates: &[(usize, usize, f64, usize)], p: &[i32]) -> bool {
     layer_gates
         .iter()
-        .all(|&(i, j, w)| w <= 0.0 || p[i] == p[j])
+        .all(|&(i, j, w, _)| w <= 0.0 || p[i] == p[j])
 }
 
 /// Collects the set of qubits that participate in at least one gate this layer.
 #[inline]
-fn collect_active_qubits(layer_gates: &[(usize, usize, f64)]) -> HashSet<usize> {
+fn collect_active_qubits(layer_gates: &[(usize, usize, f64, usize)]) -> HashSet<usize> {
     let mut active = HashSet::new();
-    for &(u, v, _) in layer_gates {
+    for &(u, v, _, _) in layer_gates {
         active.insert(u);
         active.insert(v);
     }
@@ -61,10 +61,10 @@ fn collect_active_qubits(layer_gates: &[(usize, usize, f64)]) -> HashSet<usize> 
 
 /// Deduplicates and sorts gate pairs with positive interaction weight.
 #[inline]
-fn collect_edge_pairs(layer_gates: &[(usize, usize, f64)]) -> Vec<(usize, usize)> {
+fn collect_edge_pairs(layer_gates: &[(usize, usize, f64, usize)]) -> Vec<(usize, usize)> {
     let mut edge_pairs = Vec::new();
     let mut seen = HashSet::new();
-    for &(u, v, w) in layer_gates {
+    for &(u, v, w, _) in layer_gates {
         if w <= 0.0 {
             continue;
         }
@@ -122,7 +122,7 @@ impl TimesliceState {
         num_qubits: usize,
         num_cores: usize,
         core_capacities: &[usize],
-        layer_gates: &[(usize, usize, f64)],
+        layer_gates: &[(usize, usize, f64, usize)],
         lookahead_matrix: Array2<f64>,
     ) -> Self {
         let placement_row = placements.row(timeslice).to_vec();
@@ -407,8 +407,12 @@ mod tests {
         let num_cores = test_case["num_cores"].as_u64().unwrap() as usize;
         let num_layers = test_case["num_layers"].as_u64().unwrap() as usize;
 
-        let gs_sparse: Vec<[f64; 4]> =
-            serde_json::from_value(test_case["gs_sparse"].clone()).unwrap();
+        let mut gs_sparse: Vec<[f64; 5]> = Vec::new();
+        if let Ok(sparse4) = serde_json::from_value::<Vec<[f64; 4]>>(test_case["gs_sparse"].clone()) {
+            for row in sparse4 {
+                gs_sparse.push([row[0], row[1], row[2], row[3], 0.0]);
+            }
+        }
 
         let tensor = InteractionTensor::from_sparse(&gs_sparse, num_layers, num_virtual_qubits);
 

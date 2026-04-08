@@ -25,6 +25,10 @@ pub struct ArchitectureParams {
     pub t1_per_qubit: Option<Vec<f64>>,
     /// Per-qubit T2 dephasing times in nanoseconds. Falls back to scalar `t2` if None.
     pub t2_per_qubit: Option<Vec<f64>>,
+    /// Per-gate-type error rate overrides.
+    pub gate_error_per_type: Option<Vec<f64>>,
+    /// Per-gate-type duration overrides.
+    pub gate_time_per_type: Option<Vec<f64>>,
 }
 
 impl Default for ArchitectureParams {
@@ -42,6 +46,8 @@ impl Default for ArchitectureParams {
             two_gate_error_per_pair: None,
             t1_per_qubit: None,
             t2_per_qubit: None,
+            gate_error_per_type: None,
+            gate_time_per_type: None,
         }
     }
 }
@@ -289,7 +295,7 @@ pub fn estimate_fidelity(
 #[inline]
 fn calculate_layer_time(
     layer_teleportations: &[&crate::routing::TeleportationEvent],
-    gates: &[(usize, usize, f64)],
+    gates: &[(usize, usize, f64, usize)],
     swaps: &[(usize, usize)],
     num_qubits: usize,
     params: &ArchitectureParams,
@@ -302,15 +308,22 @@ fn calculate_layer_time(
 
     let teleportation_time = max_distance as f64 * params.teleportation_time_per_hop;
 
-    let has_2q = gates.iter().any(|&(u, v, _)| u != v);
-    let has_1q = gates.iter().any(|&(u, v, _)| u == v);
-    let gate_time = if has_2q {
-        params.two_gate_time
-    } else if has_1q {
-        params.single_gate_time
-    } else {
-        0.0
-    };
+    let mut gate_time = 0.0;
+    for &(u, v, _, gate_type) in gates {
+        let mut t = if u == v {
+            params.single_gate_time
+        } else {
+            params.two_gate_time
+        };
+        if let Some(ref types) = params.gate_time_per_type {
+            if gate_type < types.len() && !types[gate_type].is_nan() {
+                t = types[gate_type];
+            }
+        }
+        if t > gate_time {
+            gate_time = t;
+        }
+    }
 
     let mut swap_counts = vec![0; num_qubits];
     for &(q1, q2) in swaps {
@@ -328,17 +341,30 @@ fn calculate_layer_time(
 
 #[inline]
 fn process_computational_gates(
-    gates: &[(usize, usize, f64)],
+    gates: &[(usize, usize, f64, usize)],
     params: &ArchitectureParams,
     layer_busy_time: &mut [f64],
     layer_algo_grid: &mut [f64],
 ) -> f64 {
     let mut layer_algo_fidelity = 1.0;
-    for &(u, v, _) in gates {
+    for &(u, v, _, gate_type) in gates {
+        let mut time = if u == v { params.single_gate_time } else { params.two_gate_time };
+        if let Some(ref type_times) = params.gate_time_per_type {
+            if gate_type < type_times.len() && !type_times[gate_type].is_nan() {
+                time = type_times[gate_type];
+            }
+        }
+        
+        let mut error = if u == v { params.single_gate_error_for(u) } else { params.two_gate_error_for(u, v) };
+        if let Some(ref type_errors) = params.gate_error_per_type {
+            if gate_type < type_errors.len() && !type_errors[gate_type].is_nan() {
+                error = type_errors[gate_type];
+            }
+        }
+
         if u == v {
             // Single-qubit gate: F_q = (1-λ)·F_q + λ/d, with d=2 (paper Algorithm 1)
-            layer_busy_time[u] += params.single_gate_time;
-            let error = params.single_gate_error_for(u);
+            layer_busy_time[u] += time;
             let lam = depolarization_lambda(error, 2.0);
             let f_before = layer_algo_grid[u];
             layer_algo_grid[u] = (1.0 - lam) * layer_algo_grid[u] + lam / 2.0;
@@ -347,9 +373,8 @@ fn process_computational_gates(
             }
         } else {
             // Two-qubit gate: η correction (paper Eq. 25, Algorithm 1)
-            layer_busy_time[u] += params.two_gate_time;
-            layer_busy_time[v] += params.two_gate_time;
-            let error = params.two_gate_error_for(u, v);
+            layer_busy_time[u] += time;
+            layer_busy_time[v] += time;
             let lam = depolarization_lambda(error, 4.0);
             let f1 = layer_algo_grid[u];
             let f2 = layer_algo_grid[v];
@@ -460,7 +485,12 @@ mod tests {
         let num_cores = tc["num_cores"].as_u64().unwrap() as usize;
         let num_layers = tc["num_layers"].as_u64().unwrap() as usize;
 
-        let gs_sparse: Vec<[f64; 4]> = serde_json::from_value(tc["gs_sparse"].clone()).unwrap();
+        let mut gs_sparse: Vec<[f64; 5]> = Vec::new();
+        if let Ok(sparse4) = serde_json::from_value::<Vec<[f64; 4]>>(tc["gs_sparse"].clone()) {
+            for row in sparse4 {
+                gs_sparse.push([row[0], row[1], row[2], row[3], 0.0]);
+            }
+        }
         let tensor = InteractionTensor::from_sparse(&gs_sparse, num_layers, num_qubits);
 
         let initial_partition: Vec<i32> =
@@ -555,7 +585,12 @@ mod tests {
         let num_cores = tc["num_cores"].as_u64().unwrap() as usize;
         let num_layers = tc["num_layers"].as_u64().unwrap() as usize;
 
-        let gs_sparse: Vec<[f64; 4]> = serde_json::from_value(tc["gs_sparse"].clone()).unwrap();
+        let mut gs_sparse: Vec<[f64; 5]> = Vec::new();
+        if let Ok(sparse4) = serde_json::from_value::<Vec<[f64; 4]>>(tc["gs_sparse"].clone()) {
+            for row in sparse4 {
+                gs_sparse.push([row[0], row[1], row[2], row[3], 0.0]);
+            }
+        }
         let tensor = InteractionTensor::from_sparse(&gs_sparse, num_layers, num_qubits);
 
         let initial_partition: Vec<i32> =
@@ -614,7 +649,12 @@ mod tests {
         let num_cores = tc["num_cores"].as_u64().unwrap() as usize;
         let num_layers = tc["num_layers"].as_u64().unwrap() as usize;
 
-        let gs_sparse: Vec<[f64; 4]> = serde_json::from_value(tc["gs_sparse"].clone()).unwrap();
+        let mut gs_sparse: Vec<[f64; 5]> = Vec::new();
+        if let Ok(sparse4) = serde_json::from_value::<Vec<[f64; 4]>>(tc["gs_sparse"].clone()) {
+            for row in sparse4 {
+                gs_sparse.push([row[0], row[1], row[2], row[3], 0.0]);
+            }
+        }
         let tensor = InteractionTensor::from_sparse(&gs_sparse, num_layers, num_qubits);
 
         let initial_partition: Vec<i32> =
@@ -698,7 +738,7 @@ mod tests {
         let mut pair_map = HashMap::new();
         // Populate with all pairs that appear in the tensor
         for layer in 0..tensor.num_layers() {
-            for &(u, v, _) in tensor.layer_gates(layer) {
+            for &(u, v, _, _) in tensor.layer_gates(layer) {
                 if u != v {
                     pair_map.insert((u, v), scalar_params.two_gate_error);
                     pair_map.insert((v, u), scalar_params.two_gate_error);
@@ -771,7 +811,7 @@ mod tests {
         use std::collections::HashMap;
         let mut pair_map = HashMap::new();
         for layer in 0..tensor.num_layers() {
-            for &(u, v, _) in tensor.layer_gates(layer) {
+            for &(u, v, _, _) in tensor.layer_gates(layer) {
                 if u != v {
                     let bad_error = (uniform_params.two_gate_error * 10.0).min(1.0);
                     pair_map.insert((u, v), bad_error);
@@ -827,9 +867,9 @@ mod tests {
         // Build a minimal tensor: 2 layers, 4 qubits.
         // Layer 0: only 1Q gates (u==v), Layer 1: has a 2Q gate (u!=v).
         let edges = vec![
-            [0.0, 0.0, 0.0, 1.0], // layer 0: 1Q gate on q0
-            [0.0, 1.0, 1.0, 1.0], // layer 0: 1Q gate on q1
-            [1.0, 0.0, 1.0, 1.0], // layer 1: 2Q gate on (q0, q1)
+            [0.0, 0.0, 0.0, 1.0, 0.0], // layer 0: 1Q gate on q0
+            [0.0, 1.0, 1.0, 1.0, 0.0], // layer 0: 1Q gate on q1
+            [1.0, 0.0, 1.0, 1.0, 0.0], // layer 1: 2Q gate on (q0, q1)
         ];
         let tensor = InteractionTensor::from_sparse(&edges, 2, 4);
         let routing = RoutingSummary {
@@ -871,7 +911,12 @@ mod tests {
         let num_cores = tc["num_cores"].as_u64().unwrap() as usize;
         let num_layers = tc["num_layers"].as_u64().unwrap() as usize;
 
-        let gs_sparse: Vec<[f64; 4]> = serde_json::from_value(tc["gs_sparse"].clone()).unwrap();
+        let mut gs_sparse: Vec<[f64; 5]> = Vec::new();
+        if let Ok(sparse4) = serde_json::from_value::<Vec<[f64; 4]>>(tc["gs_sparse"].clone()) {
+            for row in sparse4 {
+                gs_sparse.push([row[0], row[1], row[2], row[3], 0.0]);
+            }
+        }
         let tensor = InteractionTensor::from_sparse(&gs_sparse, num_layers, num_qubits);
 
         let initial_partition: Vec<i32> =
