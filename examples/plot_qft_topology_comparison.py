@@ -160,8 +160,8 @@ def plot_qft_topology_comparison():
     )
     plt.tight_layout()
 
-    out_file = "qft30_topology_comparison.png"
-    plt.savefig(out_file, dpi=300)
+    out_file = "examples/qft30_topology_comparison.png"
+    plt.savefig(out_file, dpi=150)
     print(f"Side-by-side plots saved to {out_file}")
 
 

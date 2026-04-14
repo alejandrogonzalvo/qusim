@@ -163,10 +163,22 @@ class MultiCoreOrchestrator:
             sub_dags[dst_core].apply_operation_back(TeledataRecv(src_core, t), [qubit])
 
     def _inject_magnet_pull(self, sub_dags: List[DAGCircuit], global_circuit: QuantumCircuit, prev_mapping: List[int], dst_core: int, src_core: int, qubit):
+        """
+        Injects a dummy two-qubit gate to bias SABRE toward routing the teleporting
+        qubit close to the core boundary before the teleportation occurs.
+
+        The trick: before emitting a TeledataSend, we insert a fake CX ('dummy_cx')
+        between the departing qubit and a qubit that already lives on the destination
+        core. SABRE sees this as a two-qubit dependency and tries to bring the two
+        operands adjacent — which effectively pulls the departing qubit toward the
+        boundary node, minimising the number of real SWAPs needed to reach the
+        teleportation point. The dummy_cx is stripped from the routed circuit by
+        _strip_dummy_cx before SWAP extraction.
+        """
         magnets_in_dst = [i for i, c in enumerate(prev_mapping) if c == dst_core]
         if not magnets_in_dst:
             return
-            
+
         magnet_q = global_circuit.qubits[magnets_in_dst[0]]
         dummy_cx = Instruction("dummy_cx", 2, 0, [])
         sub_dags[src_core].apply_operation_back(dummy_cx, [qubit, magnet_q])

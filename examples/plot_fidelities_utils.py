@@ -145,7 +145,11 @@ def simulate_and_plot(circuit, config: SimulationConfig):
     print(f"Algorithmic Fidelity: {result.algorithmic_fidelity:.4e}")
     print(f"Routing Fidelity:     {result.routing_fidelity:.4e}")
 
-    fig, axes = plt.subplots(4, 1, figsize=(12, 16), sharex=True)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True)
+    ax_overall  = axes[0, 0]
+    ax_algo     = axes[0, 1]
+    ax_routing  = axes[1, 0]
+    ax_coherence= axes[1, 1]
 
     nq = circuit.num_qubits
     # Plotting loop
@@ -153,25 +157,26 @@ def simulate_and_plot(circuit, config: SimulationConfig):
         algo_curve, route_curve, coh_curve = result.get_qubit_fidelity_over_time(q)
         overall_curve = algo_curve * route_curve * coh_curve
 
-        axes[0].plot(overall_curve, alpha=0.5, linewidth=1.0)
-        axes[1].plot(algo_curve, alpha=0.5, linewidth=1.0)
-        axes[2].plot(route_curve, alpha=0.5, linewidth=1.0)
-        axes[3].plot(coh_curve, alpha=0.5, linewidth=1.0)
+        ax_overall.plot(overall_curve, alpha=0.5, linewidth=1.0)
+        ax_algo.plot(algo_curve, alpha=0.5, linewidth=1.0)
+        ax_routing.plot(route_curve, alpha=0.5, linewidth=1.0)
+        ax_coherence.plot(coh_curve, alpha=0.5, linewidth=1.0)
 
     # Formatting
-    axes[0].set_title("Overall Fidelity")
-    axes[1].set_title("Algorithmic Fidelity (Native 1Q/2Q Logic Gates)")
-    axes[2].set_title("Routing Fidelity (SABRE SWAPs & Teleportation EPRs)")
-    axes[3].set_title("Coherence Fidelity (T1/T2 Relaxation)")
+    ax_overall.set_title("Overall Fidelity")
+    ax_algo.set_title("Algorithmic Fidelity (Native 1Q/2Q Logic Gates)")
+    ax_routing.set_title("Routing Fidelity (SABRE SWAPs & Teleportation EPRs)")
+    ax_coherence.set_title("Coherence Fidelity (T1/T2 Relaxation)")
 
-    for ax in axes:
+    for ax in axes.flat:
         ax.set_ylabel("Fidelity")
         ax.grid(True, linestyle="--", alpha=0.7)
 
-    axes[3].set_xlabel("Circuit Layer")
+    ax_routing.set_xlabel("Circuit Layer")
+    ax_coherence.set_xlabel("Circuit Layer")
 
     plt.suptitle(config.title)
     plt.tight_layout()
 
-    plt.savefig(config.out_file, dpi=300)
+    plt.savefig(config.out_file, dpi=600)
     print(f"Split plots saved to {config.out_file}")

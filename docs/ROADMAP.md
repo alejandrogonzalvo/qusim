@@ -8,6 +8,14 @@ Status legend: **done** | **in progress** | planned
 
 ## High Priority
 
+### TeleSABRE integration — planned
+
+The current two-stage pipeline (HQA global placement → SABRE intra-core routing) treats inter-core teleportations and intra-core SWAPs as independent passes. TeleSABRE is a unified router that natively handles both local SWAP insertion and inter-core teleportation in a single pass, potentially reducing total communication overhead compared to the decoupled approach.
+
+Integration would replace the `MultiCoreOrchestrator` with TeleSABRE as the routing backend, while keeping the HQA placement table as the initial assignment fed into the router. The Rust fidelity engine would remain unchanged — it already accepts a generic sparse SWAP/teleportation event list.
+
+**Effort:** Medium — requires adapting TeleSABRE's output event format to the existing sparse tensor interface.
+
 ### Per-qubit and per-pair gate error rates — **done**
 
 Real backends have wildly varying gate errors across qubits. IBM Q calibration data provides per-qubit `sx` errors and per-pair `cx` errors.
