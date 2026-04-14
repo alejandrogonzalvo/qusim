@@ -35,7 +35,7 @@ jobs:
     - name: Build and install Rust extension
       run: |
         pip install maturin
-        maturin develop --release
+        poetry run maturin develop --release
 
     - name: Run Python Benchmarks/Tests
       run: poetry run pytest dse_pau/bench_python_hqa.py
