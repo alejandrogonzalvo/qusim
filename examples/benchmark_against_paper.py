@@ -64,6 +64,10 @@ def load_paper_data(data_file):
     }
 
 
+# Gates that are virtual (zero error, zero duration) on real hardware.
+VIRTUAL_GATES = frozenset({'rz', 'id', 'delay', 'barrier', 'measure'})
+
+
 # ---------------------------------------------------------------------------
 # ESP model with thermal (uniform error rates)
 # ---------------------------------------------------------------------------
@@ -81,6 +85,9 @@ def estimate_esp_thermal(circ):
         for gate in layer:
             if 'measure' in gate.operation.name:
                 measured_qubits.add(circ.find_bit(gate.qubits[0]).index)
+                continue
+
+            if gate.operation.name in VIRTUAL_GATES:
                 continue
 
             if gate.operation.num_qubits == 1:
@@ -121,6 +128,9 @@ def estimate_depol_thermal(circ):
         for gate in layer:
             if 'measure' in gate.operation.name:
                 measured_qubits.add(circ.find_bit(gate.qubits[0]).index)
+                continue
+
+            if gate.operation.name in VIRTUAL_GATES:
                 continue
 
             if gate.operation.num_qubits == 1:

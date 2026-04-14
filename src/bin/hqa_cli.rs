@@ -14,7 +14,7 @@ struct HqaInput {
     num_cores: usize,
     num_layers: usize,
 
-    gs_sparse: Vec<[f64; 4]>,
+    gs_sparse: Vec<Vec<f64>>,
 
     input_initial_partition: Vec<i32>,
     input_core_capacities: Vec<usize>,
@@ -46,7 +46,12 @@ fn main() -> io::Result<()> {
     let num_qubits = input.num_virtual_qubits;
     let num_cores = input.num_cores;
 
-    let tensor = InteractionTensor::from_sparse(&input.gs_sparse, num_layers, num_qubits);
+    let gs_sparse: Vec<[f64; 5]> = input
+        .gs_sparse
+        .iter()
+        .map(|e| [e[0], e[1], e[2], e[3], if e.len() > 4 { e[4] } else { 0.0 }])
+        .collect();
+    let tensor = InteractionTensor::from_sparse(&gs_sparse, num_layers, num_qubits);
 
     let dist_flat: Vec<i32> = input.input_distance_matrix.into_iter().flatten().collect();
     let dist_array = Array2::from_shape_vec((num_cores, num_cores), dist_flat)

@@ -10,17 +10,15 @@ def load_test_case(name):
     test_case = data[name]
     num_virtual_qubits = test_case["num_virtual_qubits"]
     num_cores = test_case["num_cores"]
-    input_circuit = test_case["input_circuit"]
-    
-    # Reconstruct Gs sparse representation
-    gs_list = []
-    for slice_edges in input_circuit:
-        g_dense = np.zeros((num_virtual_qubits, num_virtual_qubits))
-        for u, v, w in slice_edges:
-            g_dense[int(u), int(v)] = w
-        gs_list.append(sparse.COO.from_numpy(g_dense))
-    
-    gs = sparse.stack(gs_list)
+    num_layers = test_case["num_layers"]
+
+    # Reconstruct Gs sparse representation from flat [layer, q1, q2, weight] entries
+    gs_list = [np.zeros((num_virtual_qubits, num_virtual_qubits)) for _ in range(num_layers)]
+    for entry in test_case["gs_sparse"]:
+        layer, u, v, w = int(entry[0]), int(entry[1]), int(entry[2]), entry[3]
+        if layer < num_layers:
+            gs_list[layer][u, v] = w
+    gs = sparse.stack([sparse.COO.from_numpy(g) for g in gs_list])
         
     ps_init = np.array(test_case["input_initial_partition"])
     num_slices = len(gs)

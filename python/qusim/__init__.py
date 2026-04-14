@@ -86,30 +86,51 @@ class QusimResult:
 
 from qusim.hqa.placement import InitialPlacement, PlacementConfig, generate_initial_placement
 
-def _qiskit_circ_to_sparse_list(circ: qiskit.QuantumCircuit) -> np.ndarray:
+# Gates that are virtual (zero error, zero duration) and should be excluded
+# from the interaction tensor. These are frame rotations implemented in
+# classical control electronics, not physical operations on the qubit.
+VIRTUAL_GATES = frozenset({'rz', 'id', 'delay', 'barrier', 'measure'})
+
+
+def _qiskit_circ_to_sparse_list(circ: qiskit.QuantumCircuit) -> tuple[np.ndarray, list[str]]:
     """
     Parses a Qiskit circuit's DAG into layers, and extracts interaction edges.
-    Returns a flat (E, 4) numpy array of [layer, q1, q2, weight].
+    Returns a flat (E, 5) numpy array of [layer, q1, q2, weight, gate_type] and
+    a list of unique gate names indexed by gate_type.
+
+    Measure and barrier are excluded. Virtual gates (rz, id, delay) are preserved
+    to maintain graph layer alignment, but receive 0.0 duration and 0.0 error later.
     """
     dag = circuit_to_dag(circ)
     layers = [dag_to_circuit(layer['graph']) for layer in dag.layers()]
-    
+
     edges = []
-    
+    gate_names = []
+    gate_name_to_id = {}
+
     for layer_idx, layer_as_circuit in enumerate(layers):
         for instruction in layer_as_circuit:
+            name = instruction.operation.name
+            if name in {'measure', 'barrier'}:
+                continue
+            
+            if name not in gate_name_to_id:
+                gate_name_to_id[name] = len(gate_names)
+                gate_names.append(name)
+            gate_id = float(gate_name_to_id[name])
+
             if instruction.operation.num_qubits == 2:
                 q0 = circ.find_bit(instruction.qubits[0]).index
                 q1 = circ.find_bit(instruction.qubits[1]).index
-                edges.append([float(layer_idx), float(q0), float(q1), 1.0])
+                edges.append([float(layer_idx), float(q0), float(q1), 1.0, gate_id])
             elif instruction.operation.num_qubits == 1:
                 q0 = circ.find_bit(instruction.qubits[0]).index
-                edges.append([float(layer_idx), float(q0), float(q0), 1.0])
-                
+                edges.append([float(layer_idx), float(q0), float(q0), 1.0, gate_id])
+
     if len(edges) == 0:
-        return np.empty((0, 4), dtype=np.float64)
-    
-    return np.array(edges, dtype=np.float64)
+        return np.empty((0, 5), dtype=np.float64), gate_names
+
+    return np.array(edges, dtype=np.float64), gate_names
 
 
 def _all_to_all_topology(n: int) -> np.ndarray:
@@ -134,8 +155,15 @@ def map_circuit(
     teleportation_time_per_hop: float = 1000.0,
     t1: float = 100_000.0,
     t2: float = 50_000.0,
+    single_gate_error_per_qubit: Optional[np.ndarray] = None,
+    two_gate_error_per_pair: Optional[dict[tuple[int, int], float]] = None,
     t1_per_qubit: Optional[np.ndarray] = None,
     t2_per_qubit: Optional[np.ndarray] = None,
+    gate_error_per_type: Optional[dict[str, float]] = None,
+    gate_time_per_type: Optional[dict[str, float]] = None,
+    dynamic_decoupling: bool = False,
+    readout_error_per_qubit: Optional[np.ndarray] = None,
+    readout_mitigation_factor: float = 0.0,
 ) -> QusimResult:
     """
     Map a Qiskit quantum circuit using HQA and estimate teleportation routing and hardware fidelity.
@@ -159,12 +187,24 @@ def map_circuit(
         teleportation_time_per_hop (float): Communication EPR networking traversal nanoseconds dictating `T1`/`T2` accumulation scaling rates.
         t1 (float): Hardware T1 characteristic exponential scaling time constant.
         t2 (float): Hardware T2 decoherence characteristic timeline.
+        single_gate_error_per_qubit (Optional[np.ndarray]): Per-qubit 1Q error rates, shape (num_qubits,). Falls back to scalar single_gate_error if None.
+        two_gate_error_per_pair (Optional[dict[tuple[int,int], float]]): Per-pair 2Q error rates keyed by (q1, q2). Falls back to scalar two_gate_error for missing pairs.
+        t1_per_qubit (Optional[np.ndarray]): Per-qubit T1 relaxation times in ns.
+        t2_per_qubit (Optional[np.ndarray]): Per-qubit T2 dephasing times in ns.
 
     Returns:
         QusimResult: Structured simulation payload metrics including multidimensional matrices isolating individual qubit drop footprints across layers.
     """
     # 1. Parse Circuit to NumPy slices
-    gs_sparse = _qiskit_circ_to_sparse_list(circuit)
+    gs_sparse, gate_names = _qiskit_circ_to_sparse_list(circuit)
+
+    _default_errors = {'rz': 0.0, 'id': 0.0, 'delay': 0.0}
+    _default_times = {'rz': 0.0, 'id': 0.0, 'delay': 0.0}
+    merged_errors = {**_default_errors, **(gate_error_per_type or {})}
+    merged_times = {**_default_times, **(gate_time_per_type or {})}
+
+    gate_error_arr = np.array([merged_errors.get(name, np.nan) for name in gate_names], dtype=np.float64)
+    gate_time_arr = np.array([merged_times.get(name, np.nan) for name in gate_names], dtype=np.float64)
 
     # 2. Setup inputs
     num_cores = max(core_mapping.values()) + 1 if core_mapping else 0
@@ -221,8 +261,15 @@ def map_circuit(
         teleportation_time_per_hop=teleportation_time_per_hop,
         t1=t1,
         t2=t2,
+        single_gate_error_per_qubit=single_gate_error_per_qubit,
+        two_gate_error_per_pair=two_gate_error_per_pair,
         t1_per_qubit=t1_per_qubit,
         t2_per_qubit=t2_per_qubit,
+        gate_error_per_type=gate_error_arr,
+        gate_time_per_type=gate_time_arr,
+        dynamic_decoupling=dynamic_decoupling,
+        readout_error_per_qubit=readout_error_per_qubit,
+        readout_mitigation_factor=readout_mitigation_factor,
     )
 
     placements = raw_dict["placements"]
@@ -258,8 +305,15 @@ def map_circuit(
         teleportation_time_per_hop=teleportation_time_per_hop,
         t1=t1,
         t2=t2,
+        single_gate_error_per_qubit=single_gate_error_per_qubit,
+        two_gate_error_per_pair=two_gate_error_per_pair,
         t1_per_qubit=t1_per_qubit,
         t2_per_qubit=t2_per_qubit,
+        gate_error_per_type=gate_error_arr,
+        gate_time_per_type=gate_time_arr,
+        dynamic_decoupling=dynamic_decoupling,
+        readout_error_per_qubit=readout_error_per_qubit,
+        readout_mitigation_factor=readout_mitigation_factor,
     )
 
     # 6. Wrap Results

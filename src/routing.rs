@@ -102,7 +102,11 @@ mod tests {
         let num_cores = tc["num_cores"].as_u64().unwrap() as usize;
         let num_layers = tc["num_layers"].as_u64().unwrap() as usize;
 
-        let gs_sparse: Vec<[f64; 4]> = serde_json::from_value(tc["gs_sparse"].clone()).unwrap();
+        let gs_sparse_raw: Vec<Vec<f64>> = serde_json::from_value(tc["gs_sparse"].clone()).unwrap();
+        let gs_sparse: Vec<[f64; 5]> = gs_sparse_raw
+            .iter()
+            .map(|e| [e[0], e[1], e[2], e[3], if e.len() > 4 { e[4] } else { 0.0 }])
+            .collect();
         let tensor = InteractionTensor::from_sparse(&gs_sparse, num_layers, num_qubits);
 
         let initial_partition: Vec<i32> =
