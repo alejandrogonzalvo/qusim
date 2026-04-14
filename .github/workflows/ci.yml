@@ -24,16 +24,18 @@ jobs:
         echo "$HOME/.local/bin" >> $GITHUB_PATH
 
     - name: Install Python dependencies
-      run: poetry install
+      run: poetry install --no-root
 
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Build Rust
-      run: cargo build --release
-
     - name: Run Rust Tests (Validation)
       run: cargo test --release -- --nocapture
+
+    - name: Build and install Rust extension
+      run: |
+        pip install maturin
+        maturin develop --release
 
     - name: Run Python Benchmarks/Tests
       run: poetry run pytest dse_pau/bench_python_hqa.py
