@@ -86,6 +86,9 @@ impl TeleSabre {
         let initial_virt_to_core: Vec<i32> = if r.initial_virt_to_core.is_null() || num_vqubits == 0 {
             vec![]
         } else {
+            // Safety: pointer is non-null, length is > 0, and the slice is
+            // valid until result_free (called below). .to_vec()/.collect()
+            // copies data into Rust-owned heap before C memory is released.
             unsafe { std::slice::from_raw_parts(r.initial_virt_to_core, num_vqubits).to_vec() }
         };
 
@@ -93,6 +96,9 @@ impl TeleSabre {
             if r.teleport_events.is_null() || r.num_teleport_events == 0 {
                 vec![]
             } else {
+                // Safety: pointer is non-null, length is > 0, and the slice is
+                // valid until result_free (called below). .to_vec()/.collect()
+                // copies data into Rust-owned heap before C memory is released.
                 unsafe {
                     std::slice::from_raw_parts(r.teleport_events, r.num_teleport_events)
                         .iter()
@@ -105,6 +111,9 @@ impl TeleSabre {
             if r.swap_events.is_null() || r.num_swap_events == 0 {
                 vec![]
             } else {
+                // Safety: pointer is non-null, length is > 0, and the slice is
+                // valid until result_free (called below). .to_vec()/.collect()
+                // copies data into Rust-owned heap before C memory is released.
                 unsafe {
                     std::slice::from_raw_parts(r.swap_events, r.num_swap_events)
                         .iter()
@@ -113,16 +122,24 @@ impl TeleSabre {
                 }
             };
 
+        // Capture all scalar fields before result_free, which may zero the struct.
+        let num_teledata  = r.num_teledata;
+        let num_telegate  = r.num_telegate;
+        let num_swaps     = r.num_swaps;
+        let depth         = r.depth;
+        let num_deadlocks = r.num_deadlocks;
+        let success       = r.success;
+
         // Free C-owned heap memory now that we've copied everything.
         unsafe { ffi::result_free(&mut r as *mut ffi::ResultT) };
 
         TeleSabreResult {
-            num_teledata: r.num_teledata,
-            num_telegate: r.num_telegate,
-            num_swaps: r.num_swaps,
-            depth: r.depth,
-            num_deadlocks: r.num_deadlocks,
-            success: r.success,
+            num_teledata,
+            num_telegate,
+            num_swaps,
+            depth,
+            num_deadlocks,
+            success,
             initial_virt_to_core,
             teleport_events,
             swap_events,
