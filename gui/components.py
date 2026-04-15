@@ -448,7 +448,7 @@ def _make_threshold_inputs() -> list:
                         style={"display": "flex", "alignItems": "center", "gap": "6px",
                                "marginBottom": "4px"},
                         children=[
-                            dcc.Input(
+                            html.Input(
                                 id=f"cfg-threshold-color-{i}",
                                 type="color",
                                 value=default_color,
