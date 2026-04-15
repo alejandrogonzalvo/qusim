@@ -1053,6 +1053,7 @@ def build_figure(
     view_type: str | None = None,
     thresholds: list[float] | None = None,
     threshold_colors: list[str] | None = None,
+    frozen_z: float | None = None,
 ) -> go.Figure:
     if sweep_data is None:
         return plot_empty()
@@ -1099,6 +1100,48 @@ def build_figure(
                         x_values=np.array(sweep_data["xs"]),
                         y_values=np.array(sweep_data["ys"]),
                         grid=sweep_data["grid"],
+                        metric_key1=sweep_data["metric_keys"][0],
+                        metric_key2=sweep_data["metric_keys"][1],
+                        output_key=output_key,
+                    )
+            elif num_metrics == 3 and view_type in ("frozen_heatmap", "frozen_contour"):
+                from gui.interpolation import (
+                    frozen_slice,
+                    frozen_view_base,
+                    sweep_to_interp_grid,
+                )
+                igrid = sweep_to_interp_grid(sweep_data, output_key)
+                z_val = frozen_z if frozen_z is not None else (
+                    (sweep_data["zs"][0] + sweep_data["zs"][-1]) / 2
+                )
+                vals_3d = np.array(igrid["values"])
+                slice_2d = frozen_slice(
+                    vals_3d,
+                    np.array(igrid["xs"]),
+                    np.array(igrid["ys"]),
+                    np.array(igrid["zs"]),
+                    z_val,
+                )
+                base_view = frozen_view_base(view_type)
+                slice_grid = [[{output_key: float(slice_2d[j, i])}
+                               for j in range(slice_2d.shape[0])]
+                              for i in range(slice_2d.shape[1])]
+                if base_view == "contour":
+                    fig = plot_2d_contour(
+                        x_values=np.array(sweep_data["xs"]),
+                        y_values=np.array(sweep_data["ys"]),
+                        grid=slice_grid,
+                        metric_key1=sweep_data["metric_keys"][0],
+                        metric_key2=sweep_data["metric_keys"][1],
+                        output_key=output_key,
+                        thresholds=thresholds,
+                        threshold_colors=_tc,
+                    )
+                else:
+                    fig = plot_2d(
+                        x_values=np.array(sweep_data["xs"]),
+                        y_values=np.array(sweep_data["ys"]),
+                        grid=slice_grid,
                         metric_key1=sweep_data["metric_keys"][0],
                         metric_key2=sweep_data["metric_keys"][1],
                         output_key=output_key,

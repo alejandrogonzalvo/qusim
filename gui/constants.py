@@ -174,6 +174,8 @@ VIEW_TABS: dict[int, list[dict]] = {
     3: [
         {"value": "scatter3d", "label": "Scatter"},
         {"value": "isosurface", "label": "Isosurface"},
+        {"value": "frozen_heatmap", "label": "Frozen Heat"},
+        {"value": "frozen_contour", "label": "Frozen Ctr"},
     ],
 }
 

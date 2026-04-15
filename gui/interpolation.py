@@ -240,6 +240,9 @@ def sweep_to_interp_grid(sweep_data: dict, output_key: str) -> dict:
 # ---------------------------------------------------------------------------
 
 _2D_VIEWS = {"heatmap", "contour"}
+_FROZEN_VIEWS = {"frozen_heatmap", "frozen_contour"}
+_FROZEN_TO_BASE = {"frozen_heatmap": "heatmap", "frozen_contour": "contour"}
+
 
 def pick_frozen_axis(num_axes: int, view_type: str) -> int | None:
     """Decide which axis to freeze when displaying a 2D view of 3D data.
@@ -249,3 +252,35 @@ def pick_frozen_axis(num_axes: int, view_type: str) -> int | None:
     if num_axes == 3 and view_type in _2D_VIEWS:
         return 2
     return None
+
+
+def is_frozen_view(view_type: str) -> bool:
+    """Return True if the view type is a frozen-slider view."""
+    return view_type in _FROZEN_VIEWS
+
+
+def frozen_view_base(view_type: str) -> str:
+    """Map a frozen view type to its underlying 2D view type."""
+    return _FROZEN_TO_BASE.get(view_type, view_type)
+
+
+def frozen_slider_config(sweep_data: dict) -> dict | None:
+    """Return frozen slider configuration for a 3D sweep, or None if not 3D.
+
+    Returns dict with keys: min, max, default, metric_key, step.
+    """
+    metric_keys = sweep_data.get("metric_keys", [])
+    if len(metric_keys) != 3:
+        return None
+    zs = sweep_data.get("zs", [])
+    if len(zs) < 2:
+        return None
+    z_min = float(zs[0])
+    z_max = float(zs[-1])
+    return {
+        "min": z_min,
+        "max": z_max,
+        "default": (z_min + z_max) / 2,
+        "metric_key": metric_keys[2],
+        "step": (z_max - z_min) / max(1, len(zs) - 1) / 4,
+    }
