@@ -128,9 +128,11 @@ def _left_sidebar() -> html.Div:
         },
         children=[
             html.Div("Sweep Axes", style={
-                "fontSize": "10px", "fontWeight": "700",
+                "fontSize": "11px", "fontWeight": "700",
                 "textTransform": "uppercase", "letterSpacing": "0.08em",
-                "color": COLORS["text_muted"], "marginBottom": "10px",
+                "color": COLORS["accent"], "marginBottom": "8px",
+                "paddingBottom": "6px",
+                "borderBottom": f"1px solid {COLORS['border']}",
             }),
             # Always render all 3 rows; show/hide via 'display'
             html.Div(id="metric-row-wrap-0", children=[make_metric_selector(0)]),
@@ -226,21 +228,30 @@ def _center_panel() -> html.Div:
 
 def _right_panel() -> html.Div:
     return html.Div(
-        className="config-scroll",
         style={
             "width": "270px",
             "minWidth": "250px",
             "background": COLORS["bg"],
             "borderLeft": f"1px solid {COLORS['border']}",
-            "padding": "14px 12px",
+            "padding": "14px 12px 0",
+            "display": "flex",
+            "flexDirection": "column",
+            "overflow": "hidden",
         },
         children=[
             html.Div("Configuration", style={
-                "fontSize": "10px", "fontWeight": "700",
+                "fontSize": "11px", "fontWeight": "700",
                 "textTransform": "uppercase", "letterSpacing": "0.08em",
-                "color": COLORS["text_muted"], "marginBottom": "10px",
+                "color": COLORS["accent"], "marginBottom": "8px",
+                "paddingBottom": "6px",
+                "borderBottom": f"1px solid {COLORS['border']}",
             }),
-            html.Div(id="fixed-config-container", children=[make_fixed_config_panel()]),
+            html.Div(
+                id="fixed-config-container",
+                className="config-scroll",
+                style={"flex": "1", "overflow": "auto", "paddingBottom": "12px"},
+                children=[make_fixed_config_panel()],
+            ),
         ],
     )
 

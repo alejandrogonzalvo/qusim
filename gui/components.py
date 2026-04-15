@@ -208,9 +208,29 @@ def _label(text: str, tooltip: str = "") -> html.Div:
     )
 
 
+_CONFIG_TAB_STYLE = {
+    "padding": "6px 0",
+    "fontSize": "11px",
+    "fontWeight": "600",
+    "textTransform": "uppercase",
+    "letterSpacing": "0.05em",
+    "borderBottom": "2px solid transparent",
+    "color": COLORS["text_muted"],
+    "background": "transparent",
+    "border": "none",
+    "cursor": "pointer",
+}
+
+_CONFIG_TAB_ACTIVE_STYLE = {
+    **_CONFIG_TAB_STYLE,
+    "color": COLORS["accent"],
+    "borderBottom": f"2px solid {COLORS['accent']}",
+}
+
+
 def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     """
-    Build the right-panel configuration controls.
+    Build the right-panel configuration controls as tabbed sections.
 
     All noise sliders are ALWAYS rendered so their IDs exist for Dash callbacks.
     Swept keys are visually hidden with ``display:none`` rather than removed.
@@ -218,11 +238,9 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     import math
     swept_keys = swept_keys or set()
 
-    # --- Circuit/Topology section (always visible) ---
-    circuit_section = html.Div([
-        _section_header("Circuit"),
-
-        _label("Type"),
+    # --- Circuit/Topology tab content ---
+    circuit_content = html.Div([
+        _label("Circuit type"),
         dcc.Dropdown(
             id="cfg-circuit-type",
             options=CIRCUIT_TYPES,
@@ -241,9 +259,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             className="dse-slider",
         ),
 
-        html.Div(style={"height": "14px"}),
-
-        _section_header("Topology"),
+        html.Div(style={"height": "10px"}),
 
         _label("Cores"),
         dcc.Slider(
@@ -254,7 +270,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             className="dse-slider",
         ),
 
-        html.Div(style={"height": "18px"}),
+        html.Div(style={"height": "10px"}),
 
         _label("Inter-core topology"),
         dcc.Dropdown(
@@ -303,11 +319,11 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             id="cfg-dynamic-decoupling",
             options=[{"label": " Enable", "value": "yes"}],
             value=[],
-            style={"color": COLORS["text"], "fontSize": "13px", "marginBottom": "12px"},
+            style={"color": COLORS["text"], "fontSize": "13px"},
         ),
-    ])
+    ], style={"paddingTop": "8px"})
 
-    # --- Noise parameters — always in the DOM, swept ones hidden ---
+    # --- Noise tab content ---
     noise_controls = []
     for m in SWEEPABLE_METRICS:
         marks = (
@@ -340,13 +356,10 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             )
         )
 
-    noise_section = html.Div([
-        _section_header("Hardware noise"),
-        *noise_controls,
-    ])
+    noise_content = html.Div(noise_controls, style={"paddingTop": "8px"})
 
-    # --- Output metric selector ---
-    output_section = html.Div([
+    # --- Thresholds tab content ---
+    threshold_content = html.Div([
         _section_header("Output (Y-axis)"),
         dcc.Dropdown(
             id="cfg-output-metric",
@@ -354,10 +367,10 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             value="overall_fidelity",
             clearable=False,
             className="dse-dropdown",
-            style={"marginBottom": "10px"},
+            style={"marginBottom": "12px"},
         ),
 
-        _section_header("Thresholds"),
+        _section_header("Iso-levels"),
         dcc.Checklist(
             id="cfg-threshold-enable",
             options=[{"label": " Show on non-3D views", "value": "yes"}],
@@ -365,11 +378,26 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             style={"color": COLORS["text"], "fontSize": "12px", "marginBottom": "8px"},
         ),
         *_make_threshold_inputs(),
-    ])
+    ], style={"paddingTop": "8px"})
 
     return html.Div(
         id="fixed-config-panel",
-        children=[circuit_section, noise_section, output_section],
+        children=[
+            dcc.Tabs(
+                id="config-tabs",
+                value="circuit",
+                children=[
+                    dcc.Tab(label="Circuit", value="circuit", children=[circuit_content],
+                            style=_CONFIG_TAB_STYLE, selected_style=_CONFIG_TAB_ACTIVE_STYLE),
+                    dcc.Tab(label="Noise", value="noise", children=[noise_content],
+                            style=_CONFIG_TAB_STYLE, selected_style=_CONFIG_TAB_ACTIVE_STYLE),
+                    dcc.Tab(label="Thresholds", value="thresholds", children=[threshold_content],
+                            style=_CONFIG_TAB_STYLE, selected_style=_CONFIG_TAB_ACTIVE_STYLE),
+                ],
+                style={"height": "auto"},
+                content_style={"overflow": "auto"},
+            ),
+        ],
     )
 
 
