@@ -141,6 +141,7 @@ def make_metric_selector(index: int) -> html.Div:
                         value=[m.slider_min, m.slider_max],
                         marks=marks,
                         tooltip={"placement": "bottom", "always_visible": True},
+                        updatemode="drag",
                         className="dse-range-slider",
                     ),
                 ],
@@ -256,6 +257,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             min=4, max=80, step=2, value=16,
             marks={"4": "4", "20": "20", "40": "40", "60": "60", "80": "80"},
             tooltip={"placement": "bottom"},
+            updatemode="drag",
             className="dse-slider",
         ),
 
@@ -267,6 +269,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             min=1, max=16, step=1, value=1,
             marks={"1": "1", "4": "4", "8": "8", "12": "12", "16": "16"},
             tooltip={"placement": "bottom"},
+            updatemode="drag",
             className="dse-slider",
         ),
 
@@ -349,6 +352,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                         value=default_slider,
                         marks=marks,
                         tooltip={"placement": "bottom"},
+                        updatemode="drag",
                         className="dse-slider",
                     ),
                     html.Div(style={"height": "12px"}),

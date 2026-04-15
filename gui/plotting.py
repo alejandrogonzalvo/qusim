@@ -1059,64 +1059,71 @@ def build_figure(
 
     _tc = threshold_colors
 
-    if view_type == "parallel":
-        return plot_parallel_coordinates(sweep_data, output_key)
-    if view_type == "slices":
-        return plot_slice(sweep_data, output_key)
-    if view_type == "importance":
-        return plot_importance(sweep_data, output_key)
-    if view_type == "pareto":
-        return plot_pareto(sweep_data, output_key, thresholds=thresholds, threshold_colors=_tc)
-    if view_type == "correlation":
-        return plot_correlation(sweep_data, output_key)
+    fig: go.Figure
 
-    try:
-        if num_metrics == 1:
-            return plot_1d(
-                x_values=np.array(sweep_data["xs"]),
-                results=sweep_data["grid"],
-                metric_key=sweep_data["metric_keys"][0],
-                output_key=output_key,
-                thresholds=thresholds,
-                threshold_colors=_tc,
-            )
-        elif num_metrics == 2:
-            if view_type == "contour":
-                return plot_2d_contour(
+    if view_type == "parallel":
+        fig = plot_parallel_coordinates(sweep_data, output_key)
+    elif view_type == "slices":
+        fig = plot_slice(sweep_data, output_key)
+    elif view_type == "importance":
+        fig = plot_importance(sweep_data, output_key)
+    elif view_type == "pareto":
+        fig = plot_pareto(sweep_data, output_key, thresholds=thresholds, threshold_colors=_tc)
+    elif view_type == "correlation":
+        fig = plot_correlation(sweep_data, output_key)
+    else:
+        try:
+            if num_metrics == 1:
+                fig = plot_1d(
                     x_values=np.array(sweep_data["xs"]),
-                    y_values=np.array(sweep_data["ys"]),
-                    grid=sweep_data["grid"],
-                    metric_key1=sweep_data["metric_keys"][0],
-                    metric_key2=sweep_data["metric_keys"][1],
+                    results=sweep_data["grid"],
+                    metric_key=sweep_data["metric_keys"][0],
                     output_key=output_key,
                     thresholds=thresholds,
                     threshold_colors=_tc,
                 )
-            return plot_2d(
-                x_values=np.array(sweep_data["xs"]),
-                y_values=np.array(sweep_data["ys"]),
-                grid=sweep_data["grid"],
-                metric_key1=sweep_data["metric_keys"][0],
-                metric_key2=sweep_data["metric_keys"][1],
-                output_key=output_key,
-            )
-        elif num_metrics == 3:
-            _3d_args = dict(
-                x_values=np.array(sweep_data["xs"]),
-                y_values=np.array(sweep_data["ys"]),
-                z_values=np.array(sweep_data["zs"]),
-                grid=sweep_data["grid"],
-                metric_key1=sweep_data["metric_keys"][0],
-                metric_key2=sweep_data["metric_keys"][1],
-                metric_key3=sweep_data["metric_keys"][2],
-                output_key=output_key,
-                thresholds=thresholds,
-                threshold_colors=_tc,
-            )
-            if view_type == "isosurface":
-                return plot_3d_isosurface(**_3d_args)
-            return plot_3d(**_3d_args)
-        else:
-            return plot_empty("Add 1\u20133 metric axes on the left to start a sweep")
-    except Exception as exc:
-        return plot_empty(f"Plot error: {exc}")
+            elif num_metrics == 2:
+                if view_type == "contour":
+                    fig = plot_2d_contour(
+                        x_values=np.array(sweep_data["xs"]),
+                        y_values=np.array(sweep_data["ys"]),
+                        grid=sweep_data["grid"],
+                        metric_key1=sweep_data["metric_keys"][0],
+                        metric_key2=sweep_data["metric_keys"][1],
+                        output_key=output_key,
+                        thresholds=thresholds,
+                        threshold_colors=_tc,
+                    )
+                else:
+                    fig = plot_2d(
+                        x_values=np.array(sweep_data["xs"]),
+                        y_values=np.array(sweep_data["ys"]),
+                        grid=sweep_data["grid"],
+                        metric_key1=sweep_data["metric_keys"][0],
+                        metric_key2=sweep_data["metric_keys"][1],
+                        output_key=output_key,
+                    )
+            elif num_metrics == 3:
+                _3d_args = dict(
+                    x_values=np.array(sweep_data["xs"]),
+                    y_values=np.array(sweep_data["ys"]),
+                    z_values=np.array(sweep_data["zs"]),
+                    grid=sweep_data["grid"],
+                    metric_key1=sweep_data["metric_keys"][0],
+                    metric_key2=sweep_data["metric_keys"][1],
+                    metric_key3=sweep_data["metric_keys"][2],
+                    output_key=output_key,
+                    thresholds=thresholds,
+                    threshold_colors=_tc,
+                )
+                if view_type == "isosurface":
+                    fig = plot_3d_isosurface(**_3d_args)
+                else:
+                    fig = plot_3d(**_3d_args)
+            else:
+                return plot_empty("Add 1\u20133 metric axes on the left to start a sweep")
+        except Exception as exc:
+            return plot_empty(f"Plot error: {exc}")
+
+    fig.update_layout(uirevision="keep")
+    return fig

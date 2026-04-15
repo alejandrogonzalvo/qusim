@@ -92,23 +92,36 @@ def _topbar() -> html.Div:
                                                      "color": COLORS["text_muted"]}),
                 ],
             ),
-            html.Div(id="status-bar", children="Ready — click Run to start a sweep",
+            html.Div(id="status-bar", children="Ready",
                      style={"fontSize": "12px", "color": COLORS["text_muted"],
                             "flex": "1", "textAlign": "center"}),
-            html.Button(
-                "▶  Run",
-                id="run-btn",
-                n_clicks=0,
-                style={
-                    "background": COLORS["accent"],
-                    "color": "#fff",
-                    "border": "none",
-                    "borderRadius": "6px",
-                    "padding": "6px 20px",
-                    "fontWeight": "600",
-                    "fontSize": "13px",
-                    "cursor": "pointer",
-                },
+            html.Div(
+                style={"display": "flex", "alignItems": "center", "gap": "12px"},
+                children=[
+                    dcc.Checklist(
+                        id="hot-reload-toggle",
+                        options=[{"label": " Hot reload", "value": "on"}],
+                        value=["on"],
+                        style={"fontSize": "12px", "color": COLORS["text_muted"]},
+                        inputStyle={"marginRight": "4px"},
+                    ),
+                    html.Button(
+                        "▶  Run",
+                        id="run-btn",
+                        n_clicks=0,
+                        style={
+                            "background": COLORS["accent"],
+                            "color": "#fff",
+                            "border": "none",
+                            "borderRadius": "6px",
+                            "padding": "6px 20px",
+                            "fontWeight": "600",
+                            "fontSize": "13px",
+                            "cursor": "pointer",
+                            "display": "none",
+                        },
+                    ),
+                ],
             ),
         ],
     )
@@ -208,6 +221,7 @@ def _center_panel() -> html.Div:
             dcc.Loading(
                 type="circle",
                 color=COLORS["accent"],
+                delay_show=1000,
                 parent_style={"flex": "1", "minHeight": "0", "display": "flex", "flexDirection": "column"},
                 children=dcc.Graph(
                     id="main-plot",
@@ -275,7 +289,10 @@ app.layout = html.Div(
         dcc.Store(id="sweep-result-store", data=None, storage_type="memory"),
         dcc.Store(id="view-type-store", data="isosurface", storage_type="memory"),
         dcc.Store(id="num-thresholds-store", data=3, storage_type="memory"),
+        dcc.Store(id="sweep-dirty", data=0, storage_type="memory"),
+        dcc.Store(id="sweep-processed", data=0, storage_type="memory"),
         dcc.Interval(id="auto-run-trigger", interval=500, n_intervals=0, max_intervals=1),
+        dcc.Interval(id="sweep-poll", interval=100, n_intervals=0),
     ],
 )
 
@@ -419,6 +436,37 @@ def _slider_to_value(slider_pos: float, log_scale: bool) -> float:
 
 _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METRICS]
 
+_NO_UPDATE_6 = (dash.no_update,) * 6
+
+# Clientside: any simulation input change → increment dirty counter
+_SIM_INPUTS = [
+    Input("metric-dropdown-0", "value"),
+    Input("metric-slider-0", "value"),
+    Input("metric-dropdown-1", "value"),
+    Input("metric-slider-1", "value"),
+    Input("metric-dropdown-2", "value"),
+    Input("metric-slider-2", "value"),
+    Input("num-metrics-store", "data"),
+    Input("cfg-circuit-type", "value"),
+    Input("cfg-num-qubits", "value"),
+    Input("cfg-num-cores", "value"),
+    Input("cfg-topology", "value"),
+    Input("cfg-placement", "value"),
+    Input("cfg-seed", "value"),
+    Input("cfg-dynamic-decoupling", "value"),
+    *[Input(f"noise-{m.key}", "value") for m in SWEEPABLE_METRICS],
+]
+
+app.clientside_callback(
+    """function() {
+        window._sweepDirty = (window._sweepDirty || 0) + 1;
+        return window._sweepDirty;
+    }""",
+    Output("sweep-dirty", "data"),
+    *_SIM_INPUTS,
+    prevent_initial_call=True,
+)
+
 
 @app.callback(
     Output("main-plot", "figure"),
@@ -426,8 +474,13 @@ _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METR
     Output("status-bar", "children"),
     Output("view-type-store", "data"),
     Output("view-tab-container", "children"),
+    Output("sweep-processed", "data"),
     Input("run-btn", "n_clicks"),
     Input("auto-run-trigger", "n_intervals"),
+    Input("sweep-poll", "n_intervals"),
+    State("sweep-dirty", "data"),
+    State("sweep-processed", "data"),
+    State("hot-reload-toggle", "value"),
     State("metric-dropdown-0", "value"),
     State("metric-slider-0", "value"),
     State("metric-dropdown-1", "value"),
@@ -451,7 +504,8 @@ _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METR
     prevent_initial_call=True,
 )
 def run_sweep(
-    n_clicks, auto_run_intervals,
+    n_clicks, auto_run_intervals, poll_intervals,
+    dirty, processed, hot_reload,
     m0_key, m0_range,
     m1_key, m1_range,
     m2_key, m2_range,
@@ -465,8 +519,12 @@ def run_sweep(
     num_thresholds,
     *noise_slider_vals,
 ):
-    if not n_clicks and not auto_run_intervals:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    trigger = ctx.triggered_id
+
+    if trigger == "sweep-poll":
+        hot_reload_on = hot_reload and "on" in hot_reload
+        if not hot_reload_on or dirty == processed:
+            return _NO_UPDATE_6
 
     t_start = time.time()
 
@@ -491,7 +549,7 @@ def run_sweep(
 
     if not active:
         return (plot_empty("Add at least one metric axis and click Run"), None,
-                "No metrics configured", dash.no_update, dash.no_update)
+                "No metrics configured", dash.no_update, dash.no_update, dirty)
 
     try:
         cached = _engine.run_cold(
@@ -563,10 +621,10 @@ def run_sweep(
         fig = build_figure(len(active), sweep_data, output_key or "overall_fidelity",
                            view_type=default_view, thresholds=thresh,
                            threshold_colors=thresh_colors or None)
-        return fig, sweep_data, status, default_view, make_view_tab_bar(len(active), default_view)
+        return fig, sweep_data, status, default_view, make_view_tab_bar(len(active), default_view), dirty
 
     except Exception as exc:
-        return plot_empty(f"Error: {exc}"), None, f"Error: {exc}", dash.no_update, dash.no_update
+        return plot_empty(f"Error: {exc}"), None, f"Error: {exc}", dash.no_update, dash.no_update, dirty
 
 
 def _count_points(sweep_data: dict) -> int:
@@ -749,6 +807,29 @@ for _ci in range(5):
         Input(f"cfg-threshold-color-{_ci}", "value"),
         prevent_initial_call=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# Callback: toggle Run button visibility based on hot-reload state
+# ---------------------------------------------------------------------------
+
+app.clientside_callback(
+    """function(hotReload) {
+        var on = hotReload && hotReload.indexOf("on") !== -1;
+        return {"background": on ? "transparent" : "#5B8DEF",
+                "color": on ? "transparent" : "#fff",
+                "border": "none",
+                "borderRadius": "6px",
+                "padding": "6px 20px",
+                "fontWeight": "600",
+                "fontSize": "13px",
+                "cursor": on ? "default" : "pointer",
+                "display": on ? "none" : "inline-block"};
+    }""",
+    Output("run-btn", "style"),
+    Input("hot-reload-toggle", "value"),
+    prevent_initial_call=False,
+)
 
 
 # ---------------------------------------------------------------------------
