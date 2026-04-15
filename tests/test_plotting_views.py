@@ -663,6 +663,74 @@ class TestThresholdOverlay:
         shapes = list(fig.layout.shapes)
         assert len(shapes) >= 1
 
+    # --- 3D scatter threshold ---
+
+    def test_scatter3d_no_threshold_single_trace(self, sweep_3d_data):
+        xs, ys, zs, grid = sweep_3d_data
+        fig = plot_3d(xs, ys, zs, grid,
+                      "single_gate_error", "two_gate_error", "t1",
+                      "overall_fidelity")
+        scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter3d)]
+        assert len(scatter_traces) == 1
+
+    def test_scatter3d_threshold_splits_into_two_traces(self, sweep_3d_data):
+        xs, ys, zs, grid = sweep_3d_data
+        fig = plot_3d(xs, ys, zs, grid,
+                      "single_gate_error", "two_gate_error", "t1",
+                      "overall_fidelity", threshold=0.7)
+        scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter3d)]
+        assert len(scatter_traces) == 2
+
+    def test_scatter3d_threshold_dimmed_trace_has_low_opacity(self, sweep_3d_data):
+        xs, ys, zs, grid = sweep_3d_data
+        fig = plot_3d(xs, ys, zs, grid,
+                      "single_gate_error", "two_gate_error", "t1",
+                      "overall_fidelity", threshold=0.7)
+        scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter3d)]
+        dimmed = [t for t in scatter_traces if "below" in (t.name or "").lower()]
+        assert len(dimmed) == 1
+        assert dimmed[0].marker.opacity <= 0.3
+
+    def test_scatter3d_threshold_none_no_split(self, sweep_3d_data):
+        xs, ys, zs, grid = sweep_3d_data
+        fig = plot_3d(xs, ys, zs, grid,
+                      "single_gate_error", "two_gate_error", "t1",
+                      "overall_fidelity", threshold=None)
+        scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter3d)]
+        assert len(scatter_traces) == 1
+
+    # --- 3D isosurface threshold ---
+
+    def test_isosurface_threshold_adds_extra_surface(self, sweep_3d_data):
+        xs, ys, zs, grid = sweep_3d_data
+        fig = plot_3d_isosurface(xs, ys, zs, grid,
+                                 "single_gate_error", "two_gate_error", "t1",
+                                 "overall_fidelity", threshold=0.7)
+        iso_traces = [t for t in fig.data if isinstance(t, go.Isosurface)]
+        assert len(iso_traces) == 2
+
+    def test_isosurface_threshold_surface_is_red(self, sweep_3d_data):
+        xs, ys, zs, grid = sweep_3d_data
+        fig = plot_3d_isosurface(xs, ys, zs, grid,
+                                 "single_gate_error", "two_gate_error", "t1",
+                                 "overall_fidelity", threshold=0.7)
+        iso_traces = [t for t in fig.data if isinstance(t, go.Isosurface)]
+        threshold_iso = [t for t in iso_traces if "threshold" in (t.name or "").lower()]
+        assert len(threshold_iso) == 1
+
+    def test_isosurface_no_threshold_single_iso(self, sweep_3d_data):
+        xs, ys, zs, grid = sweep_3d_data
+        fig = plot_3d_isosurface(xs, ys, zs, grid,
+                                 "single_gate_error", "two_gate_error", "t1",
+                                 "overall_fidelity")
+        iso_traces = [t for t in fig.data if isinstance(t, go.Isosurface)]
+        assert len(iso_traces) == 1
+
+    def test_build_figure_3d_passes_threshold(self, sweep_data_store_3d):
+        fig = build_figure(3, sweep_data_store_3d, "overall_fidelity",
+                           threshold=0.7)
+        assert isinstance(fig, go.Figure)
+
 
 # ---------------------------------------------------------------------------
 # Tests: CSV export (sweep_to_csv)
