@@ -17,6 +17,7 @@ from gui.plotting import (
     plot_correlation,
     build_figure,
     plot_empty,
+    sweep_to_csv,
 )
 
 
@@ -600,3 +601,100 @@ class TestBuildFigureCorrelationRouting:
                            view_type="correlation")
         trace_types = [type(t).__name__ for t in fig.data]
         assert "Heatmap" in trace_types
+
+
+# ---------------------------------------------------------------------------
+# Tests: threshold overlay (cross-cutting feature)
+# ---------------------------------------------------------------------------
+
+class TestThresholdOverlay:
+    def test_1d_no_threshold_no_extra_shapes(self, sweep_1d_data):
+        xs, results = sweep_1d_data
+        fig = plot_1d(xs, results, "single_gate_error", "overall_fidelity")
+        shapes = fig.layout.shapes or ()
+        assert len(shapes) == 0
+
+    def test_1d_threshold_adds_hline(self, sweep_1d_data):
+        xs, results = sweep_1d_data
+        fig = plot_1d(xs, results, "single_gate_error", "overall_fidelity",
+                      threshold=0.9)
+        shapes = list(fig.layout.shapes)
+        hlines = [s for s in shapes if s.type == "line" and s.y0 == s.y1 == 0.9]
+        assert len(hlines) == 1
+
+    def test_1d_threshold_adds_shaded_region(self, sweep_1d_data):
+        xs, results = sweep_1d_data
+        fig = plot_1d(xs, results, "single_gate_error", "overall_fidelity",
+                      threshold=0.9)
+        shapes = list(fig.layout.shapes)
+        rects = [s for s in shapes if s.type == "rect"]
+        assert len(rects) == 1
+
+    def test_1d_threshold_none_no_shapes(self, sweep_1d_data):
+        xs, results = sweep_1d_data
+        fig = plot_1d(xs, results, "single_gate_error", "overall_fidelity",
+                      threshold=None)
+        shapes = fig.layout.shapes or ()
+        assert len(shapes) == 0
+
+    def test_2d_contour_threshold_adds_bold_contour(self, sweep_2d_data):
+        xs, ys, grid = sweep_2d_data
+        fig = plot_2d_contour(xs, ys, grid, "single_gate_error", "two_gate_error",
+                              "overall_fidelity", threshold=0.9)
+        contour_traces = [t for t in fig.data if isinstance(t, go.Contour)]
+        assert len(contour_traces) >= 2
+
+    def test_2d_contour_no_threshold_normal(self, sweep_2d_data):
+        xs, ys, grid = sweep_2d_data
+        fig = plot_2d_contour(xs, ys, grid, "single_gate_error", "two_gate_error",
+                              "overall_fidelity")
+        contour_traces = [t for t in fig.data if isinstance(t, go.Contour)]
+        assert len(contour_traces) == 1
+
+    def test_pareto_threshold_adds_hline(self, sweep_data_store_2d):
+        fig = plot_pareto(sweep_data_store_2d, "overall_fidelity", threshold=0.9)
+        shapes = list(fig.layout.shapes)
+        hlines = [s for s in shapes if s.type == "line" and s.y0 == s.y1 == 0.9]
+        assert len(hlines) == 1
+
+    def test_build_figure_passes_threshold(self, sweep_data_store_1d):
+        fig = build_figure(1, sweep_data_store_1d, "overall_fidelity",
+                           threshold=0.9)
+        shapes = list(fig.layout.shapes)
+        assert len(shapes) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: CSV export (sweep_to_csv)
+# ---------------------------------------------------------------------------
+
+class TestSweepToCsv:
+    def test_returns_string(self, sweep_data_store_1d):
+        csv = sweep_to_csv(sweep_data_store_1d)
+        assert isinstance(csv, str)
+        assert len(csv) > 0
+
+    def test_has_header_row(self, sweep_data_store_1d):
+        csv = sweep_to_csv(sweep_data_store_1d)
+        header = csv.split("\n")[0]
+        assert "single_gate_error" in header or "1Q Gate Error" in header
+
+    def test_has_data_rows(self, sweep_data_store_1d):
+        csv = sweep_to_csv(sweep_data_store_1d)
+        lines = [l for l in csv.strip().split("\n") if l]
+        assert len(lines) >= 2
+
+    def test_2d_has_all_points(self, sweep_data_store_2d):
+        csv = sweep_to_csv(sweep_data_store_2d)
+        lines = [l for l in csv.strip().split("\n") if l]
+        xs = sweep_data_store_2d["xs"]
+        ys = sweep_data_store_2d["ys"]
+        assert len(lines) == 1 + len(xs) * len(ys)
+
+    def test_3d_has_all_points(self, sweep_data_store_3d):
+        csv = sweep_to_csv(sweep_data_store_3d)
+        lines = [l for l in csv.strip().split("\n") if l]
+        xs = sweep_data_store_3d["xs"]
+        ys = sweep_data_store_3d["ys"]
+        zs = sweep_data_store_3d["zs"]
+        assert len(lines) == 1 + len(xs) * len(ys) * len(zs)
