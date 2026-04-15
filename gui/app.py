@@ -331,7 +331,7 @@ app.layout = html.Div(
         dcc.Store(id="sweep-result-store", data=None, storage_type="memory"),
         dcc.Store(id="view-type-store", data="isosurface", storage_type="memory"),
         dcc.Store(id="num-thresholds-store", data=3, storage_type="memory"),
-        dcc.Store(id="sweep-dirty", data=0, storage_type="memory"),
+        dcc.Store(id="sweep-dirty", data=1, storage_type="memory"),
         dcc.Store(id="sweep-processed", data=0, storage_type="memory"),
         dcc.Interval(id="auto-run-trigger", interval=500, n_intervals=0, max_intervals=1),
         dcc.Interval(id="sweep-poll", interval=100, n_intervals=0),
