@@ -43,9 +43,36 @@ from gui.components import (
     _log_marks,
     _linear_marks,
 )
-from gui.constants import VIEW_TAB_DEFAULTS
+from gui.constants import VIEW_TAB_DEFAULTS, VIEW_TABS, ANALYSIS_TABS
 from gui.plotting import build_figure, plot_empty, sweep_to_csv
 from gui.dse_engine import DSEEngine
+
+
+def resolve_view_type(current_view: str | None, num_active: int) -> str:
+    """Return the view type to use for a sweep with *num_active* dimensions.
+
+    BUG: currently always returns the default, ignoring *current_view*.
+    """
+    return VIEW_TAB_DEFAULTS.get(num_active, "line")
+
+
+def should_skip_poll(
+    triggered_ids: list[str],
+    hot_reload: list[str],
+    dirty: int,
+    processed: int,
+) -> bool:
+    """Decide whether the sweep-poll tick should be skipped.
+
+    BUG: only checks the first trigger — misses auto-run-trigger when it
+    fires simultaneously with sweep-poll.
+    """
+    trigger = triggered_ids[0] if triggered_ids else None
+    if trigger == "sweep-poll":
+        hot_reload_on = hot_reload and "on" in hot_reload
+        if not hot_reload_on or dirty == processed:
+            return True
+    return False
 
 # ---------------------------------------------------------------------------
 # App init
