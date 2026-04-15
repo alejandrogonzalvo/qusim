@@ -21,6 +21,9 @@ _ACCENT = "#2B2B2B"
 _ACCENT2 = "#555555"
 _LINE_COLOR = "#2B2B2B"
 
+_THRESHOLD_COLORS = ["#d73027", "#fc8d59", "#fee08b", "#91bfdb", "#4575b4"]
+_DEFAULT_THRESHOLDS = [0.3, 0.6, 0.9]
+
 _LAYOUT_BASE = dict(
     paper_bgcolor=_BG,
     plot_bgcolor=_PLOT_BG,
@@ -57,7 +60,7 @@ def plot_1d(
     results: list,
     metric_key: str,
     output_key: str,
-    threshold: float | None = None,
+    thresholds: list[float] | None = None,
 ) -> go.Figure:
     y = _extract(results, output_key)
     m = METRIC_BY_KEY.get(metric_key)
@@ -109,13 +112,16 @@ def plot_1d(
         showlegend=False,
     )
 
-    if threshold is not None:
+    if thresholds:
+        for t in thresholds:
+            color = _THRESHOLD_COLORS[thresholds.index(t) % len(_THRESHOLD_COLORS)]
+            fig.add_shape(
+                type="line", xref="paper", x0=0, x1=1, y0=t, y1=t,
+                line=dict(color=color, width=1.5, dash="dash"),
+            )
+        lowest = min(thresholds)
         fig.add_shape(
-            type="line", xref="paper", x0=0, x1=1, y0=threshold, y1=threshold,
-            line=dict(color="#d73027", width=1.5, dash="dash"),
-        )
-        fig.add_shape(
-            type="rect", xref="paper", x0=0, x1=1, y0=0, y1=threshold,
+            type="rect", xref="paper", x0=0, x1=1, y0=0, y1=lowest,
             fillcolor="rgba(215, 48, 39, 0.08)", line=dict(width=0),
         )
 
@@ -207,7 +213,7 @@ def plot_2d_contour(
     metric_key1: str,
     metric_key2: str,
     output_key: str,
-    threshold: float | None = None,
+    thresholds: list[float] | None = None,
 ) -> go.Figure:
     z = np.zeros((len(y_values), len(x_values)))
     for i, row in enumerate(grid):
@@ -272,22 +278,24 @@ def plot_2d_contour(
         )
     )
 
-    if threshold is not None:
-        fig.add_trace(
-            go.Contour(
-                x=x_plot, y=y_plot, z=z,
-                contours=dict(
-                    start=threshold, end=threshold, size=0,
-                    showlabels=True,
-                    labelfont=dict(size=11, color="#d73027"),
-                    coloring="none",
-                ),
-                line=dict(color="#d73027", width=2.5),
-                showscale=False,
-                hoverinfo="skip",
-                name="threshold",
+    if thresholds:
+        for i, t in enumerate(thresholds):
+            color = _THRESHOLD_COLORS[i % len(_THRESHOLD_COLORS)]
+            fig.add_trace(
+                go.Contour(
+                    x=x_plot, y=y_plot, z=z,
+                    contours=dict(
+                        start=t, end=t, size=0,
+                        showlabels=True,
+                        labelfont=dict(size=11, color=color),
+                        coloring="none",
+                    ),
+                    line=dict(color=color, width=2.5),
+                    showscale=False,
+                    hoverinfo="skip",
+                    name=f"threshold {t}",
+                )
             )
-        )
 
     x_title = _axis_label(metric_key1) + (" (log\u2081\u2080)" if x_log else "")
     y_title = _axis_label(metric_key2) + (" (log\u2081\u2080)" if y_log else "")
@@ -316,7 +324,7 @@ def plot_3d(
     metric_key2: str,
     metric_key3: str,
     output_key: str,
-    threshold: float | None = None,
+    thresholds: list[float] | None = None,
 ) -> go.Figure:
     m1 = METRIC_BY_KEY.get(metric_key1)
     m2 = METRIC_BY_KEY.get(metric_key2)
@@ -360,62 +368,52 @@ def plot_3d(
         [1.0,  "#F0F0F0"],
     ]
 
-    _hover = (
-        x_title + ": %{x:.3g}<br>"
-        + y_title + ": %{y:.3g}<br>"
-        + z_title + ": %{z:.3g}<br>"
-        + "<b>fidelity: %{marker.color:.4f}</b><extra></extra>"
-    )
-
     fig = go.Figure()
 
-    if threshold is not None:
-        above = fs_all >= threshold
-        below = ~above
-
-        if below.any():
-            fig.add_trace(go.Scatter3d(
-                x=xs_all[below], y=ys_all[below], z=zs_all[below],
-                mode="markers",
-                marker=dict(size=3, color="#CCCCCC", opacity=0.2, line=dict(width=0)),
-                name="Below threshold",
-                hovertemplate=_hover,
-            ))
-        if above.any():
-            fig.add_trace(go.Scatter3d(
-                x=xs_all[above], y=ys_all[above], z=zs_all[above],
-                mode="markers",
-                marker=dict(
-                    size=3.5, color=fs_all[above].tolist(),
-                    cmin=fmin, cmax=fmax, colorscale=_COLORSCALE,
-                    colorbar=dict(
-                        title=dict(text=_OUTPUT_LABELS.get(output_key, output_key),
-                                   font=dict(size=11, color=_TEXT_MUTED)),
-                        tickfont=dict(color=_TEXT_MUTED, size=10),
-                        outlinewidth=0, thickness=14, len=0.75,
-                    ),
-                    opacity=0.85, line=dict(width=0),
-                ),
-                name="Above threshold",
-                hovertemplate=_hover,
-            ))
-    else:
-        fig.add_trace(go.Scatter3d(
-            x=xs_all.tolist(), y=ys_all.tolist(), z=zs_all.tolist(),
-            mode="markers",
-            marker=dict(
-                size=3.5, color=fs_all.tolist(),
-                cmin=fmin, cmax=fmax, colorscale=_COLORSCALE,
-                colorbar=dict(
-                    title=dict(text=_OUTPUT_LABELS.get(output_key, output_key),
-                               font=dict(size=11, color=_TEXT_MUTED)),
-                    tickfont=dict(color=_TEXT_MUTED, size=10),
-                    outlinewidth=0, thickness=14, len=0.75,
-                ),
-                opacity=0.85, line=dict(width=0),
+    fig.add_trace(go.Scatter3d(
+        x=xs_all.tolist(), y=ys_all.tolist(), z=zs_all.tolist(),
+        mode="markers",
+        marker=dict(
+            size=3.5, color=fs_all.tolist(),
+            cmin=fmin, cmax=fmax, colorscale=_COLORSCALE,
+            colorbar=dict(
+                title=dict(text=_OUTPUT_LABELS.get(output_key, output_key),
+                           font=dict(size=11, color=_TEXT_MUTED)),
+                tickfont=dict(color=_TEXT_MUTED, size=10),
+                outlinewidth=0, thickness=14, len=0.75,
             ),
-            hovertemplate=_hover,
-        ))
+            opacity=0.85, line=dict(width=0),
+        ),
+        hovertemplate=(
+            x_title + ": %{x:.3g}<br>"
+            + y_title + ": %{y:.3g}<br>"
+            + z_title + ": %{z:.3g}<br>"
+            + "<b>fidelity: %{marker.color:.4f}</b><extra></extra>"
+        ),
+    ))
+
+    if thresholds:
+        frange = fmax - fmin
+        band = max(frange * 0.05, 0.01)
+        for i, t in enumerate(thresholds):
+            near = np.abs(fs_all - t) <= band
+            if not near.any():
+                near = np.zeros(len(fs_all), dtype=bool)
+                near[np.argmin(np.abs(fs_all - t))] = True
+            color = _THRESHOLD_COLORS[i % len(_THRESHOLD_COLORS)]
+            fig.add_trace(go.Scatter3d(
+                x=xs_all[near].tolist(), y=ys_all[near].tolist(), z=zs_all[near].tolist(),
+                mode="markers",
+                marker=dict(size=6, color=color, opacity=0.9,
+                            line=dict(width=1, color="#FFFFFF")),
+                name=f"≈{t}",
+                hovertemplate=(
+                    f"threshold {t}<br>"
+                    + x_title + ": %{x:.3g}<br>"
+                    + y_title + ": %{y:.3g}<br>"
+                    + z_title + ": %{z:.3g}<extra></extra>"
+                ),
+            ))
 
     _SCENE_AXIS = lambda title: dict(
         title=dict(text=title, font=dict(size=11, color=_TEXT_MUTED)),
@@ -500,14 +498,14 @@ def plot_3d_isosurface(
     metric_key2: str,
     metric_key3: str,
     output_key: str,
-    threshold: float | None = None,
+    thresholds: list[float] | None = None,
 ) -> go.Figure:
     total_points = len(x_values) * len(y_values) * len(z_values)
 
     if total_points < _MIN_GRID_FOR_ISOSURFACE:
         return plot_3d(x_values, y_values, z_values, grid,
                        metric_key1, metric_key2, metric_key3, output_key,
-                       threshold=threshold)
+                       thresholds=thresholds)
 
     xs, ys, zs, fs, x_title, y_title, z_title = _flatten_3d_grid(
         x_values, y_values, z_values, grid,
@@ -518,52 +516,38 @@ def plot_3d_isosurface(
     fmin = 0.0 if is_fidelity else float(fs.min())
     fmax = 1.0 if is_fidelity else float(fs.max())
 
-    _ISO_COLORSCALE = [
-        [0.0, "#d73027"],
-        [0.25, "#fc8d59"],
-        [0.5, "#fee08b"],
-        [0.75, "#91bfdb"],
-        [1.0, "#4575b4"],
-    ]
+    levels = thresholds if thresholds else _DEFAULT_THRESHOLDS
 
-    fig = go.Figure(
-        go.Isosurface(
-            x=xs, y=ys, z=zs,
-            value=fs,
-            isomin=fmin + (fmax - fmin) * 0.3,
-            isomax=fmax - (fmax - fmin) * 0.1,
-            surface_count=3,
-            opacity=0.5,
-            caps=dict(x_show=False, y_show=False, z_show=False),
-            colorscale=_ISO_COLORSCALE,
-            colorbar=dict(
-                title=dict(text=_OUTPUT_LABELS.get(output_key, output_key),
-                           font=dict(size=11, color=_TEXT_MUTED)),
-                tickfont=dict(color=_TEXT_MUTED, size=10),
-                outlinewidth=0, thickness=14, len=0.75,
-            ),
-            hovertemplate=(
-                x_title + ": %{x:.3g}<br>"
-                + y_title + ": %{y:.3g}<br>"
-                + z_title + ": %{z:.3g}<br>"
-                + "<b>%{value:.4f}</b><extra></extra>"
-            ),
-        )
+    _hover = (
+        x_title + ": %{x:.3g}<br>"
+        + y_title + ": %{y:.3g}<br>"
+        + z_title + ": %{z:.3g}<br>"
+        + "<b>%{value:.4f}</b><extra></extra>"
     )
 
-    if threshold is not None:
+    fig = go.Figure()
+
+    for i, level in enumerate(sorted(levels)):
+        color = _THRESHOLD_COLORS[i % len(_THRESHOLD_COLORS)]
+        opacity = 0.3 + 0.15 * (i / max(len(levels) - 1, 1))
         fig.add_trace(
             go.Isosurface(
                 x=xs, y=ys, z=zs,
                 value=fs,
-                isomin=threshold, isomax=threshold,
+                isomin=level, isomax=level,
                 surface_count=1,
-                opacity=0.35,
+                opacity=opacity,
                 caps=dict(x_show=False, y_show=False, z_show=False),
-                colorscale=[[0.0, "#d73027"], [1.0, "#d73027"]],
-                showscale=False,
-                hoverinfo="skip",
-                name="Threshold",
+                colorscale=[[0.0, color], [1.0, color]],
+                showscale=(i == len(levels) - 1),
+                colorbar=dict(
+                    title=dict(text=_OUTPUT_LABELS.get(output_key, output_key),
+                               font=dict(size=11, color=_TEXT_MUTED)),
+                    tickfont=dict(color=_TEXT_MUTED, size=10),
+                    outlinewidth=0, thickness=14, len=0.75,
+                ) if i == len(levels) - 1 else None,
+                hovertemplate=_hover,
+                name=f"≈{level}",
             )
         )
 
@@ -840,7 +824,7 @@ def plot_importance(sweep_data: dict, output_key: str) -> go.Figure:
 # Pareto front (fidelity vs EPR pairs — dominated points dimmed)
 # ---------------------------------------------------------------------------
 
-def plot_pareto(sweep_data: dict, output_key: str, threshold: float | None = None) -> go.Figure:
+def plot_pareto(sweep_data: dict, output_key: str, thresholds: list[float] | None = None) -> go.Figure:
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
     if not rows:
@@ -911,11 +895,13 @@ def plot_pareto(sweep_data: dict, output_key: str, threshold: float | None = Non
         hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR, font_color=_TEXT_COLOR),
     )
 
-    if threshold is not None:
-        fig.add_shape(
-            type="line", xref="paper", x0=0, x1=1, y0=threshold, y1=threshold,
-            line=dict(color="#d73027", width=1.5, dash="dash"),
-        )
+    if thresholds:
+        for i, t in enumerate(thresholds):
+            color = _THRESHOLD_COLORS[i % len(_THRESHOLD_COLORS)]
+            fig.add_shape(
+                type="line", xref="paper", x0=0, x1=1, y0=t, y1=t,
+                line=dict(color=color, width=1.5, dash="dash"),
+            )
 
     return fig
 
@@ -1055,7 +1041,7 @@ def build_figure(
     sweep_data: dict,
     output_key: str,
     view_type: str | None = None,
-    threshold: float | None = None,
+    thresholds: list[float] | None = None,
 ) -> go.Figure:
     if sweep_data is None:
         return plot_empty()
@@ -1067,7 +1053,7 @@ def build_figure(
     if view_type == "importance":
         return plot_importance(sweep_data, output_key)
     if view_type == "pareto":
-        return plot_pareto(sweep_data, output_key, threshold=threshold)
+        return plot_pareto(sweep_data, output_key, thresholds=thresholds)
     if view_type == "correlation":
         return plot_correlation(sweep_data, output_key)
 
@@ -1078,7 +1064,7 @@ def build_figure(
                 results=sweep_data["grid"],
                 metric_key=sweep_data["metric_keys"][0],
                 output_key=output_key,
-                threshold=threshold,
+                thresholds=thresholds,
             )
         elif num_metrics == 2:
             if view_type == "contour":
@@ -1089,7 +1075,7 @@ def build_figure(
                     metric_key1=sweep_data["metric_keys"][0],
                     metric_key2=sweep_data["metric_keys"][1],
                     output_key=output_key,
-                    threshold=threshold,
+                    thresholds=thresholds,
                 )
             return plot_2d(
                 x_values=np.array(sweep_data["xs"]),
@@ -1109,7 +1095,7 @@ def build_figure(
                 metric_key2=sweep_data["metric_keys"][1],
                 metric_key3=sweep_data["metric_keys"][2],
                 output_key=output_key,
-                threshold=threshold,
+                thresholds=thresholds,
             )
             if view_type == "isosurface":
                 return plot_3d_isosurface(**_3d_args)

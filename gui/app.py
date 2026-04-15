@@ -264,6 +264,7 @@ app.layout = html.Div(
         dcc.Store(id="num-metrics-store", data=1, storage_type="memory"),
         dcc.Store(id="sweep-result-store", data=None, storage_type="memory"),
         dcc.Store(id="view-type-store", data=None, storage_type="memory"),
+        dcc.Store(id="num-thresholds-store", data=3, storage_type="memory"),
     ],
 )
 
@@ -315,6 +316,46 @@ def toggle_metric_rows(add_clicks, remove_clicks, num_metrics):
     )
 
     return *row_styles, remove_style, num_metrics
+
+
+# ---------------------------------------------------------------------------
+# Callback: add / remove threshold rows
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    *[Output(f"threshold-row-{i}", "style") for i in range(5)],
+    Output("remove-threshold-btn", "style"),
+    Output("num-thresholds-store", "data"),
+    Input("add-threshold-btn", "n_clicks"),
+    Input("remove-threshold-btn", "n_clicks"),
+    State("num-thresholds-store", "data"),
+    prevent_initial_call=True,
+)
+def toggle_threshold_rows(add_clicks, remove_clicks, num_thresholds):
+    triggered = ctx.triggered_id
+    if triggered == "add-threshold-btn":
+        num_thresholds = min(5, num_thresholds + 1)
+    elif triggered == "remove-threshold-btn":
+        num_thresholds = max(1, num_thresholds - 1)
+
+    row_styles = [
+        {} if i < num_thresholds else {"display": "none"}
+        for i in range(5)
+    ]
+
+    remove_style = (
+        {
+            "background": "transparent",
+            "border": f"1px solid {COLORS['border']}",
+            "color": COLORS["text_muted"],
+            "borderRadius": "4px", "width": "28px", "height": "28px",
+            "cursor": "pointer", "fontSize": "14px",
+        }
+        if num_thresholds > 1
+        else {"display": "none"}
+    )
+
+    return *row_styles, remove_style, num_thresholds
 
 
 # ---------------------------------------------------------------------------
@@ -390,8 +431,9 @@ _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METR
     State("cfg-seed", "value"),
     State("cfg-dynamic-decoupling", "value"),
     State("cfg-output-metric", "value"),
-    State("cfg-threshold", "value"),
     State("cfg-threshold-enable", "value"),
+    *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
+    State("num-thresholds-store", "data"),
     *_NOISE_SLIDER_STATES,
     prevent_initial_call=True,
 )
@@ -404,7 +446,8 @@ def run_sweep(
     circuit_type, num_qubits, num_cores, topology, placement, seed,
     dynamic_decoupling,
     output_key,
-    threshold_val, threshold_enable,
+    threshold_enable,
+    t0, t1, t2, t3, t4, num_thresholds,
     *noise_slider_vals,
 ):
     if not n_clicks:
@@ -494,9 +537,12 @@ def run_sweep(
         )
 
         default_view = VIEW_TAB_DEFAULTS.get(len(active))
-        thresh = threshold_val if threshold_enable and "yes" in threshold_enable else None
+        thresh_vals = [v for v in [t0, t1, t2, t3, t4][:int(num_thresholds or 3)] if v is not None]
+        thresh = thresh_vals if threshold_enable and "yes" in threshold_enable else None
+        if default_view in ("isosurface", "scatter3d"):
+            thresh = thresh_vals or None
         fig = build_figure(len(active), sweep_data, output_key or "overall_fidelity",
-                           view_type=default_view, threshold=thresh)
+                           view_type=default_view, thresholds=thresh)
         return fig, sweep_data, status, default_view, make_view_tab_bar(len(active), default_view)
 
     except Exception as exc:
@@ -517,19 +563,25 @@ def _count_points(sweep_data: dict) -> int:
 @app.callback(
     Output("main-plot", "figure", allow_duplicate=True),
     Input("cfg-output-metric", "value"),
-    Input("cfg-threshold", "value"),
     Input("cfg-threshold-enable", "value"),
+    *[Input(f"cfg-threshold-{i}", "value") for i in range(5)],
     State("sweep-result-store", "data"),
     State("view-type-store", "data"),
+    State("num-thresholds-store", "data"),
     prevent_initial_call=True,
 )
-def replot_on_output_change(output_key, threshold_val, threshold_enable, sweep_data, view_type):
+def replot_on_output_change(output_key, threshold_enable,
+                            t0, t1, t2, t3, t4,
+                            sweep_data, view_type, num_thresholds):
     if sweep_data is None:
         return dash.no_update
     num_metrics = len(sweep_data.get("metric_keys", []))
-    thresh = threshold_val if threshold_enable and "yes" in threshold_enable else None
+    thresh_vals = [v for v in [t0, t1, t2, t3, t4][:int(num_thresholds or 3)] if v is not None]
+    thresh = thresh_vals if threshold_enable and "yes" in threshold_enable else None
+    if view_type in ("isosurface", "scatter3d"):
+        thresh = thresh_vals or None
     return build_figure(num_metrics, sweep_data, output_key or "overall_fidelity",
-                        view_type=view_type, threshold=thresh)
+                        view_type=view_type, thresholds=thresh)
 
 
 # ---------------------------------------------------------------------------
@@ -602,12 +654,13 @@ for _idx in range(MAX_METRICS):
     State("sweep-result-store", "data"),
     State("num-metrics-store", "data"),
     State("cfg-output-metric", "value"),
-    State("cfg-threshold", "value"),
     State("cfg-threshold-enable", "value"),
+    *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
+    State("num-thresholds-store", "data"),
     prevent_initial_call=True,
 )
 def on_view_tab_click(n_clicks_list, sweep_data, num_metrics, output_key,
-                      threshold_val, threshold_enable):
+                      threshold_enable, t0, t1, t2, t3, t4, num_thresholds):
     if not ctx.triggered_id or not any(n_clicks_list):
         return dash.no_update, dash.no_update, dash.no_update
 
@@ -617,9 +670,12 @@ def on_view_tab_click(n_clicks_list, sweep_data, num_metrics, output_key,
         return dash.no_update, view_type, make_view_tab_bar(num_metrics or 1, view_type)
 
     actual_metrics = len(sweep_data.get("metric_keys", []))
-    thresh = threshold_val if threshold_enable and "yes" in threshold_enable else None
+    thresh_vals = [v for v in [t0, t1, t2, t3, t4][:int(num_thresholds or 3)] if v is not None]
+    thresh = thresh_vals if threshold_enable and "yes" in threshold_enable else None
+    if view_type in ("isosurface", "scatter3d"):
+        thresh = thresh_vals or None
     fig = build_figure(actual_metrics, sweep_data, output_key or "overall_fidelity",
-                       view_type=view_type, threshold=thresh)
+                       view_type=view_type, thresholds=thresh)
     return fig, view_type, make_view_tab_bar(actual_metrics, view_type)
 
 

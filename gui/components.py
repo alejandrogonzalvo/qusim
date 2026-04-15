@@ -356,27 +356,101 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             style={"marginBottom": "10px"},
         ),
 
-        _section_header("Threshold"),
-        _label("Fidelity cutoff"),
-        dcc.Slider(
-            id="cfg-threshold",
-            min=0.0, max=1.0, step=0.05, value=0.9,
-            marks={"0": "0", "0.5": "0.5", "0.9": "0.9", "1": "1"},
-            tooltip={"placement": "bottom"},
-            className="dse-slider",
-        ),
+        _section_header("Thresholds"),
         dcc.Checklist(
             id="cfg-threshold-enable",
-            options=[{"label": " Show threshold overlay", "value": "yes"}],
+            options=[{"label": " Show on non-3D views", "value": "yes"}],
             value=[],
-            style={"color": COLORS["text"], "fontSize": "12px", "marginTop": "6px", "marginBottom": "12px"},
+            style={"color": COLORS["text"], "fontSize": "12px", "marginBottom": "8px"},
         ),
+        *_make_threshold_inputs(),
     ])
 
     return html.Div(
         id="fixed-config-panel",
         children=[circuit_section, noise_section, output_section],
     )
+
+
+# ---------------------------------------------------------------------------
+# Threshold inputs (up to 5 iso-levels, 3 pre-populated)
+# ---------------------------------------------------------------------------
+
+_THRESHOLD_DEFAULTS = [0.3, 0.6, 0.9]
+_MAX_THRESHOLDS = 5
+
+_THRESHOLD_INPUT_STYLE = {
+    "width": "60px",
+    "background": COLORS["surface2"],
+    "border": f"1px solid {COLORS['border']}",
+    "color": COLORS["text"],
+    "borderRadius": "4px",
+    "padding": "4px 6px",
+    "fontSize": "12px",
+    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+    "outline": "none",
+    "textAlign": "center",
+}
+
+
+def _make_threshold_inputs() -> list:
+    children = []
+    for i in range(_MAX_THRESHOLDS):
+        default = _THRESHOLD_DEFAULTS[i] if i < len(_THRESHOLD_DEFAULTS) else None
+        visible = i < len(_THRESHOLD_DEFAULTS)
+        children.append(
+            html.Div(
+                id=f"threshold-row-{i}",
+                style={} if visible else {"display": "none"},
+                children=[
+                    html.Div(
+                        style={"display": "flex", "alignItems": "center", "gap": "6px",
+                               "marginBottom": "4px"},
+                        children=[
+                            html.Span(f"#{i+1}", style={"fontSize": "10px", "color": COLORS["text_muted"],
+                                                         "width": "18px"}),
+                            dcc.Input(
+                                id=f"cfg-threshold-{i}",
+                                type="number",
+                                value=default,
+                                min=0, max=1, step=0.01,
+                                debounce=True,
+                                style=_THRESHOLD_INPUT_STYLE,
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        )
+    children.append(
+        html.Div(
+            style={"display": "flex", "gap": "6px", "marginTop": "4px", "marginBottom": "12px"},
+            children=[
+                html.Button(
+                    "+", id="add-threshold-btn", n_clicks=0,
+                    style={
+                        "background": "transparent",
+                        "border": f"1px dashed {COLORS['border']}",
+                        "color": COLORS["text_muted"],
+                        "borderRadius": "4px", "width": "28px", "height": "28px",
+                        "cursor": "pointer", "fontSize": "14px",
+                    },
+                ),
+                html.Button(
+                    "−", id="remove-threshold-btn", n_clicks=0,
+                    style={
+                        "background": "transparent",
+                        "border": f"1px solid {COLORS['border']}",
+                        "color": COLORS["text_muted"],
+                        "borderRadius": "4px", "width": "28px", "height": "28px",
+                        "cursor": "pointer", "fontSize": "14px",
+                        "display": "none",
+                    },
+                ),
+            ],
+        )
+    )
+    return children
 
 
 # ---------------------------------------------------------------------------
