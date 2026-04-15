@@ -13,6 +13,9 @@ from .constants import (
     PLACEMENT_OPTIONS,
     OUTPUT_METRICS,
     NOISE_DEFAULTS,
+    VIEW_TABS,
+    VIEW_TAB_DEFAULTS,
+    ANALYSIS_TABS,
 )
 
 
@@ -352,9 +355,83 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             className="dse-dropdown",
             style={"marginBottom": "10px"},
         ),
+
+        _section_header("Threshold"),
+        _label("Fidelity cutoff"),
+        dcc.Slider(
+            id="cfg-threshold",
+            min=0.0, max=1.0, step=0.05, value=0.9,
+            marks={"0": "0", "0.5": "0.5", "0.9": "0.9", "1": "1"},
+            tooltip={"placement": "bottom"},
+            className="dse-slider",
+        ),
+        dcc.Checklist(
+            id="cfg-threshold-enable",
+            options=[{"label": " Show threshold overlay", "value": "yes"}],
+            value=[],
+            style={"color": COLORS["text"], "fontSize": "12px", "marginTop": "6px", "marginBottom": "12px"},
+        ),
     ])
 
     return html.Div(
         id="fixed-config-panel",
         children=[circuit_section, noise_section, output_section],
+    )
+
+
+# ---------------------------------------------------------------------------
+# View tab bar (above the plot area)
+# ---------------------------------------------------------------------------
+
+def _tab_button(tab: dict, is_active: bool) -> html.Button:
+    return html.Button(
+        tab["label"],
+        id={"type": "view-tab-btn", "index": tab["value"]},
+        n_clicks=0,
+        style={
+            "background": COLORS["accent"] if is_active else "transparent",
+            "color": "#fff" if is_active else COLORS["text_muted"],
+            "border": f"1px solid {COLORS['border']}",
+            "borderRadius": "4px",
+            "padding": "4px 14px",
+            "fontSize": "12px",
+            "fontWeight": "600" if is_active else "400",
+            "cursor": "pointer",
+            "transition": "all 0.15s ease",
+        },
+    )
+
+
+def make_view_tab_bar(num_metrics: int = 2, active: str | None = None) -> html.Div:
+    sweep_tabs = VIEW_TABS.get(num_metrics, VIEW_TABS[1])
+    if active is None:
+        active = VIEW_TAB_DEFAULTS.get(num_metrics, sweep_tabs[0]["value"])
+
+    children = [
+        html.Span("View", style={
+            "fontSize": "10px", "fontWeight": "700",
+            "textTransform": "uppercase", "letterSpacing": "0.08em",
+            "color": COLORS["text_muted"], "marginRight": "6px",
+        }),
+    ]
+
+    for tab in sweep_tabs:
+        children.append(_tab_button(tab, tab["value"] == active))
+
+    if ANALYSIS_TABS:
+        children.append(html.Span("|", style={
+            "color": COLORS["border"], "margin": "0 4px", "fontSize": "14px",
+        }))
+        for tab in ANALYSIS_TABS:
+            children.append(_tab_button(tab, tab["value"] == active))
+
+    return html.Div(
+        id="view-tab-bar",
+        style={
+            "display": "flex",
+            "gap": "6px",
+            "marginBottom": "8px",
+            "alignItems": "center",
+        },
+        children=children,
     )

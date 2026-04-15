@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 import dash
-from dash import dcc, html, Input, Output, State, ctx
+from dash import dcc, html, Input, Output, State, ctx, ALL
 import dash_bootstrap_components as dbc
 
 # ---------------------------------------------------------------------------
@@ -39,10 +39,12 @@ from gui.components import (
     make_metric_selector,
     make_add_metric_button,
     make_fixed_config_panel,
+    make_view_tab_bar,
     _log_marks,
     _linear_marks,
 )
-from gui.plotting import build_figure, plot_empty
+from gui.constants import VIEW_TAB_DEFAULTS
+from gui.plotting import build_figure, plot_empty, sweep_to_csv
 from gui.dse_engine import DSEEngine
 
 # ---------------------------------------------------------------------------
@@ -180,15 +182,37 @@ def _left_sidebar() -> html.Div:
 
 def _center_panel() -> html.Div:
     return html.Div(
-        style={"flex": "1", "minWidth": "0", "padding": "10px"},
+        style={"flex": "1", "minWidth": "0", "padding": "10px",
+               "display": "flex", "flexDirection": "column"},
         children=[
+            html.Div(
+                style={"display": "flex", "alignItems": "center", "justifyContent": "space-between"},
+                children=[
+                    html.Div(id="view-tab-container", children=[make_view_tab_bar(num_metrics=1)]),
+                    html.Button(
+                        "CSV",
+                        id="export-csv-btn",
+                        n_clicks=0,
+                        style={
+                            "background": "transparent",
+                            "border": f"1px solid {COLORS['border']}",
+                            "color": COLORS["text_muted"],
+                            "borderRadius": "4px",
+                            "padding": "4px 12px",
+                            "fontSize": "12px",
+                            "cursor": "pointer",
+                            "marginLeft": "8px",
+                        },
+                    ),
+                ],
+            ),
             dcc.Loading(
                 type="circle",
                 color=COLORS["accent"],
                 children=dcc.Graph(
                     id="main-plot",
                     figure=plot_empty(),
-                    style={"height": "calc(100vh - 80px)"},
+                    style={"flex": "1", "minHeight": "0"},
                     config={
                         "displayModeBar": True,
                         "modeBarButtonsToRemove": ["select2d", "lasso2d"],
@@ -198,6 +222,7 @@ def _center_panel() -> html.Div:
                     },
                 ),
             ),
+            dcc.Download(id="csv-download"),
         ],
     )
 
@@ -238,6 +263,7 @@ app.layout = html.Div(
         # State stores
         dcc.Store(id="num-metrics-store", data=1, storage_type="memory"),
         dcc.Store(id="sweep-result-store", data=None, storage_type="memory"),
+        dcc.Store(id="view-type-store", data=None, storage_type="memory"),
     ],
 )
 
@@ -346,6 +372,8 @@ _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METR
     Output("main-plot", "figure"),
     Output("sweep-result-store", "data"),
     Output("status-bar", "children"),
+    Output("view-type-store", "data"),
+    Output("view-tab-container", "children"),
     Input("run-btn", "n_clicks"),
     State("metric-dropdown-0", "value"),
     State("metric-slider-0", "value"),
@@ -362,6 +390,8 @@ _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METR
     State("cfg-seed", "value"),
     State("cfg-dynamic-decoupling", "value"),
     State("cfg-output-metric", "value"),
+    State("cfg-threshold", "value"),
+    State("cfg-threshold-enable", "value"),
     *_NOISE_SLIDER_STATES,
     prevent_initial_call=True,
 )
@@ -374,10 +404,11 @@ def run_sweep(
     circuit_type, num_qubits, num_cores, topology, placement, seed,
     dynamic_decoupling,
     output_key,
+    threshold_val, threshold_enable,
     *noise_slider_vals,
 ):
     if not n_clicks:
-        return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     t_start = time.time()
 
@@ -401,7 +432,8 @@ def run_sweep(
             active.append((k, r))
 
     if not active:
-        return plot_empty("Add at least one metric axis and click Run"), None, "No metrics configured"
+        return (plot_empty("Add at least one metric axis and click Run"), None,
+                "No metrics configured", dash.no_update, dash.no_update)
 
     try:
         cached = _engine.run_cold(
@@ -461,11 +493,14 @@ def run_sweep(
             f"Total: {total_elapsed:.1f}s"
         )
 
-        fig = build_figure(len(active), sweep_data, output_key or "overall_fidelity")
-        return fig, sweep_data, status
+        default_view = VIEW_TAB_DEFAULTS.get(len(active))
+        thresh = threshold_val if threshold_enable and "yes" in threshold_enable else None
+        fig = build_figure(len(active), sweep_data, output_key or "overall_fidelity",
+                           view_type=default_view, threshold=thresh)
+        return fig, sweep_data, status, default_view, make_view_tab_bar(len(active), default_view)
 
     except Exception as exc:
-        return plot_empty(f"Error: {exc}"), None, f"Error: {exc}"
+        return plot_empty(f"Error: {exc}"), None, f"Error: {exc}", dash.no_update, dash.no_update
 
 
 def _count_points(sweep_data: dict) -> int:
@@ -482,14 +517,19 @@ def _count_points(sweep_data: dict) -> int:
 @app.callback(
     Output("main-plot", "figure", allow_duplicate=True),
     Input("cfg-output-metric", "value"),
+    Input("cfg-threshold", "value"),
+    Input("cfg-threshold-enable", "value"),
     State("sweep-result-store", "data"),
+    State("view-type-store", "data"),
     prevent_initial_call=True,
 )
-def replot_on_output_change(output_key, sweep_data):
+def replot_on_output_change(output_key, threshold_val, threshold_enable, sweep_data, view_type):
     if sweep_data is None:
         return dash.no_update
     num_metrics = len(sweep_data.get("metric_keys", []))
-    return build_figure(num_metrics, sweep_data, output_key or "overall_fidelity")
+    thresh = threshold_val if threshold_enable and "yes" in threshold_enable else None
+    return build_figure(num_metrics, sweep_data, output_key or "overall_fidelity",
+                        view_type=view_type, threshold=thresh)
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +588,56 @@ for _idx in range(MAX_METRICS):
         )
         step = (m.slider_max - m.slider_min) / 200
         return m.slider_min, m.slider_max, step, marks, [m.slider_default_low, m.slider_default_high]
+
+
+# ---------------------------------------------------------------------------
+# Callback: view tab click — switch plot type without re-sweep
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("main-plot", "figure", allow_duplicate=True),
+    Output("view-type-store", "data", allow_duplicate=True),
+    Output("view-tab-container", "children", allow_duplicate=True),
+    Input({"type": "view-tab-btn", "index": ALL}, "n_clicks"),
+    State("sweep-result-store", "data"),
+    State("num-metrics-store", "data"),
+    State("cfg-output-metric", "value"),
+    State("cfg-threshold", "value"),
+    State("cfg-threshold-enable", "value"),
+    prevent_initial_call=True,
+)
+def on_view_tab_click(n_clicks_list, sweep_data, num_metrics, output_key,
+                      threshold_val, threshold_enable):
+    if not ctx.triggered_id or not any(n_clicks_list):
+        return dash.no_update, dash.no_update, dash.no_update
+
+    view_type = ctx.triggered_id["index"]
+
+    if sweep_data is None:
+        return dash.no_update, view_type, make_view_tab_bar(num_metrics or 1, view_type)
+
+    actual_metrics = len(sweep_data.get("metric_keys", []))
+    thresh = threshold_val if threshold_enable and "yes" in threshold_enable else None
+    fig = build_figure(actual_metrics, sweep_data, output_key or "overall_fidelity",
+                       view_type=view_type, threshold=thresh)
+    return fig, view_type, make_view_tab_bar(actual_metrics, view_type)
+
+
+# ---------------------------------------------------------------------------
+# Callback: CSV export
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("csv-download", "data"),
+    Input("export-csv-btn", "n_clicks"),
+    State("sweep-result-store", "data"),
+    prevent_initial_call=True,
+)
+def export_csv(n_clicks, sweep_data):
+    if not n_clicks or sweep_data is None:
+        return dash.no_update
+    csv_str = sweep_to_csv(sweep_data)
+    return dict(content=csv_str, filename="dse_sweep.csv", type="text/csv")
 
 
 # ---------------------------------------------------------------------------

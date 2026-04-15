@@ -57,6 +57,7 @@ def plot_1d(
     results: list,
     metric_key: str,
     output_key: str,
+    threshold: float | None = None,
 ) -> go.Figure:
     y = _extract(results, output_key)
     m = METRIC_BY_KEY.get(metric_key)
@@ -107,6 +108,17 @@ def plot_1d(
         hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR, font_color=_TEXT_COLOR),
         showlegend=False,
     )
+
+    if threshold is not None:
+        fig.add_shape(
+            type="line", xref="paper", x0=0, x1=1, y0=threshold, y1=threshold,
+            line=dict(color="#d73027", width=1.5, dash="dash"),
+        )
+        fig.add_shape(
+            type="rect", xref="paper", x0=0, x1=1, y0=0, y1=threshold,
+            fillcolor="rgba(215, 48, 39, 0.08)", line=dict(width=0),
+        )
+
     return fig
 
 
@@ -195,6 +207,7 @@ def plot_2d_contour(
     metric_key1: str,
     metric_key2: str,
     output_key: str,
+    threshold: float | None = None,
 ) -> go.Figure:
     z = np.zeros((len(y_values), len(x_values)))
     for i, row in enumerate(grid):
@@ -258,6 +271,23 @@ def plot_2d_contour(
             hoverinfo="skip",
         )
     )
+
+    if threshold is not None:
+        fig.add_trace(
+            go.Contour(
+                x=x_plot, y=y_plot, z=z,
+                contours=dict(
+                    start=threshold, end=threshold, size=0,
+                    showlabels=True,
+                    labelfont=dict(size=11, color="#d73027"),
+                    coloring="none",
+                ),
+                line=dict(color="#d73027", width=2.5),
+                showscale=False,
+                hoverinfo="skip",
+                name="threshold",
+            )
+        )
 
     x_title = _axis_label(metric_key1) + (" (log\u2081\u2080)" if x_log else "")
     y_title = _axis_label(metric_key2) + (" (log\u2081\u2080)" if y_log else "")
@@ -759,7 +789,7 @@ def plot_importance(sweep_data: dict, output_key: str) -> go.Figure:
 # Pareto front (fidelity vs EPR pairs — dominated points dimmed)
 # ---------------------------------------------------------------------------
 
-def plot_pareto(sweep_data: dict, output_key: str) -> go.Figure:
+def plot_pareto(sweep_data: dict, output_key: str, threshold: float | None = None) -> go.Figure:
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
     if not rows:
@@ -829,6 +859,13 @@ def plot_pareto(sweep_data: dict, output_key: str) -> go.Figure:
         ),
         hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR, font_color=_TEXT_COLOR),
     )
+
+    if threshold is not None:
+        fig.add_shape(
+            type="line", xref="paper", x0=0, x1=1, y0=threshold, y1=threshold,
+            line=dict(color="#d73027", width=1.5, dash="dash"),
+        )
+
     return fig
 
 
@@ -946,11 +983,28 @@ def plot_empty(message: str = "Select sweep axes and click Run") -> go.Figure:
 # Dispatcher
 # ---------------------------------------------------------------------------
 
+def sweep_to_csv(sweep_data: dict) -> str:
+    metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
+
+    col_names = []
+    for k in metric_keys:
+        m = METRIC_BY_KEY.get(k)
+        col_names.append(m.label if m else k)
+    for k in available_outputs:
+        col_names.append(_OUTPUT_LABELS.get(k, k))
+
+    lines = [",".join(col_names)]
+    for row in rows:
+        lines.append(",".join(f"{v}" for v in row))
+    return "\n".join(lines)
+
+
 def build_figure(
     num_metrics: int,
     sweep_data: dict,
     output_key: str,
     view_type: str | None = None,
+    threshold: float | None = None,
 ) -> go.Figure:
     if sweep_data is None:
         return plot_empty()
@@ -962,7 +1016,7 @@ def build_figure(
     if view_type == "importance":
         return plot_importance(sweep_data, output_key)
     if view_type == "pareto":
-        return plot_pareto(sweep_data, output_key)
+        return plot_pareto(sweep_data, output_key, threshold=threshold)
     if view_type == "correlation":
         return plot_correlation(sweep_data, output_key)
 
@@ -973,6 +1027,7 @@ def build_figure(
                 results=sweep_data["grid"],
                 metric_key=sweep_data["metric_keys"][0],
                 output_key=output_key,
+                threshold=threshold,
             )
         elif num_metrics == 2:
             if view_type == "contour":
@@ -983,6 +1038,7 @@ def build_figure(
                     metric_key1=sweep_data["metric_keys"][0],
                     metric_key2=sweep_data["metric_keys"][1],
                     output_key=output_key,
+                    threshold=threshold,
                 )
             return plot_2d(
                 x_values=np.array(sweep_data["xs"]),
