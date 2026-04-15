@@ -12,55 +12,92 @@ Read these files in order:
 2. `DSE_VIEW_IMPLEMENTATION_PLAN.md` — Full specification for every view (data shapes, Plotly traces, interactions, colorscales)
 3. `gui/plotting.py` — All plot functions live here. Follow the existing patterns.
 4. `gui/constants.py` — `ANALYSIS_TABS` list is where new analysis views get registered
-5. `gui/components.py` — `make_view_tab_bar()` renders the tab bar; analysis tabs appear after a `|` separator
-6. `gui/app.py` — `build_figure()` dispatches by `view_type`; `on_view_tab_click()` handles tab switching
+5. `gui/components.py` — Tabbed right panel (Circuit/Noise/Thresholds), view tab bar, metric selectors
+6. `gui/app.py` — `build_figure()` dispatches by `view_type`; callbacks for sweep, replot, tab switching, CSV export, threshold sync
 7. `tests/test_plotting_views.py` — All view tests. Follow the existing test patterns.
 
 ## What's done
 
-- **Phase 1 complete**: Line (1D), Heatmap (2D), Contour (2D), Scatter3d (3D), Isosurface (3D)
-- **Phase 2 complete**: Parallel Coordinates (2.1), Slice Plot (2.2), Parameter Importance (2.3), Pareto Front (2.4), Correlation Matrix (2.5)
-- **View tab system**: Working with sweep tabs + analysis tabs, auto-select by dimensionality, state in `dcc.Store`
-- **Cross-cutting features (partial)**: Threshold overlay, CSV export, PNG/SVG export
-- **96 tests passing** (84 view + 12 core)
+- **Tier 1 complete**: Line (1D), Heatmap (2D), Contour (2D), Scatter3d (3D), Isosurface (3D)
+- **Tier 2 complete**: Parallel Coordinates, Slice Plot, Parameter Importance, Pareto Front, Correlation Matrix
+- **Multi-threshold system**: Up to 5 iso-levels (defaults: 0.3, 0.6, 0.9) with per-threshold color pickers. Isosurface renders one shell per level. Scatter3d highlights boundary points. Line/contour/pareto show threshold lines when checkbox enabled.
+- **Cross-cutting**: CSV export, threshold overlay, tabbed config panel (Circuit/Noise/Thresholds), auto-run on startup
+- **Defaults**: T1 x T2 x 2Q Gate Time sweep at full range, 1 core, isosurface view
+- **UI polish**: Darkened section titles with separator lines, tabbed right panel to avoid scrolling
+- **104 tests passing** (92 view + 12 core), branch: `dse-ui`
 
-## Next task: remaining cross-cutting features or Tier 3
+## Next tasks — pick from these options
 
-See `DSE_VIEW_IMPLEMENTATION_PLAN.md` for full specifications. Options:
+### Option A: Cross-cutting features (no backend changes needed)
 
-### Cross-cutting features (remaining)
-- Multi-view layout (2x1 or 2x2 split of center panel)
-- Brushing & linking (selection sync across views — requires multi-view)
-- Seed aggregation (multi-seed mode with mean ± σ bands — requires backend changes)
-- LaTeX snippet export
+#### A.1 — Multi-view layout
+- Split center panel into 2x1 or 2x2 tiles
+- Each tile shows a different view of the same sweep data
+- Add a layout toggle button near the view tab bar
+- See §Layout in `DSE_VIEW_IMPLEMENTATION_PLAN.md`
 
-### Tier 3 — Introspection views (per-design-point deep dives)
-- §3.1 Per-qubit fidelity timeline (heatmap of qubit fidelity over circuit layers)
-- §3.2 Core placement map (animated qubit-to-core mapping)
-- §3.3 Fidelity decomposition bar (waterfall: 1.0 → losses → final)
-- **Note**: These require backend changes to expose per-point `QusimResult` data
+#### A.2 — Brushing & linking (requires A.1)
+- Selection in one tile highlights corresponding data in all others
+- Shared selection store in `dcc.Store` (set of design point indices)
+- Each view applies visual highlighting to selected points
+
+#### A.3 — LaTeX snippet export
+- Add a "LaTeX" button next to CSV
+- Generates axis labels, parameter ranges, and figure caption as a LaTeX snippet
+- Copy to clipboard or download as .tex file
+
+### Option B: Tier 3 — Introspection views (requires backend changes)
+
+These need the DSE engine to expose per-point `QusimResult` data (operational fidelity grid, placements, teleportation events). The backend change is: when a user clicks a design point, fetch the full `QusimResult` for that configuration.
+
+#### B.1 — Per-qubit fidelity timeline (§3.1)
+- Heatmap: x = layer index, y = qubit index, color = fidelity
+- Click a qubit row to see its 1D fidelity trace
+- Overlay teleportation events as markers
+
+#### B.2 — Fidelity decomposition bar (§3.3)
+- Waterfall chart: 1.0 → algorithmic loss → routing loss → coherence loss → final
+- Side-by-side comparison of two design points
+
+#### B.3 — Core placement map (§3.2)
+- Heatmap: rows = qubits, columns = layers, color = core index
+- Teleportation events appear as color transitions
+
+### Option C: Seed aggregation (requires backend changes)
+
+- Multi-seed mode toggle (N seeds, default N=5)
+- Backend runs N seeds per grid point
+- Line plots: mean ± σ bands
+- Heatmaps: mean values with std-dev toggle
+- Parallel coordinates: color by mean fidelity
 
 ## TDD workflow (mandatory)
 
-For each view:
+For each view/feature:
 1. **Write tests first** in `tests/test_plotting_views.py` — import the new function, test trace types, data shapes, routing
 2. **Run tests** — confirm they fail (RED)
-3. **Implement** — add `plot_xxx()` to `plotting.py`, add to `ANALYSIS_TABS`, handle in `build_figure()`
-4. **Run tests** — confirm they pass (GREEN)
-5. **Run full suite** — `.venv/bin/python -m pytest tests/ -v` — all must pass before moving on
+3. **Commit** the failing tests
+4. **Implement** — add function to `plotting.py`, register in `ANALYSIS_TABS` if needed, handle in `build_figure()`
+5. **Run tests** — confirm they pass (GREEN)
+6. **Commit** the implementation
+7. **Run full suite** — `.venv/bin/python -m pytest tests/ -v` — all must pass before moving on
 
 ## Patterns to follow
 
 - Plot functions take `sweep_data: dict` (the store format) + `output_key: str`
 - Analysis views use `_flatten_sweep_to_table()` to get a flat table from any-dimension grid
+- Threshold-aware functions accept `thresholds: list[float] | None` and `threshold_colors: list[str] | None`
 - Colorscales: use the diverging `[#d73027, #fc8d59, #fee08b, #91bfdb, #4575b4]` for data views
 - Layout: spread `{**_LAYOUT_BASE, "margin": dict(...)}` to avoid duplicate kwarg errors
 - Test fixtures: reuse `sweep_data_store_1d`, `sweep_data_store_2d`, `sweep_data_store_3d`
 - The `build_figure` dispatcher checks analysis view types before the dimension-specific sweep views
+- Right panel uses `dcc.Tabs` with 3 tabs; new config sections go into existing tabs or a new tab
+- Color pickers use `html.Div` swatch + `dcc.Input(type="text")` for hex values (Dash `dcc.Input` doesn't support `type="color"`)
+- Clientside callbacks sync swatch background to hex input value
 
 ## Do not
 
-- Do not modify the DSE engine (`dse_engine.py`) — all analysis views compute from cached sweep data
+- Do not modify the DSE engine (`dse_engine.py`) unless implementing Tier 3 or seed aggregation
 - Do not change existing test assertions — only add new tests
 - Do not add external dependencies (scipy, scikit-learn, etc.) — use numpy only
-- Do not implement Tier 3 (introspection) views yet — those need backend changes
+- Do not use `html.Input` — Dash's `html` module doesn't have it. Use `dcc.Input` or `html.Div` with styling

@@ -11,6 +11,8 @@ python gui/app.py
 # Open http://localhost:8050
 ```
 
+On startup the app auto-runs a 3D sweep (T1 x T2 x 2Q Gate Time) and renders an isosurface view.
+
 ## Architecture
 
 ```
@@ -32,16 +34,16 @@ gui/
 ## Layout
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Topbar (logo, status, Run button)                      │
-├──────────┬──────────────────────────────┬───────────────┤
-│  Left    │  View Tab Bar                │  Right panel  │
-│  sidebar │  [Heatmap] [Contour] | [Par] │  (fixed       │
-│  (sweep  ├──────────────────────────────┤   config,     │
-│   axes,  │                              │   noise,      │
-│   range  │  Main Plot                   │   output      │
-│   slider)│                              │   metric)     │
-└──────────┴──────────────────────────────┴───────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  Topbar (logo, status, Run button)                          │
+├──────────┬────────────────────────────────┬─────────────────┤
+│  Left    │  View Tab Bar         [CSV]    │  CONFIGURATION  │
+│  sidebar │  [Scatter][Iso] | [Par][Slices]│  ┌────┬───┬───┐ │
+│  (sweep  ├────────────────────────────────┤  │Circ│Noi│Thr│ │
+│   axes,  │                                │  ├────┴───┴───┤ │
+│   range  │  Main Plot                     │  │ tab content │ │
+│   slider)│                                │  │             │ │
+└──────────┴────────────────────────────────┴─────────────────┘
 ```
 
 ## Features
@@ -55,8 +57,8 @@ gui/
 | Line plot | `Line` | 1D | Scatter with spline interpolation and fill. Log-scale x-axis for error rates. |
 | Heatmap | `Heatmap` | 2D | Color grid with grayscale colorscale. Log-scale axis support. |
 | Contour heatmap | `Contour` | 2D | Heatmap + labeled iso-line overlay (diverging RdYlBu colorscale). Default for 2D sweeps. |
-| 3D scatter | `Scatter` | 3D | Scatter3d with points colored by fidelity. |
-| Isosurface | `Isosurface` | 3D | Volumetric iso-level surfaces with adjustable opacity. Falls back to scatter3d on sparse grids (<3x3x3). |
+| 3D scatter | `Scatter` | 3D | Scatter3d with points colored by fidelity. Threshold iso-levels highlighted as larger colored boundary markers. |
+| Isosurface | `Isosurface` | 3D | One isosurface shell per threshold level (default 3: 0.3, 0.6, 0.9). Each with user-configurable color. Default 3D view. |
 
 #### Analysis views (Tier 2)
 
@@ -64,31 +66,27 @@ gui/
 |------|-----|-------------|
 | Parallel coordinates | `Parallel` | All parameters + output metrics on parallel axes. Lines colored by selected output. Axis brushing for filtering. Works on any sweep dimensionality. |
 | Slice plot | `Slices` | Grid of subplots showing marginal effect of each swept parameter. 1D slices through center of grid holding others at defaults. Shared Y-axis scale. |
-| Parameter importance | `Importance` | Horizontal bar chart ranked by range-based sensitivity (max−min of output across each parameter's sweep domain). |
+| Parameter importance | `Importance` | Horizontal bar chart ranked by range-based sensitivity (max-min of output across each parameter's sweep domain). |
 | Pareto front | `Pareto` | Scatter plot of fidelity vs EPR pairs. Pareto-optimal points highlighted with connected line; dominated points dimmed. |
 | Correlation matrix | `Corr.` | Annotated heatmap of Spearman rank correlations between all swept parameters and output metrics. Diverging blue-white-red colorscale. |
-
-#### View system
-
-- **Tab bar** above the plot with sweep-specific tabs + analysis tabs separated by `|`
-- Tabs auto-select based on sweep dimensionality (1D→Line, 2D→Contour, 3D→Scatter)
-- Switching tabs re-renders from cached data — no re-simulation
-- View state persisted in `dcc.Store`
 
 #### Cross-cutting features
 
 | Feature | Description |
 |---------|-------------|
-| Threshold overlay | Global fidelity cutoff (default 0.9, adjustable slider). Dashed red line + shaded infeasible region on line plots, bold red contour on 2D contour, horizontal line on Pareto front. Toggle via checkbox. |
-| CSV export | Download button above the plot exports the full sweep data as a CSV file. One row per design point, columns for all swept parameters and output metrics. |
+| Multi-threshold overlay | Up to 5 iso-level thresholds (3 defaults: 0.3, 0.6, 0.9). Each has a color swatch + hex input. Isosurface/scatter3d always use them; other views show them when "Show on non-3D views" is checked. Renders as dashed lines (1D/pareto), bold contours (2D), boundary markers (scatter3d), or isosurface shells (isosurface). |
+| CSV export | Download button above the plot exports the full sweep data as a CSV file. |
 | PNG/SVG export | Built-in Plotly toolbar export at 2x resolution (1200x800). |
+| Tabbed config panel | Right panel split into Circuit / Noise / Thresholds tabs to avoid scrolling. |
+| Auto-run on startup | Default sweep (T1 x T2 x 2Q Gate Time, 1 core, full range) runs automatically and shows isosurface view. |
 
 #### Configuration
 
-- **Left sidebar**: Up to 3 sweep axes with dropdown (parameter selector) + range slider
-- **Right panel**: Circuit type (QFT, GHZ, Random), qubits (4-80), cores (1-16), topology (ring, all-to-all, linear), placement (random, spectral clustering), seed, dynamic decoupling toggle
-- **Noise panel**: 9 sweepable hardware parameters with log/linear sliders. Swept parameters auto-hidden from the fixed config panel.
-- **Output metric selector**: Overall fidelity, algorithmic/routing/coherence fidelity, circuit time, EPR pairs
+- **Left sidebar**: Up to 3 sweep axes with dropdown (parameter selector) + range slider. Defaults: T1, T2, 2Q Gate Time at full range.
+- **Right panel (tabbed)**:
+  - **Circuit tab**: Circuit type (QFT, GHZ, Random), qubits (4-80), cores (1-16, default 1), topology (ring, all-to-all, linear), placement (random, spectral clustering), seed, dynamic decoupling toggle
+  - **Noise tab**: 9 sweepable hardware parameters with log/linear sliders. Swept parameters auto-hidden.
+  - **Thresholds tab**: Output metric selector, up to 5 iso-levels with color picker + numeric input
 
 #### Sweep engine
 
@@ -104,8 +102,8 @@ gui/
 | Feature | Description | Plan ref |
 |---------|-------------|----------|
 | **Multi-view layout** | 2x1 or 2x2 split of the center panel. Different views of same data side by side. | §Layout |
-| **Brushing & linking** | Selection in one view highlights corresponding data in all others. | §Brushing |
-| **Seed aggregation** | Multi-seed mode with mean ± σ bands on line plots, std-dev heatmaps. | §Seeds |
+| **Brushing & linking** | Selection in one view highlights corresponding data in all others. Requires multi-view. | §Brushing |
+| **Seed aggregation** | Multi-seed mode with mean +/- sigma bands on line plots, std-dev heatmaps. Requires backend changes. | §Seeds |
 | **LaTeX snippet export** | Export plot configuration as LaTeX code for paper figures. | §Export |
 
 #### Tier 3 — Introspection views (per-design-point)
@@ -114,17 +112,9 @@ gui/
 |------|-------------|----------|
 | **Per-qubit fidelity timeline** (3.1) | Heatmap of qubit fidelity over circuit layers. Click-to-inspect single qubit. | §3.1 |
 | **Core placement map** (3.2) | Animated or scrubbable qubit-to-core mapping across layers. | §3.2 |
-| **Fidelity decomposition** (3.3) | Waterfall chart: 1.0 → algorithmic loss → routing loss → coherence loss → final. | §3.3 |
+| **Fidelity decomposition** (3.3) | Waterfall chart: 1.0 -> algorithmic loss -> routing loss -> coherence loss -> final. | §3.3 |
 
-#### Cross-cutting features
-
-| Feature | Description | Plan ref |
-|---------|-------------|----------|
-| **Threshold overlay** | Global fidelity cutoff line (default 0.9). Regions below shaded/dimmed in all views. | §Threshold |
-| **Multi-view layout** | 2x1 or 2x2 split of the center panel. Different views of same data side by side. | §Layout |
-| **Export** | PNG/SVG export (built-in), CSV data export, LaTeX snippet for paper figures. | §Export |
-| **Brushing & linking** | Selection in one view highlights corresponding data in all others. | §Brushing |
-| **Seed aggregation** | Multi-seed mode with mean ± σ bands on line plots, std-dev heatmaps. | §Seeds |
+**Note**: Tier 3 views require backend changes to expose per-point `QusimResult` data.
 
 ## Sweepable parameters
 
@@ -150,7 +140,7 @@ python -m pytest tests/test_plotting_views.py -v
 python -m pytest tests/ -v
 ```
 
-Current coverage: 96 tests (84 view tests + 12 core tests), all passing.
+Current coverage: 104 tests (92 view tests + 12 core tests), all passing.
 
 ## Implementation plan
 
