@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from gui.app import resolve_view_type, should_skip_poll, sweep_lock
+from gui.app import resolve_view_type, should_skip_poll, sweep_lock, sweep_gate
 
 
 # ---------------------------------------------------------------------------
@@ -133,3 +133,31 @@ class TestSweepLock:
 
         acquired_count = sum(1 for _, a in results if a)
         assert acquired_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Clientside gate: only trigger server when dirty > processed
+# ---------------------------------------------------------------------------
+
+class TestSweepGate:
+    """sweep_gate(dirty, processed) mirrors the JS clientside gate."""
+
+    def test_triggers_when_dirty_exceeds_processed(self):
+        assert sweep_gate(5, 3) == 5
+
+    def test_no_trigger_when_equal(self):
+        assert sweep_gate(3, 3) is None
+
+    def test_no_trigger_when_processed_ahead(self):
+        assert sweep_gate(2, 5) is None
+
+    def test_triggers_on_initial_load(self):
+        """sweep-dirty starts at 1, processed at 0 — must trigger."""
+        assert sweep_gate(1, 0) == 1
+
+    def test_no_trigger_after_sweep_catches_up(self):
+        assert sweep_gate(10, 10) is None
+
+    def test_triggers_when_user_changes_input_during_sweep(self):
+        """dirty incremented during sweep, processed still at old value."""
+        assert sweep_gate(7, 4) == 7

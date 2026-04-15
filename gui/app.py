@@ -92,6 +92,17 @@ def should_skip_poll(
     return False
 
 
+def sweep_gate(dirty: int, processed: int) -> int | None:
+    """Return the trigger value when a sweep is needed, None otherwise.
+
+    Python mirror of the clientside JS gate callback.  The JS version
+    returns ``window.dash_clientside.no_update`` instead of None.
+    """
+    if dirty > processed:
+        return dirty
+    return None
+
+
 # ---------------------------------------------------------------------------
 # App init
 # ---------------------------------------------------------------------------
@@ -390,11 +401,26 @@ app.layout = html.Div(
         dcc.Store(id="num-thresholds-store", data=3, storage_type="memory"),
         dcc.Store(id="sweep-dirty", data=1, storage_type="memory"),
         dcc.Store(id="sweep-processed", data=0, storage_type="memory"),
-        dcc.Interval(
-            id="auto-run-trigger", interval=500, n_intervals=0, max_intervals=1
-        ),
-        dcc.Interval(id="sweep-poll", interval=16, n_intervals=0),
+        dcc.Store(id="sweep-trigger", data=0, storage_type="memory"),
     ],
+)
+
+
+# ---------------------------------------------------------------------------
+# Clientside gate: only trigger server-side sweep when dirty > processed
+# ---------------------------------------------------------------------------
+
+app.clientside_callback(
+    """function(dirty, processed) {
+        if (dirty > processed) {
+            return dirty;
+        }
+        return window.dash_clientside.no_update;
+    }""",
+    Output("sweep-trigger", "data"),
+    Input("sweep-dirty", "data"),
+    Input("sweep-processed", "data"),
+    prevent_initial_call=False,
 )
 
 
@@ -587,11 +613,9 @@ app.clientside_callback(
     Output("view-type-store", "data"),
     Output("view-tab-container", "children"),
     Output("sweep-processed", "data"),
+    Input("sweep-trigger", "data"),
     Input("run-btn", "n_clicks"),
-    Input("auto-run-trigger", "n_intervals"),
-    Input("sweep-poll", "n_intervals"),
     State("sweep-dirty", "data"),
-    State("sweep-processed", "data"),
     State("hot-reload-toggle", "value"),
     State("metric-dropdown-0", "value"),
     State("metric-slider-0", "value"),
@@ -617,11 +641,9 @@ app.clientside_callback(
     prevent_initial_call=True,
 )
 def run_sweep(
+    trigger,
     n_clicks,
-    auto_run_intervals,
-    poll_intervals,
     dirty,
-    processed,
     hot_reload,
     m0_key,
     m0_range,
@@ -653,12 +675,12 @@ def run_sweep(
     current_view,
     *noise_slider_vals,
 ):
-    triggered_ids = [t["prop_id"].split(".")[0] for t in ctx.triggered]
-    if should_skip_poll(triggered_ids, hot_reload, dirty, processed):
+    is_run_btn = ctx.triggered_id == "run-btn"
+    hot_reload_on = hot_reload and "on" in hot_reload
+    if not is_run_btn and not hot_reload_on:
         return _NO_UPDATE_6
 
-    if not sweep_lock.acquire(blocking=False):
-        return _NO_UPDATE_6
+    sweep_lock.acquire()
 
     try:
         t_start = time.time()
