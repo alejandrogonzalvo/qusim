@@ -48,6 +48,11 @@ from gui.constants import (
     VIEW_TABS,
 )
 from gui.dse_engine import DSEEngine
+from gui.interpolation import (
+    frozen_slider_config,
+    is_frozen_view,
+    sweep_to_interp_grid,
+)
 from gui.plotting import build_figure, plot_empty, sweep_to_csv
 
 _ANALYSIS_VIEW_KEYS = {t["value"] for t in ANALYSIS_TABS}
@@ -337,6 +342,43 @@ def _center_panel() -> html.Div:
                     },
                 ),
             ),
+            html.Div(
+                id="frozen-slider-container",
+                style={"display": "none", "padding": "4px 16px 8px"},
+                children=[
+                    html.Div(
+                        style={"display": "flex", "alignItems": "center", "gap": "8px"},
+                        children=[
+                            html.Span(
+                                id="frozen-slider-label",
+                                children="Frozen axis",
+                                style={
+                                    "fontSize": "11px",
+                                    "fontWeight": "600",
+                                    "color": COLORS["text_muted"],
+                                    "whiteSpace": "nowrap",
+                                },
+                            ),
+                            dcc.Slider(
+                                id="frozen-slider",
+                                min=0, max=1, step=0.01, value=0.5,
+                                marks={},
+                                tooltip={"placement": "bottom", "always_visible": True},
+                                updatemode="drag",
+                            ),
+                            html.Span(
+                                id="frozen-slider-value",
+                                style={
+                                    "fontSize": "11px",
+                                    "color": COLORS["accent"],
+                                    "minWidth": "60px",
+                                    "textAlign": "right",
+                                },
+                            ),
+                        ],
+                    ),
+                ],
+            ),
             dcc.Download(id="csv-download"),
         ],
     )
@@ -402,6 +444,7 @@ app.layout = html.Div(
         dcc.Store(id="sweep-dirty", data=1, storage_type="memory"),
         dcc.Store(id="sweep-processed", data=0, storage_type="memory"),
         dcc.Store(id="sweep-trigger", data=0, storage_type="memory"),
+        dcc.Store(id="interp-grid-store", data=None, storage_type="memory"),
         dcc.Interval(id="sweep-check", interval=16, n_intervals=0),
     ],
 )
@@ -583,7 +626,8 @@ def _slider_to_value(slider_pos: float, log_scale: bool) -> float:
 
 _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METRICS]
 
-_NO_UPDATE_6 = (dash.no_update,) * 6
+_NUM_SWEEP_OUTPUTS = 11
+_NO_UPDATE_SWEEP = (dash.no_update,) * _NUM_SWEEP_OUTPUTS
 
 # Clientside: any simulation input change → increment dirty counter
 _SIM_INPUTS = [
@@ -622,6 +666,11 @@ app.clientside_callback(
     Output("view-type-store", "data"),
     Output("view-tab-container", "children"),
     Output("sweep-processed", "data"),
+    Output("interp-grid-store", "data"),
+    Output("frozen-slider-container", "style"),
+    Output("frozen-slider", "min"),
+    Output("frozen-slider", "max"),
+    Output("frozen-slider-label", "children"),
     Input("sweep-trigger", "data"),
     Input("run-btn", "n_clicks"),
     State("sweep-dirty", "data"),
@@ -687,7 +736,7 @@ def run_sweep(
     is_run_btn = ctx.triggered_id == "run-btn"
     hot_reload_on = hot_reload and "on" in hot_reload
     if not is_run_btn and not hot_reload_on:
-        return _NO_UPDATE_6
+        return _NO_UPDATE_SWEEP
 
     sweep_lock.acquire()
 
@@ -721,6 +770,11 @@ def run_sweep(
                 dash.no_update,
                 dash.no_update,
                 dirty,
+                None,
+                {"display": "none"},
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
             )
 
         cached = _engine.run_cold(
@@ -803,10 +857,27 @@ def run_sweep(
         thresh = thresh_vals if threshold_enable and "yes" in threshold_enable else None
         if view in ("isosurface", "scatter3d"):
             thresh = thresh_vals or None
+
+        out_key = output_key or "overall_fidelity"
+        interp_grid = None
+        frozen_style = {"display": "none"}
+        frozen_min = dash.no_update
+        frozen_max = dash.no_update
+        frozen_label = dash.no_update
+
+        if len(active) == 3:
+            interp_grid = sweep_to_interp_grid(sweep_data, out_key)
+            fs_cfg = frozen_slider_config(sweep_data)
+            if fs_cfg and is_frozen_view(view):
+                frozen_style = {"padding": "4px 16px 8px"}
+                frozen_min = fs_cfg["min"]
+                frozen_max = fs_cfg["max"]
+                frozen_label = f"{METRIC_BY_KEY[fs_cfg['metric_key']].label}"
+
         fig = build_figure(
             len(active),
             sweep_data,
-            output_key or "overall_fidelity",
+            out_key,
             view_type=view,
             thresholds=thresh,
             threshold_colors=thresh_colors or None,
@@ -818,6 +889,11 @@ def run_sweep(
             view,
             make_view_tab_bar(len(active), view),
             dirty,
+            interp_grid,
+            frozen_style,
+            frozen_min,
+            frozen_max,
+            frozen_label,
         )
 
     except Exception as exc:
@@ -828,6 +904,11 @@ def run_sweep(
             dash.no_update,
             dash.no_update,
             dirty,
+            None,
+            {"display": "none"},
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
         )
     finally:
         sweep_lock.release()
@@ -1096,6 +1177,76 @@ app.clientside_callback(
     Input("hot-reload-toggle", "value"),
     prevent_initial_call=False,
 )
+
+
+# ---------------------------------------------------------------------------
+# Clientside callback: frozen slider drag → interpolate 2D slice, update plot
+# ---------------------------------------------------------------------------
+# This runs entirely in the browser. No server round-trip.
+# The interp-grid-store holds the precomputed 3D grid; frozenSlice extracts
+# a 2D plane at the slider value, then Plotly.react diffs the data in-place.
+
+app.clientside_callback(
+    """function(frozenVal, interpGrid, viewType) {
+        if (!interpGrid || !interpGrid.values || interpGrid.ndim !== 3) {
+            return [window.dash_clientside.no_update,
+                    window.dash_clientside.no_update];
+        }
+        if (viewType !== "frozen_heatmap" && viewType !== "frozen_contour") {
+            return [window.dash_clientside.no_update,
+                    window.dash_clientside.no_update];
+        }
+        var qi = window.qusimInterp;
+        if (!qi) {
+            return [window.dash_clientside.no_update,
+                    window.dash_clientside.no_update];
+        }
+
+        var slice2d = qi.frozenSlice(
+            interpGrid.values, interpGrid.xs, interpGrid.ys,
+            interpGrid.zs, frozenVal
+        );
+
+        var plotDiv = document.getElementById("main-plot");
+        if (plotDiv && plotDiv.data && plotDiv.data.length > 0) {
+            var trace = plotDiv.data[0];
+            trace.z = slice2d;
+            plotDiv.layout.datarevision = (plotDiv.layout.datarevision || 0) + 1;
+            Plotly.react(plotDiv, plotDiv.data, plotDiv.layout);
+        }
+
+        var v = frozenVal;
+        var label = (Math.abs(v) < 1e-3 || Math.abs(v) >= 1e5)
+            ? v.toExponential(2) : (Math.abs(v) < 10 ? v.toFixed(4) : v.toFixed(1));
+
+        return [window.dash_clientside.no_update, label];
+    }""",
+    Output("main-plot", "figure", allow_duplicate=True),
+    Output("frozen-slider-value", "children"),
+    Input("frozen-slider", "value"),
+    State("interp-grid-store", "data"),
+    State("view-type-store", "data"),
+    prevent_initial_call=True,
+)
+
+
+# ---------------------------------------------------------------------------
+# Callback: show/hide frozen slider when view tab changes
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("frozen-slider-container", "style", allow_duplicate=True),
+    Input("view-type-store", "data"),
+    State("sweep-result-store", "data"),
+    prevent_initial_call=True,
+)
+def toggle_frozen_slider_visibility(view_type, sweep_data):
+    if sweep_data is None:
+        return {"display": "none"}
+    num_metrics = len(sweep_data.get("metric_keys", []))
+    if num_metrics == 3 and is_frozen_view(view_type):
+        return {"padding": "4px 16px 8px"}
+    return {"display": "none"}
 
 
 # ---------------------------------------------------------------------------
