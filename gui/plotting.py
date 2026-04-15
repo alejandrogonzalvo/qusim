@@ -537,6 +537,7 @@ def plot_3d_isosurface(
     for i, level in enumerate(sorted(levels)):
         color = _colors[i % len(_colors)]
         opacity = 0.3 + 0.15 * (i / max(len(levels) - 1, 1))
+        is_last = (i == len(levels) - 1)
         fig.add_trace(
             go.Isosurface(
                 x=xs, y=ys, z=zs,
@@ -546,13 +547,14 @@ def plot_3d_isosurface(
                 opacity=opacity,
                 caps=dict(x_show=False, y_show=False, z_show=False),
                 colorscale=[[0.0, color], [1.0, color]],
-                showscale=(i == len(levels) - 1),
+                cmin=fmin, cmax=fmax,
+                showscale=is_last,
                 colorbar=dict(
                     title=dict(text=_OUTPUT_LABELS.get(output_key, output_key),
                                font=dict(size=11, color=_TEXT_MUTED)),
                     tickfont=dict(color=_TEXT_MUTED, size=10),
                     outlinewidth=0, thickness=14, len=0.75,
-                ) if i == len(levels) - 1 else None,
+                ) if is_last else None,
                 hovertemplate=_hover,
                 name=f"≈{level}",
             )
