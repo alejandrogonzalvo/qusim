@@ -48,11 +48,24 @@ from gui.plotting import build_figure, plot_empty, sweep_to_csv
 from gui.dse_engine import DSEEngine
 
 
+_ANALYSIS_VIEW_KEYS = {t["value"] for t in ANALYSIS_TABS}
+_SWEEP_VIEW_KEYS: dict[int, set[str]] = {
+    dim: {t["value"] for t in tabs} for dim, tabs in VIEW_TABS.items()
+}
+
+
 def resolve_view_type(current_view: str | None, num_active: int) -> str:
     """Return the view type to use for a sweep with *num_active* dimensions.
 
-    BUG: currently always returns the default, ignoring *current_view*.
+    Preserves *current_view* when it is valid for *num_active* (either a
+    sweep-specific tab or a dimensionality-agnostic analysis tab).  Falls
+    back to the default only on first run or when the dimensionality changed
+    to one where the previous view doesn't exist.
     """
+    if current_view is not None:
+        valid = _SWEEP_VIEW_KEYS.get(num_active, set()) | _ANALYSIS_VIEW_KEYS
+        if current_view in valid:
+            return current_view
     return VIEW_TAB_DEFAULTS.get(num_active, "line")
 
 
@@ -64,11 +77,13 @@ def should_skip_poll(
 ) -> bool:
     """Decide whether the sweep-poll tick should be skipped.
 
-    BUG: only checks the first trigger — misses auto-run-trigger when it
-    fires simultaneously with sweep-poll.
+    Returns False (do NOT skip) when auto-run-trigger or run-btn is among
+    the triggers, even if sweep-poll also fired in the same render cycle.
     """
-    trigger = triggered_ids[0] if triggered_ids else None
-    if trigger == "sweep-poll":
+    ids = set(triggered_ids)
+    if ids - {"sweep-poll"}:
+        return False
+    if "sweep-poll" in ids:
         hot_reload_on = hot_reload and "on" in hot_reload
         if not hot_reload_on or dirty == processed:
             return True
@@ -527,6 +542,7 @@ app.clientside_callback(
     *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
     *[State(f"cfg-threshold-color-{i}", "value") for i in range(5)],
     State("num-thresholds-store", "data"),
+    State("view-type-store", "data"),
     *_NOISE_SLIDER_STATES,
     prevent_initial_call=True,
 )
@@ -544,14 +560,12 @@ def run_sweep(
     t0, t1, t2, t3, t4,
     tc0, tc1, tc2, tc3, tc4,
     num_thresholds,
+    current_view,
     *noise_slider_vals,
 ):
-    trigger = ctx.triggered_id
-
-    if trigger == "sweep-poll":
-        hot_reload_on = hot_reload and "on" in hot_reload
-        if not hot_reload_on or dirty == processed:
-            return _NO_UPDATE_6
+    triggered_ids = [t["prop_id"].split(".")[0] for t in ctx.triggered]
+    if should_skip_poll(triggered_ids, hot_reload, dirty, processed):
+        return _NO_UPDATE_6
 
     t_start = time.time()
 
@@ -636,19 +650,19 @@ def run_sweep(
             f"Total: {total_elapsed:.1f}s"
         )
 
-        default_view = VIEW_TAB_DEFAULTS.get(len(active))
+        view = resolve_view_type(current_view, len(active))
         n_t = int(num_thresholds or 3)
         all_t = [t0, t1, t2, t3, t4][:n_t]
         all_c = [tc0, tc1, tc2, tc3, tc4][:n_t]
         thresh_vals = [v for v in all_t if v is not None]
         thresh_colors = [all_c[i] for i, v in enumerate(all_t) if v is not None]
         thresh = thresh_vals if threshold_enable and "yes" in threshold_enable else None
-        if default_view in ("isosurface", "scatter3d"):
+        if view in ("isosurface", "scatter3d"):
             thresh = thresh_vals or None
         fig = build_figure(len(active), sweep_data, output_key or "overall_fidelity",
-                           view_type=default_view, thresholds=thresh,
+                           view_type=view, thresholds=thresh,
                            threshold_colors=thresh_colors or None)
-        return fig, sweep_data, status, default_view, make_view_tab_bar(len(active), default_view), dirty
+        return fig, sweep_data, status, view, make_view_tab_bar(len(active), view), dirty
 
     except Exception as exc:
         return plot_empty(f"Error: {exc}"), None, f"Error: {exc}", dash.no_update, dash.no_update, dirty
