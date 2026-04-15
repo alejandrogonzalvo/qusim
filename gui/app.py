@@ -208,10 +208,12 @@ def _center_panel() -> html.Div:
             dcc.Loading(
                 type="circle",
                 color=COLORS["accent"],
+                parent_style={"flex": "1", "minHeight": "0", "display": "flex", "flexDirection": "column"},
                 children=dcc.Graph(
                     id="main-plot",
                     figure=plot_empty(),
-                    style={"flex": "1", "minHeight": "0"},
+                    style={"flex": "1", "minHeight": "0", "height": "100%"},
+                    responsive=True,
                     config={
                         "displayModeBar": True,
                         "modeBarButtonsToRemove": ["select2d", "lasso2d"],
