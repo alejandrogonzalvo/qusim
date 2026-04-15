@@ -316,14 +316,12 @@ def plot_3d(
     metric_key2: str,
     metric_key3: str,
     output_key: str,
+    threshold: float | None = None,
 ) -> go.Figure:
     m1 = METRIC_BY_KEY.get(metric_key1)
     m2 = METRIC_BY_KEY.get(metric_key2)
     m3 = METRIC_BY_KEY.get(metric_key3)
 
-    # For 3D, fix the middle value of the 3rd axis and show a surface,
-    # then provide a slider note. Full volumetric 3D iso-surface is complex;
-    # instead we render a scatter3d for all points coloured by fidelity.
     xs_all, ys_all, zs_all, fs_all = [], [], [], []
 
     for i, x_val in enumerate(x_values):
@@ -341,8 +339,13 @@ def plot_3d(
                 zs_all.append(z_plot)
                 fs_all.append(float(f))
 
-    fmin = 0.0 if "fidelity" in output_key else min(fs_all)
-    fmax = 1.0 if "fidelity" in output_key else max(fs_all)
+    xs_all = np.array(xs_all)
+    ys_all = np.array(ys_all)
+    zs_all = np.array(zs_all)
+    fs_all = np.array(fs_all)
+
+    fmin = 0.0 if "fidelity" in output_key else float(fs_all.min())
+    fmax = 1.0 if "fidelity" in output_key else float(fs_all.max())
 
     x_title = _axis_label(metric_key1) + (" (log₁₀)" if (m1 and m1.log_scale) else "")
     y_title = _axis_label(metric_key2) + (" (log₁₀)" if (m2 and m2.log_scale) else "")
@@ -357,32 +360,62 @@ def plot_3d(
         [1.0,  "#F0F0F0"],
     ]
 
-    fig = go.Figure(
-        go.Scatter3d(
-            x=xs_all, y=ys_all, z=zs_all,
+    _hover = (
+        x_title + ": %{x:.3g}<br>"
+        + y_title + ": %{y:.3g}<br>"
+        + z_title + ": %{z:.3g}<br>"
+        + "<b>fidelity: %{marker.color:.4f}</b><extra></extra>"
+    )
+
+    fig = go.Figure()
+
+    if threshold is not None:
+        above = fs_all >= threshold
+        below = ~above
+
+        if below.any():
+            fig.add_trace(go.Scatter3d(
+                x=xs_all[below], y=ys_all[below], z=zs_all[below],
+                mode="markers",
+                marker=dict(size=3, color="#CCCCCC", opacity=0.2, line=dict(width=0)),
+                name="Below threshold",
+                hovertemplate=_hover,
+            ))
+        if above.any():
+            fig.add_trace(go.Scatter3d(
+                x=xs_all[above], y=ys_all[above], z=zs_all[above],
+                mode="markers",
+                marker=dict(
+                    size=3.5, color=fs_all[above].tolist(),
+                    cmin=fmin, cmax=fmax, colorscale=_COLORSCALE,
+                    colorbar=dict(
+                        title=dict(text=_OUTPUT_LABELS.get(output_key, output_key),
+                                   font=dict(size=11, color=_TEXT_MUTED)),
+                        tickfont=dict(color=_TEXT_MUTED, size=10),
+                        outlinewidth=0, thickness=14, len=0.75,
+                    ),
+                    opacity=0.85, line=dict(width=0),
+                ),
+                name="Above threshold",
+                hovertemplate=_hover,
+            ))
+    else:
+        fig.add_trace(go.Scatter3d(
+            x=xs_all.tolist(), y=ys_all.tolist(), z=zs_all.tolist(),
             mode="markers",
             marker=dict(
-                size=3.5,
-                color=fs_all,
-                cmin=fmin, cmax=fmax,
-                colorscale=_COLORSCALE,
+                size=3.5, color=fs_all.tolist(),
+                cmin=fmin, cmax=fmax, colorscale=_COLORSCALE,
                 colorbar=dict(
                     title=dict(text=_OUTPUT_LABELS.get(output_key, output_key),
                                font=dict(size=11, color=_TEXT_MUTED)),
                     tickfont=dict(color=_TEXT_MUTED, size=10),
                     outlinewidth=0, thickness=14, len=0.75,
                 ),
-                opacity=0.85,
-                line=dict(width=0),
+                opacity=0.85, line=dict(width=0),
             ),
-            hovertemplate=(
-                x_title + ": %{x:.3g}<br>"
-                + y_title + ": %{y:.3g}<br>"
-                + z_title + ": %{z:.3g}<br>"
-                + "<b>fidelity: %{marker.color:.4f}</b><extra></extra>"
-            ),
-        )
-    )
+            hovertemplate=_hover,
+        ))
 
     _SCENE_AXIS = lambda title: dict(
         title=dict(text=title, font=dict(size=11, color=_TEXT_MUTED)),
@@ -467,12 +500,14 @@ def plot_3d_isosurface(
     metric_key2: str,
     metric_key3: str,
     output_key: str,
+    threshold: float | None = None,
 ) -> go.Figure:
     total_points = len(x_values) * len(y_values) * len(z_values)
 
     if total_points < _MIN_GRID_FOR_ISOSURFACE:
         return plot_3d(x_values, y_values, z_values, grid,
-                       metric_key1, metric_key2, metric_key3, output_key)
+                       metric_key1, metric_key2, metric_key3, output_key,
+                       threshold=threshold)
 
     xs, ys, zs, fs, x_title, y_title, z_title = _flatten_3d_grid(
         x_values, y_values, z_values, grid,
@@ -515,6 +550,22 @@ def plot_3d_isosurface(
             ),
         )
     )
+
+    if threshold is not None:
+        fig.add_trace(
+            go.Isosurface(
+                x=xs, y=ys, z=zs,
+                value=fs,
+                isomin=threshold, isomax=threshold,
+                surface_count=1,
+                opacity=0.35,
+                caps=dict(x_show=False, y_show=False, z_show=False),
+                colorscale=[[0.0, "#d73027"], [1.0, "#d73027"]],
+                showscale=False,
+                hoverinfo="skip",
+                name="Threshold",
+            )
+        )
 
     fig.update_layout(
         paper_bgcolor=_BG,
@@ -1058,6 +1109,7 @@ def build_figure(
                 metric_key2=sweep_data["metric_keys"][1],
                 metric_key3=sweep_data["metric_keys"][2],
                 output_key=output_key,
+                threshold=threshold,
             )
             if view_type == "isosurface":
                 return plot_3d_isosurface(**_3d_args)

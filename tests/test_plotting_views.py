@@ -677,7 +677,7 @@ class TestThresholdOverlay:
         xs, ys, zs, grid = sweep_3d_data
         fig = plot_3d(xs, ys, zs, grid,
                       "single_gate_error", "two_gate_error", "t1",
-                      "overall_fidelity", threshold=0.7)
+                      "overall_fidelity", threshold=0.9)
         scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter3d)]
         assert len(scatter_traces) == 2
 
@@ -685,7 +685,7 @@ class TestThresholdOverlay:
         xs, ys, zs, grid = sweep_3d_data
         fig = plot_3d(xs, ys, zs, grid,
                       "single_gate_error", "two_gate_error", "t1",
-                      "overall_fidelity", threshold=0.7)
+                      "overall_fidelity", threshold=0.9)
         scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter3d)]
         dimmed = [t for t in scatter_traces if "below" in (t.name or "").lower()]
         assert len(dimmed) == 1
