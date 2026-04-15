@@ -75,6 +75,14 @@ gui/
 - Switching tabs re-renders from cached data — no re-simulation
 - View state persisted in `dcc.Store`
 
+#### Cross-cutting features
+
+| Feature | Description |
+|---------|-------------|
+| Threshold overlay | Global fidelity cutoff (default 0.9, adjustable slider). Dashed red line + shaded infeasible region on line plots, bold red contour on 2D contour, horizontal line on Pareto front. Toggle via checkbox. |
+| CSV export | Download button above the plot exports the full sweep data as a CSV file. One row per design point, columns for all swept parameters and output metrics. |
+| PNG/SVG export | Built-in Plotly toolbar export at 2x resolution (1200x800). |
+
 #### Configuration
 
 - **Left sidebar**: Up to 3 sweep axes with dropdown (parameter selector) + range slider
@@ -90,6 +98,15 @@ gui/
 - Metric switching redraws from cache (no re-sweep)
 
 ### Planned (not yet implemented)
+
+#### Cross-cutting features (remaining)
+
+| Feature | Description | Plan ref |
+|---------|-------------|----------|
+| **Multi-view layout** | 2x1 or 2x2 split of the center panel. Different views of same data side by side. | §Layout |
+| **Brushing & linking** | Selection in one view highlights corresponding data in all others. | §Brushing |
+| **Seed aggregation** | Multi-seed mode with mean ± σ bands on line plots, std-dev heatmaps. | §Seeds |
+| **LaTeX snippet export** | Export plot configuration as LaTeX code for paper figures. | §Export |
 
 #### Tier 3 — Introspection views (per-design-point)
 
@@ -133,7 +150,7 @@ python -m pytest tests/test_plotting_views.py -v
 python -m pytest tests/ -v
 ```
 
-Current coverage: 83 tests (71 view tests + 12 core tests), all passing.
+Current coverage: 96 tests (84 view tests + 12 core tests), all passing.
 
 ## Implementation plan
 

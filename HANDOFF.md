@@ -21,24 +21,24 @@ Read these files in order:
 - **Phase 1 complete**: Line (1D), Heatmap (2D), Contour (2D), Scatter3d (3D), Isosurface (3D)
 - **Phase 2 complete**: Parallel Coordinates (2.1), Slice Plot (2.2), Parameter Importance (2.3), Pareto Front (2.4), Correlation Matrix (2.5)
 - **View tab system**: Working with sweep tabs + analysis tabs, auto-select by dimensionality, state in `dcc.Store`
-- **83 tests passing** (71 view + 12 core)
+- **Cross-cutting features (partial)**: Threshold overlay, CSV export, PNG/SVG export
+- **96 tests passing** (84 view + 12 core)
 
-## Next task: Tier 3 — Introspection views or cross-cutting features
+## Next task: remaining cross-cutting features or Tier 3
 
 See `DSE_VIEW_IMPLEMENTATION_PLAN.md` for full specifications. Options:
+
+### Cross-cutting features (remaining)
+- Multi-view layout (2x1 or 2x2 split of center panel)
+- Brushing & linking (selection sync across views — requires multi-view)
+- Seed aggregation (multi-seed mode with mean ± σ bands — requires backend changes)
+- LaTeX snippet export
 
 ### Tier 3 — Introspection views (per-design-point deep dives)
 - §3.1 Per-qubit fidelity timeline (heatmap of qubit fidelity over circuit layers)
 - §3.2 Core placement map (animated qubit-to-core mapping)
 - §3.3 Fidelity decomposition bar (waterfall: 1.0 → losses → final)
 - **Note**: These require backend changes to expose per-point `QusimResult` data
-
-### Cross-cutting features
-- Threshold overlay (global fidelity cutoff line, dim infeasible regions)
-- Multi-view layout (2x1 or 2x2 split of center panel)
-- Export (CSV data export, LaTeX snippet)
-- Brushing & linking (selection sync across views)
-- Seed aggregation (multi-seed mode with mean ± σ bands)
 
 ## TDD workflow (mandatory)
 
