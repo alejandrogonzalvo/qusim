@@ -185,6 +185,95 @@ def plot_2d(
 
 
 # ---------------------------------------------------------------------------
+# 2-D contour heatmap (iso-lines overlay)
+# ---------------------------------------------------------------------------
+
+def plot_2d_contour(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    grid: list,
+    metric_key1: str,
+    metric_key2: str,
+    output_key: str,
+) -> go.Figure:
+    z = np.zeros((len(y_values), len(x_values)))
+    for i, row in enumerate(grid):
+        for j, r in enumerate(row):
+            val = r.get(output_key, 0.0) if isinstance(r, dict) else getattr(r, output_key, 0.0)
+            z[j, i] = float(val)
+
+    m1 = METRIC_BY_KEY.get(metric_key1)
+    m2 = METRIC_BY_KEY.get(metric_key2)
+    x_log = m1.log_scale if m1 else False
+    y_log = m2.log_scale if m2 else False
+
+    x_plot = np.log10(x_values) if x_log else x_values
+    y_plot = np.log10(y_values) if y_log else y_values
+
+    is_fidelity = "fidelity" in output_key
+    zmin, zmax = (0.0, 1.0) if is_fidelity else (float(z.min()), float(z.max()))
+
+    _COLORSCALE = [
+        [0.0, "#d73027"],
+        [0.25, "#fc8d59"],
+        [0.5, "#fee08b"],
+        [0.75, "#91bfdb"],
+        [1.0, "#4575b4"],
+    ]
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Heatmap(
+            x=x_plot, y=y_plot, z=z,
+            zmin=zmin, zmax=zmax,
+            colorscale=_COLORSCALE,
+            hovertemplate=(
+                _axis_label(metric_key1) + ": %{x:.3g}<br>"
+                + _axis_label(metric_key2) + ": %{y:.3g}<br>"
+                + "<b>%{z:.4f}</b><extra></extra>"
+            ),
+            colorbar=dict(
+                title=dict(text=_OUTPUT_LABELS.get(output_key, output_key), side="right",
+                           font=dict(size=11, color=_TEXT_MUTED)),
+                tickfont=dict(color=_TEXT_MUTED, size=10),
+                bgcolor="rgba(0,0,0,0)",
+                outlinewidth=0,
+                thickness=14,
+                len=0.85,
+            ),
+        )
+    )
+
+    fig.add_trace(
+        go.Contour(
+            x=x_plot, y=y_plot, z=z,
+            contours=dict(
+                showlabels=True,
+                labelfont=dict(size=10, color=_TEXT_COLOR),
+                coloring="none",
+            ),
+            line=dict(color="rgba(43,43,43,0.6)", width=1.5),
+            showscale=False,
+            hoverinfo="skip",
+        )
+    )
+
+    x_title = _axis_label(metric_key1) + (" (log\u2081\u2080)" if x_log else "")
+    y_title = _axis_label(metric_key2) + (" (log\u2081\u2080)" if y_log else "")
+
+    fig.update_layout(
+        **_LAYOUT_BASE,
+        xaxis=dict(title=dict(text=x_title, font=dict(size=12, color=_TEXT_MUTED)),
+                   gridcolor=_GRID_COLOR, tickfont=dict(size=10, color=_TEXT_MUTED)),
+        yaxis=dict(title=dict(text=y_title, font=dict(size=12, color=_TEXT_MUTED)),
+                   gridcolor=_GRID_COLOR, tickfont=dict(size=10, color=_TEXT_MUTED)),
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR, font_color=_TEXT_COLOR),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # 3-D surface
 # ---------------------------------------------------------------------------
 
@@ -290,6 +379,547 @@ def plot_3d(
 
 
 # ---------------------------------------------------------------------------
+# 3-D isosurface (volumetric iso-level rendering)
+# ---------------------------------------------------------------------------
+
+_MIN_GRID_FOR_ISOSURFACE = 3 * 3 * 3
+
+
+def _flatten_3d_grid(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    z_values: np.ndarray,
+    grid: list,
+    metric_key1: str,
+    metric_key2: str,
+    metric_key3: str,
+    output_key: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str, str, str]:
+    m1 = METRIC_BY_KEY.get(metric_key1)
+    m2 = METRIC_BY_KEY.get(metric_key2)
+    m3 = METRIC_BY_KEY.get(metric_key3)
+
+    xs, ys, zs, fs = [], [], [], []
+    for i, x_val in enumerate(x_values):
+        for j, y_val in enumerate(y_values):
+            for k, z_val in enumerate(z_values):
+                r = grid[i][j][k]
+                f = r.get(output_key, 0.0) if isinstance(r, dict) else getattr(r, output_key, 0.0)
+                xs.append(float(np.log10(x_val) if (m1 and m1.log_scale) else x_val))
+                ys.append(float(np.log10(y_val) if (m2 and m2.log_scale) else y_val))
+                zs.append(float(np.log10(z_val) if (m3 and m3.log_scale) else z_val))
+                fs.append(float(f))
+
+    x_title = _axis_label(metric_key1) + (" (log\u2081\u2080)" if (m1 and m1.log_scale) else "")
+    y_title = _axis_label(metric_key2) + (" (log\u2081\u2080)" if (m2 and m2.log_scale) else "")
+    z_title = _axis_label(metric_key3) + (" (log\u2081\u2080)" if (m3 and m3.log_scale) else "")
+
+    return np.array(xs), np.array(ys), np.array(zs), np.array(fs), x_title, y_title, z_title
+
+
+def _scene_axis(title: str) -> dict:
+    return dict(
+        title=dict(text=title, font=dict(size=11, color=_TEXT_MUTED)),
+        gridcolor=_GRID_COLOR,
+        backgroundcolor=_PLOT_BG,
+        color=_TEXT_MUTED,
+        tickfont=dict(size=9, color=_TEXT_MUTED),
+        showspikes=False,
+    )
+
+
+def plot_3d_isosurface(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    z_values: np.ndarray,
+    grid: list,
+    metric_key1: str,
+    metric_key2: str,
+    metric_key3: str,
+    output_key: str,
+) -> go.Figure:
+    total_points = len(x_values) * len(y_values) * len(z_values)
+
+    if total_points < _MIN_GRID_FOR_ISOSURFACE:
+        return plot_3d(x_values, y_values, z_values, grid,
+                       metric_key1, metric_key2, metric_key3, output_key)
+
+    xs, ys, zs, fs, x_title, y_title, z_title = _flatten_3d_grid(
+        x_values, y_values, z_values, grid,
+        metric_key1, metric_key2, metric_key3, output_key,
+    )
+
+    is_fidelity = "fidelity" in output_key
+    fmin = 0.0 if is_fidelity else float(fs.min())
+    fmax = 1.0 if is_fidelity else float(fs.max())
+
+    _ISO_COLORSCALE = [
+        [0.0, "#d73027"],
+        [0.25, "#fc8d59"],
+        [0.5, "#fee08b"],
+        [0.75, "#91bfdb"],
+        [1.0, "#4575b4"],
+    ]
+
+    fig = go.Figure(
+        go.Isosurface(
+            x=xs, y=ys, z=zs,
+            value=fs,
+            isomin=fmin + (fmax - fmin) * 0.3,
+            isomax=fmax - (fmax - fmin) * 0.1,
+            surface_count=3,
+            opacity=0.5,
+            caps=dict(x_show=False, y_show=False, z_show=False),
+            colorscale=_ISO_COLORSCALE,
+            colorbar=dict(
+                title=dict(text=_OUTPUT_LABELS.get(output_key, output_key),
+                           font=dict(size=11, color=_TEXT_MUTED)),
+                tickfont=dict(color=_TEXT_MUTED, size=10),
+                outlinewidth=0, thickness=14, len=0.75,
+            ),
+            hovertemplate=(
+                x_title + ": %{x:.3g}<br>"
+                + y_title + ": %{y:.3g}<br>"
+                + z_title + ": %{z:.3g}<br>"
+                + "<b>%{value:.4f}</b><extra></extra>"
+            ),
+        )
+    )
+
+    fig.update_layout(
+        paper_bgcolor=_BG,
+        font=dict(color=_TEXT_COLOR, family="Inter, system-ui, sans-serif", size=11),
+        margin=dict(l=0, r=0, t=30, b=0),
+        scene=dict(
+            bgcolor=_PLOT_BG,
+            xaxis=_scene_axis(x_title),
+            yaxis=_scene_axis(y_title),
+            zaxis=_scene_axis(z_title),
+        ),
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR, font_color=_TEXT_COLOR),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Parallel coordinates (analysis view — works on any sweep dimensionality)
+# ---------------------------------------------------------------------------
+
+_OUTPUT_KEYS = ["overall_fidelity", "algorithmic_fidelity", "routing_fidelity",
+                "coherence_fidelity", "total_circuit_time_ns", "total_epr_pairs"]
+
+
+def _flatten_sweep_to_table(sweep_data: dict) -> tuple[list[str], list[str], list[list[float]]]:
+    metric_keys = sweep_data["metric_keys"]
+    grid = sweep_data["grid"]
+    xs = sweep_data["xs"]
+
+    available_outputs = []
+    sample = grid[0] if isinstance(grid[0], dict) else None
+    if sample is None:
+        nested = grid[0]
+        while isinstance(nested, list):
+            nested = nested[0]
+        sample = nested
+    for k in _OUTPUT_KEYS:
+        if k in sample:
+            available_outputs.append(k)
+
+    rows: list[list[float]] = []
+    ndim = len(metric_keys)
+
+    if ndim == 1:
+        for i, x in enumerate(xs):
+            r = grid[i]
+            row = [float(x)]
+            for k in available_outputs:
+                row.append(float(r.get(k, 0.0) if isinstance(r, dict) else getattr(r, k, 0.0)))
+            rows.append(row)
+    elif ndim == 2:
+        ys = sweep_data["ys"]
+        for i, x in enumerate(xs):
+            for j, y in enumerate(ys):
+                r = grid[i][j]
+                row = [float(x), float(y)]
+                for k in available_outputs:
+                    row.append(float(r.get(k, 0.0) if isinstance(r, dict) else getattr(r, k, 0.0)))
+                rows.append(row)
+    elif ndim == 3:
+        ys = sweep_data["ys"]
+        zs = sweep_data["zs"]
+        for i, x in enumerate(xs):
+            for j, y in enumerate(ys):
+                for ki, z in enumerate(zs):
+                    r = grid[i][j][ki]
+                    row = [float(x), float(y), float(z)]
+                    for k in available_outputs:
+                        row.append(float(r.get(k, 0.0) if isinstance(r, dict) else getattr(r, k, 0.0)))
+                    rows.append(row)
+
+    return metric_keys, available_outputs, rows
+
+
+def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
+    metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
+
+    if not rows:
+        return plot_empty("No data for parallel coordinates")
+
+    data = np.array(rows)
+    col_names = metric_keys + available_outputs
+    num_param_cols = len(metric_keys)
+
+    color_col_idx = None
+    if output_key in available_outputs:
+        color_col_idx = num_param_cols + available_outputs.index(output_key)
+    elif available_outputs:
+        color_col_idx = num_param_cols
+
+    dimensions = []
+    for i, name in enumerate(col_names):
+        m = METRIC_BY_KEY.get(name)
+        label = m.label if m else _OUTPUT_LABELS.get(name, name)
+        col = data[:, i]
+        dimensions.append(dict(
+            label=label,
+            values=col.tolist(),
+            range=[float(col.min()), float(col.max())],
+        ))
+
+    color_vals = data[:, color_col_idx].tolist() if color_col_idx is not None else None
+
+    _PARCOORDS_COLORSCALE = [
+        [0.0, "#d73027"],
+        [0.25, "#fc8d59"],
+        [0.5, "#fee08b"],
+        [0.75, "#91bfdb"],
+        [1.0, "#4575b4"],
+    ]
+
+    fig = go.Figure(
+        go.Parcoords(
+            dimensions=dimensions,
+            line=dict(
+                color=color_vals,
+                colorscale=_PARCOORDS_COLORSCALE,
+                showscale=True,
+                colorbar=dict(
+                    title=dict(text=_OUTPUT_LABELS.get(output_key, output_key),
+                               font=dict(size=11, color=_TEXT_MUTED)),
+                    tickfont=dict(color=_TEXT_MUTED, size=10),
+                    outlinewidth=0, thickness=14, len=0.75,
+                ),
+            ),
+            labelfont=dict(size=11, color=_TEXT_COLOR),
+            tickfont=dict(size=9, color=_TEXT_MUTED),
+            rangefont=dict(size=9, color=_TEXT_MUTED),
+        )
+    )
+
+    fig.update_layout(
+        **{**_LAYOUT_BASE, "margin": dict(l=60, r=30, t=50, b=30)},
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Slice plot (marginal effects — one subplot per swept parameter)
+# ---------------------------------------------------------------------------
+
+def plot_slice(sweep_data: dict, output_key: str) -> go.Figure:
+    metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
+
+    if not rows:
+        return plot_empty("No data for slice plot")
+
+    data = np.array(rows)
+    num_params = len(metric_keys)
+    out_col = num_params + available_outputs.index(output_key) if output_key in available_outputs else num_params
+
+    from plotly.subplots import make_subplots
+    cols = min(num_params, 3)
+    subplot_rows = (num_params + cols - 1) // cols
+
+    fig = make_subplots(
+        rows=subplot_rows, cols=cols,
+        shared_yaxes=True,
+        horizontal_spacing=0.08,
+        vertical_spacing=0.12,
+        subplot_titles=[METRIC_BY_KEY[k].label if k in METRIC_BY_KEY else k for k in metric_keys],
+    )
+
+    for idx, param_key in enumerate(metric_keys):
+        r = idx // cols + 1
+        c = idx % cols + 1
+
+        center_indices = []
+        for p in range(num_params):
+            if p == idx:
+                center_indices.append(None)
+            else:
+                unique_vals = sorted(set(data[:, p]))
+                center_indices.append(unique_vals[len(unique_vals) // 2])
+
+        mask = np.ones(len(data), dtype=bool)
+        for p in range(num_params):
+            if center_indices[p] is not None:
+                mask &= data[:, p] == center_indices[p]
+
+        subset = data[mask]
+        if len(subset) == 0:
+            continue
+
+        order = np.argsort(subset[:, idx])
+        x_vals = subset[order, idx]
+        y_vals = subset[order, out_col]
+
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals, y=y_vals,
+                mode="lines+markers",
+                line=dict(color=_LINE_COLOR, width=1.5),
+                marker=dict(size=4, color=_LINE_COLOR),
+                showlegend=False,
+                hovertemplate="%{x:.3g}<br><b>%{y:.4f}</b><extra></extra>",
+            ),
+            row=r, col=c,
+        )
+
+    is_fidelity = "fidelity" in output_key
+    y_range = [0, 1] if is_fidelity else None
+
+    fig.update_layout(
+        **{**_LAYOUT_BASE, "margin": dict(l=55, r=20, t=60, b=45)},
+    )
+    fig.update_yaxes(range=y_range, gridcolor=_GRID_COLOR, tickfont=dict(size=9, color=_TEXT_MUTED))
+    fig.update_xaxes(gridcolor=_GRID_COLOR, tickfont=dict(size=9, color=_TEXT_MUTED))
+    if is_fidelity:
+        fig.update_yaxes(title_text=_OUTPUT_LABELS.get(output_key, output_key), row=1, col=1)
+
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Parameter importance (range-based sensitivity — horizontal bar chart)
+# ---------------------------------------------------------------------------
+
+def plot_importance(sweep_data: dict, output_key: str) -> go.Figure:
+    metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
+
+    if not rows:
+        return plot_empty("No data for importance plot")
+
+    data = np.array(rows)
+    num_params = len(metric_keys)
+    out_col = num_params + available_outputs.index(output_key) if output_key in available_outputs else num_params
+
+    importances = []
+    for idx, param_key in enumerate(metric_keys):
+        unique_vals = sorted(set(data[:, idx]))
+        means = []
+        for v in unique_vals:
+            mask = data[:, idx] == v
+            means.append(data[mask, out_col].mean())
+        importance = max(means) - min(means) if means else 0.0
+        m = METRIC_BY_KEY.get(param_key)
+        label = m.label if m else param_key
+        importances.append((label, importance))
+
+    importances.sort(key=lambda x: x[1])
+
+    labels = [x[0] for x in importances]
+    values = [x[1] for x in importances]
+
+    fig = go.Figure(
+        go.Bar(
+            x=values,
+            y=labels,
+            orientation="h",
+            marker=dict(color=_LINE_COLOR),
+            hovertemplate="%{y}: <b>%{x:.4f}</b><extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        **{**_LAYOUT_BASE, "margin": dict(l=120, r=20, t=50, b=45)},
+        xaxis=dict(
+            title=dict(text=f"Range of {_OUTPUT_LABELS.get(output_key, output_key)}",
+                       font=dict(size=12, color=_TEXT_MUTED)),
+            gridcolor=_GRID_COLOR,
+            tickfont=dict(size=10, color=_TEXT_MUTED),
+        ),
+        yaxis=dict(
+            tickfont=dict(size=11, color=_TEXT_COLOR),
+        ),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Pareto front (fidelity vs EPR pairs — dominated points dimmed)
+# ---------------------------------------------------------------------------
+
+def plot_pareto(sweep_data: dict, output_key: str) -> go.Figure:
+    metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
+
+    if not rows:
+        return plot_empty("No data for Pareto plot")
+
+    data = np.array(rows)
+    num_params = len(metric_keys)
+
+    fid_col = num_params + available_outputs.index("overall_fidelity") if "overall_fidelity" in available_outputs else None
+    epr_col = num_params + available_outputs.index("total_epr_pairs") if "total_epr_pairs" in available_outputs else None
+
+    if fid_col is None or epr_col is None:
+        return plot_empty("Need both fidelity and EPR metrics for Pareto")
+
+    fidelity = data[:, fid_col]
+    epr = data[:, epr_col]
+
+    is_pareto = np.ones(len(data), dtype=bool)
+    for i in range(len(data)):
+        for j in range(len(data)):
+            if i == j:
+                continue
+            if fidelity[j] >= fidelity[i] and epr[j] <= epr[i] and (fidelity[j] > fidelity[i] or epr[j] < epr[i]):
+                is_pareto[i] = False
+                break
+
+    fig = go.Figure()
+
+    dominated_mask = ~is_pareto
+    fig.add_trace(
+        go.Scatter(
+            x=epr[dominated_mask], y=fidelity[dominated_mask],
+            mode="markers",
+            marker=dict(size=5, color="#CCCCCC", opacity=0.5),
+            name="Dominated",
+            hovertemplate="EPR: %{x:.0f}<br>Fidelity: <b>%{y:.4f}</b><extra></extra>",
+        )
+    )
+
+    pareto_idx = np.where(is_pareto)[0]
+    pareto_order = np.argsort(epr[pareto_idx])
+    pareto_sorted = pareto_idx[pareto_order]
+
+    fig.add_trace(
+        go.Scatter(
+            x=epr[pareto_sorted], y=fidelity[pareto_sorted],
+            mode="lines+markers",
+            line=dict(color="#4575b4", width=2),
+            marker=dict(size=7, color="#4575b4", line=dict(width=1, color="#FFFFFF")),
+            name="Pareto front",
+            hovertemplate="EPR: %{x:.0f}<br>Fidelity: <b>%{y:.4f}</b><extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        **{**_LAYOUT_BASE, "margin": dict(l=55, r=20, t=50, b=50)},
+        xaxis=dict(
+            title=dict(text="Total EPR Pairs", font=dict(size=12, color=_TEXT_MUTED)),
+            gridcolor=_GRID_COLOR,
+            tickfont=dict(size=10, color=_TEXT_MUTED),
+        ),
+        yaxis=dict(
+            title=dict(text="Overall Fidelity", font=dict(size=12, color=_TEXT_MUTED)),
+            gridcolor=_GRID_COLOR,
+            tickfont=dict(size=10, color=_TEXT_MUTED),
+            range=[0, 1],
+        ),
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR, font_color=_TEXT_COLOR),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Correlation matrix (Spearman rank correlations — annotated heatmap)
+# ---------------------------------------------------------------------------
+
+def _spearman_corr(x: np.ndarray, y: np.ndarray) -> float:
+    def _rankdata(a: np.ndarray) -> np.ndarray:
+        order = np.argsort(a)
+        ranks = np.empty_like(order, dtype=float)
+        ranks[order] = np.arange(1, len(a) + 1, dtype=float)
+        return ranks
+
+    if len(x) < 3:
+        return 0.0
+    rx = _rankdata(x)
+    ry = _rankdata(y)
+    mx, my = rx.mean(), ry.mean()
+    num = ((rx - mx) * (ry - my)).sum()
+    den = np.sqrt(((rx - mx) ** 2).sum() * ((ry - my) ** 2).sum())
+    if den == 0:
+        return 0.0
+    return float(num / den)
+
+
+def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
+    metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
+
+    if not rows:
+        return plot_empty("No data for correlation matrix")
+
+    data = np.array(rows)
+    col_names = metric_keys + available_outputs
+    labels = []
+    for name in col_names:
+        m = METRIC_BY_KEY.get(name)
+        labels.append(m.label if m else _OUTPUT_LABELS.get(name, name))
+
+    n = len(col_names)
+    corr = np.eye(n)
+    for i in range(n):
+        for j in range(i + 1, n):
+            c = _spearman_corr(data[:, i], data[:, j])
+            corr[i, j] = c
+            corr[j, i] = c
+
+    _DIVERGING = [
+        [0.0, "#d73027"],
+        [0.25, "#fc8d59"],
+        [0.5, "#FFFFFF"],
+        [0.75, "#91bfdb"],
+        [1.0, "#4575b4"],
+    ]
+
+    annotations = []
+    for i in range(n):
+        for j in range(n):
+            annotations.append(dict(
+                x=j, y=i,
+                text=f"{corr[i, j]:.2f}",
+                showarrow=False,
+                font=dict(size=9, color=_TEXT_COLOR if abs(corr[i, j]) < 0.7 else "#FFFFFF"),
+            ))
+
+    fig = go.Figure(
+        go.Heatmap(
+            z=corr,
+            x=labels, y=labels,
+            zmin=-1.0, zmax=1.0,
+            colorscale=_DIVERGING,
+            showscale=True,
+            colorbar=dict(
+                title=dict(text="Spearman ρ", font=dict(size=11, color=_TEXT_MUTED)),
+                tickfont=dict(color=_TEXT_MUTED, size=10),
+                outlinewidth=0, thickness=14, len=0.75,
+            ),
+            hovertemplate="%{x} vs %{y}: <b>%{z:.3f}</b><extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        **{**_LAYOUT_BASE, "margin": dict(l=100, r=20, t=50, b=100)},
+        xaxis=dict(tickfont=dict(size=9, color=_TEXT_MUTED), tickangle=45),
+        yaxis=dict(tickfont=dict(size=9, color=_TEXT_MUTED), autorange="reversed"),
+        annotations=annotations,
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Empty / error placeholder
 # ---------------------------------------------------------------------------
 
@@ -320,15 +950,21 @@ def build_figure(
     num_metrics: int,
     sweep_data: dict,
     output_key: str,
+    view_type: str | None = None,
 ) -> go.Figure:
-    """
-    Route to the correct plot type based on the number of active sweep metrics.
-
-    ``sweep_data`` is the dict stored in the dcc.Store after a sweep completes.
-    Keys: xs, ys, zs, grid, metric_keys  (only the ones used for this sweep).
-    """
     if sweep_data is None:
         return plot_empty()
+
+    if view_type == "parallel":
+        return plot_parallel_coordinates(sweep_data, output_key)
+    if view_type == "slices":
+        return plot_slice(sweep_data, output_key)
+    if view_type == "importance":
+        return plot_importance(sweep_data, output_key)
+    if view_type == "pareto":
+        return plot_pareto(sweep_data, output_key)
+    if view_type == "correlation":
+        return plot_correlation(sweep_data, output_key)
 
     try:
         if num_metrics == 1:
@@ -339,6 +975,15 @@ def build_figure(
                 output_key=output_key,
             )
         elif num_metrics == 2:
+            if view_type == "contour":
+                return plot_2d_contour(
+                    x_values=np.array(sweep_data["xs"]),
+                    y_values=np.array(sweep_data["ys"]),
+                    grid=sweep_data["grid"],
+                    metric_key1=sweep_data["metric_keys"][0],
+                    metric_key2=sweep_data["metric_keys"][1],
+                    output_key=output_key,
+                )
             return plot_2d(
                 x_values=np.array(sweep_data["xs"]),
                 y_values=np.array(sweep_data["ys"]),
@@ -348,7 +993,7 @@ def build_figure(
                 output_key=output_key,
             )
         elif num_metrics == 3:
-            return plot_3d(
+            _3d_args = dict(
                 x_values=np.array(sweep_data["xs"]),
                 y_values=np.array(sweep_data["ys"]),
                 z_values=np.array(sweep_data["zs"]),
@@ -358,7 +1003,10 @@ def build_figure(
                 metric_key3=sweep_data["metric_keys"][2],
                 output_key=output_key,
             )
+            if view_type == "isosurface":
+                return plot_3d_isosurface(**_3d_args)
+            return plot_3d(**_3d_args)
         else:
-            return plot_empty("Add 1–3 metric axes on the left to start a sweep")
+            return plot_empty("Add 1\u20133 metric axes on the left to start a sweep")
     except Exception as exc:
         return plot_empty(f"Plot error: {exc}")

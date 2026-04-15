@@ -159,3 +159,32 @@ OUTPUT_METRICS = [
 SWEEP_POINTS_1D = 60
 SWEEP_POINTS_2D = 30
 SWEEP_POINTS_3D = 12
+
+# View tab definitions per sweep dimensionality
+VIEW_TABS: dict[int, list[dict]] = {
+    1: [
+        {"value": "line", "label": "Line"},
+    ],
+    2: [
+        {"value": "heatmap", "label": "Heatmap"},
+        {"value": "contour", "label": "Contour"},
+    ],
+    3: [
+        {"value": "scatter3d", "label": "Scatter"},
+        {"value": "isosurface", "label": "Isosurface"},
+    ],
+}
+
+VIEW_TAB_DEFAULTS: dict[int, str] = {
+    1: "line",
+    2: "contour",
+    3: "scatter3d",
+}
+
+ANALYSIS_TABS: list[dict] = [
+    {"value": "parallel", "label": "Parallel"},
+    {"value": "slices", "label": "Slices"},
+    {"value": "importance", "label": "Importance"},
+    {"value": "pareto", "label": "Pareto"},
+    {"value": "correlation", "label": "Corr."},
+]
