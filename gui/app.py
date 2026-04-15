@@ -402,24 +402,33 @@ app.layout = html.Div(
         dcc.Store(id="sweep-dirty", data=1, storage_type="memory"),
         dcc.Store(id="sweep-processed", data=0, storage_type="memory"),
         dcc.Store(id="sweep-trigger", data=0, storage_type="memory"),
+        dcc.Interval(id="sweep-check", interval=16, n_intervals=0),
     ],
 )
 
 
 # ---------------------------------------------------------------------------
-# Clientside gate: only trigger server-side sweep when dirty > processed
+# Clientside gate: 60fps JS check, zero HTTP cost when idle
 # ---------------------------------------------------------------------------
+# sweep-processed is a State (not Input) so no dependency cycle.
+# A pending flag ensures exactly one server trigger per needed sweep.
 
 app.clientside_callback(
-    """function(dirty, processed) {
-        if (dirty > processed) {
-            return dirty;
+    """function(n, dirty, processed) {
+        if (processed !== (window._lastProcessed || 0)) {
+            window._lastProcessed = processed;
+            window._sweepPending = false;
+        }
+        if (dirty > processed && !window._sweepPending) {
+            window._sweepPending = true;
+            return n;
         }
         return window.dash_clientside.no_update;
     }""",
     Output("sweep-trigger", "data"),
-    Input("sweep-dirty", "data"),
-    Input("sweep-processed", "data"),
+    Input("sweep-check", "n_intervals"),
+    State("sweep-dirty", "data"),
+    State("sweep-processed", "data"),
     prevent_initial_call=False,
 )
 
