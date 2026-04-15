@@ -61,7 +61,9 @@ def plot_1d(
     metric_key: str,
     output_key: str,
     thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
 ) -> go.Figure:
+    _colors = threshold_colors or _THRESHOLD_COLORS
     y = _extract(results, output_key)
     m = METRIC_BY_KEY.get(metric_key)
     x_log = m.log_scale if m else False
@@ -113,11 +115,10 @@ def plot_1d(
     )
 
     if thresholds:
-        for t in thresholds:
-            color = _THRESHOLD_COLORS[thresholds.index(t) % len(_THRESHOLD_COLORS)]
+        for i, t in enumerate(thresholds):
             fig.add_shape(
                 type="line", xref="paper", x0=0, x1=1, y0=t, y1=t,
-                line=dict(color=color, width=1.5, dash="dash"),
+                line=dict(color=_colors[i % len(_colors)], width=1.5, dash="dash"),
             )
         lowest = min(thresholds)
         fig.add_shape(
@@ -214,7 +215,9 @@ def plot_2d_contour(
     metric_key2: str,
     output_key: str,
     thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
 ) -> go.Figure:
+    _colors = threshold_colors or _THRESHOLD_COLORS
     z = np.zeros((len(y_values), len(x_values)))
     for i, row in enumerate(grid):
         for j, r in enumerate(row):
@@ -280,17 +283,17 @@ def plot_2d_contour(
 
     if thresholds:
         for i, t in enumerate(thresholds):
-            color = _THRESHOLD_COLORS[i % len(_THRESHOLD_COLORS)]
+            c = _colors[i % len(_colors)]
             fig.add_trace(
                 go.Contour(
                     x=x_plot, y=y_plot, z=z,
                     contours=dict(
                         start=t, end=t, size=0,
                         showlabels=True,
-                        labelfont=dict(size=11, color=color),
+                        labelfont=dict(size=11, color=c),
                         coloring="none",
                     ),
-                    line=dict(color=color, width=2.5),
+                    line=dict(color=c, width=2.5),
                     showscale=False,
                     hoverinfo="skip",
                     name=f"threshold {t}",
@@ -325,7 +328,9 @@ def plot_3d(
     metric_key3: str,
     output_key: str,
     thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
 ) -> go.Figure:
+    _colors = threshold_colors or _THRESHOLD_COLORS
     m1 = METRIC_BY_KEY.get(metric_key1)
     m2 = METRIC_BY_KEY.get(metric_key2)
     m3 = METRIC_BY_KEY.get(metric_key3)
@@ -400,7 +405,7 @@ def plot_3d(
             if not near.any():
                 near = np.zeros(len(fs_all), dtype=bool)
                 near[np.argmin(np.abs(fs_all - t))] = True
-            color = _THRESHOLD_COLORS[i % len(_THRESHOLD_COLORS)]
+            color = _colors[i % len(_colors)]
             fig.add_trace(go.Scatter3d(
                 x=xs_all[near].tolist(), y=ys_all[near].tolist(), z=zs_all[near].tolist(),
                 mode="markers",
@@ -499,13 +504,15 @@ def plot_3d_isosurface(
     metric_key3: str,
     output_key: str,
     thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
 ) -> go.Figure:
+    _colors = threshold_colors or _THRESHOLD_COLORS
     total_points = len(x_values) * len(y_values) * len(z_values)
 
     if total_points < _MIN_GRID_FOR_ISOSURFACE:
         return plot_3d(x_values, y_values, z_values, grid,
                        metric_key1, metric_key2, metric_key3, output_key,
-                       thresholds=thresholds)
+                       thresholds=thresholds, threshold_colors=threshold_colors)
 
     xs, ys, zs, fs, x_title, y_title, z_title = _flatten_3d_grid(
         x_values, y_values, z_values, grid,
@@ -528,7 +535,7 @@ def plot_3d_isosurface(
     fig = go.Figure()
 
     for i, level in enumerate(sorted(levels)):
-        color = _THRESHOLD_COLORS[i % len(_THRESHOLD_COLORS)]
+        color = _colors[i % len(_colors)]
         opacity = 0.3 + 0.15 * (i / max(len(levels) - 1, 1))
         fig.add_trace(
             go.Isosurface(
@@ -824,7 +831,8 @@ def plot_importance(sweep_data: dict, output_key: str) -> go.Figure:
 # Pareto front (fidelity vs EPR pairs — dominated points dimmed)
 # ---------------------------------------------------------------------------
 
-def plot_pareto(sweep_data: dict, output_key: str, thresholds: list[float] | None = None) -> go.Figure:
+def plot_pareto(sweep_data: dict, output_key: str, thresholds: list[float] | None = None,
+                threshold_colors: list[str] | None = None) -> go.Figure:
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
     if not rows:
@@ -896,11 +904,11 @@ def plot_pareto(sweep_data: dict, output_key: str, thresholds: list[float] | Non
     )
 
     if thresholds:
+        _colors = threshold_colors or _THRESHOLD_COLORS
         for i, t in enumerate(thresholds):
-            color = _THRESHOLD_COLORS[i % len(_THRESHOLD_COLORS)]
             fig.add_shape(
                 type="line", xref="paper", x0=0, x1=1, y0=t, y1=t,
-                line=dict(color=color, width=1.5, dash="dash"),
+                line=dict(color=_colors[i % len(_colors)], width=1.5, dash="dash"),
             )
 
     return fig
@@ -1042,9 +1050,12 @@ def build_figure(
     output_key: str,
     view_type: str | None = None,
     thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
 ) -> go.Figure:
     if sweep_data is None:
         return plot_empty()
+
+    _tc = threshold_colors
 
     if view_type == "parallel":
         return plot_parallel_coordinates(sweep_data, output_key)
@@ -1053,7 +1064,7 @@ def build_figure(
     if view_type == "importance":
         return plot_importance(sweep_data, output_key)
     if view_type == "pareto":
-        return plot_pareto(sweep_data, output_key, thresholds=thresholds)
+        return plot_pareto(sweep_data, output_key, thresholds=thresholds, threshold_colors=_tc)
     if view_type == "correlation":
         return plot_correlation(sweep_data, output_key)
 
@@ -1065,6 +1076,7 @@ def build_figure(
                 metric_key=sweep_data["metric_keys"][0],
                 output_key=output_key,
                 thresholds=thresholds,
+                threshold_colors=_tc,
             )
         elif num_metrics == 2:
             if view_type == "contour":
@@ -1076,6 +1088,7 @@ def build_figure(
                     metric_key2=sweep_data["metric_keys"][1],
                     output_key=output_key,
                     thresholds=thresholds,
+                    threshold_colors=_tc,
                 )
             return plot_2d(
                 x_values=np.array(sweep_data["xs"]),
@@ -1096,6 +1109,7 @@ def build_figure(
                 metric_key3=sweep_data["metric_keys"][2],
                 output_key=output_key,
                 thresholds=thresholds,
+                threshold_colors=_tc,
             )
             if view_type == "isosurface":
                 return plot_3d_isosurface(**_3d_args)

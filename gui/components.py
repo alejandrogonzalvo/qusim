@@ -377,6 +377,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
 # ---------------------------------------------------------------------------
 
 _THRESHOLD_DEFAULTS = [0.3, 0.6, 0.9]
+_THRESHOLD_DEFAULT_COLORS = ["#d73027", "#fc8d59", "#fee08b", "#91bfdb", "#4575b4"]
 _MAX_THRESHOLDS = 5
 
 _THRESHOLD_INPUT_STYLE = {
@@ -392,11 +393,22 @@ _THRESHOLD_INPUT_STYLE = {
     "textAlign": "center",
 }
 
+_COLOR_PICKER_STYLE = {
+    "width": "28px",
+    "height": "28px",
+    "padding": "1px",
+    "border": f"1px solid {COLORS['border']}",
+    "borderRadius": "4px",
+    "cursor": "pointer",
+    "background": "transparent",
+}
+
 
 def _make_threshold_inputs() -> list:
     children = []
     for i in range(_MAX_THRESHOLDS):
         default = _THRESHOLD_DEFAULTS[i] if i < len(_THRESHOLD_DEFAULTS) else None
+        default_color = _THRESHOLD_DEFAULT_COLORS[i]
         visible = i < len(_THRESHOLD_DEFAULTS)
         children.append(
             html.Div(
@@ -407,8 +419,12 @@ def _make_threshold_inputs() -> list:
                         style={"display": "flex", "alignItems": "center", "gap": "6px",
                                "marginBottom": "4px"},
                         children=[
-                            html.Span(f"#{i+1}", style={"fontSize": "10px", "color": COLORS["text_muted"],
-                                                         "width": "18px"}),
+                            dcc.Input(
+                                id=f"cfg-threshold-color-{i}",
+                                type="color",
+                                value=default_color,
+                                style=_COLOR_PICKER_STYLE,
+                            ),
                             dcc.Input(
                                 id=f"cfg-threshold-{i}",
                                 type="number",
