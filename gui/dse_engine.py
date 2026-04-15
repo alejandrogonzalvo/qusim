@@ -134,6 +134,7 @@ class CachedMapping:
     gate_error_arr: np.ndarray
     gate_time_arr: np.ndarray
     gate_names: list
+    total_epr_pairs: int
     # Key used to detect when re-mapping is required
     config_key: tuple
     cold_time_s: float = 0.0
@@ -261,6 +262,7 @@ class DSEEngine:
             gate_error_arr=gate_error_arr,
             gate_time_arr=gate_time_arr,
             gate_names=gate_names,
+            total_epr_pairs=result.total_epr_pairs,
             config_key=config_key,
             cold_time_s=cold_time,
         )
@@ -276,7 +278,7 @@ class DSEEngine:
         merged = _merge_noise(noise)
         gate_error_arr, gate_time_arr = _make_gate_arrays(cached.gate_names, merged)
 
-        return qusim.estimate_fidelity_from_cache(
+        result = qusim.estimate_fidelity_from_cache(
             gs_sparse=cached.gs_sparse,
             placements=cached.placements,
             distance_matrix=cached.distance_matrix,
@@ -294,6 +296,8 @@ class DSEEngine:
             dynamic_decoupling=merged.get("dynamic_decoupling", False),
             readout_mitigation_factor=merged["readout_mitigation_factor"],
         )
+        result["total_epr_pairs"] = cached.total_epr_pairs
+        return result
 
     # -- Sweep methods -------------------------------------------------------
 
