@@ -1,0 +1,254 @@
+/* ═══════════════════════════════════════════════════════════════════
+   qusim DSE Explorer — Light "Salt & Pepper" Theme
+   Palette: #FFFFFF · #D4D4D4 · #B3B3B3 · #2B2B2B
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+    --bg:       #FFFFFF;
+    --surface:  #F5F5F5;
+    --surface2: #EBEBEB;
+    --border:   #D4D4D4;
+    --accent:   #2B2B2B;
+    --accent2:  #555555;
+    --text:     #2B2B2B;
+    --muted:    #888888;
+    --radius:   5px;
+}
+
+/* ── Base ───────────────────────────────────────────────────────── */
+body {
+    background: var(--bg) !important;
+    color: var(--text) !important;
+    font-family: "Inter", -apple-system, system-ui, sans-serif;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   SLIDERS  (rc-slider)
+   ═══════════════════════════════════════════════════════════════════ */
+
+.rc-slider-rail {
+    background: var(--border) !important;
+    height: 3px !important;
+    border-radius: 2px !important;
+}
+
+.rc-slider-track {
+    background: var(--accent) !important;
+    height: 3px !important;
+    border-radius: 2px !important;
+}
+
+.rc-slider-handle {
+    background: var(--accent) !important;
+    border: 2px solid var(--bg) !important;
+    width: 14px !important;
+    height: 14px !important;
+    margin-top: -6px !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2) !important;
+    opacity: 1 !important;
+}
+.rc-slider-handle:hover,
+.rc-slider-handle:active,
+.rc-slider-handle-dragging {
+    box-shadow: 0 0 0 4px rgba(43, 43, 43, 0.12) !important;
+    border-color: var(--bg) !important;
+}
+
+/* Tooltip */
+.rc-slider-tooltip { z-index: 999 !important; }
+.rc-slider-tooltip-inner {
+    background: var(--accent) !important;
+    border: none !important;
+    color: #FFFFFF !important;
+    border-radius: 4px !important;
+    padding: 2px 8px !important;
+    font-size: 11px !important;
+    font-family: "SF Mono", "JetBrains Mono", "Fira Code", monospace !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
+    min-height: auto !important;
+    height: auto !important;
+    line-height: 1.5 !important;
+}
+.rc-slider-tooltip-arrow {
+    display: none !important;
+}
+
+/* Marks */
+.rc-slider-mark-text {
+    color: var(--muted) !important;
+    font-size: 9px !important;
+}
+.rc-slider-mark-text-active {
+    color: var(--accent2) !important;
+}
+
+/* Dots */
+.rc-slider-dot {
+    display: none !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   DROPDOWNS  (react-select via Dash)
+   ═══════════════════════════════════════════════════════════════════ */
+
+.dse-dropdown { font-size: 13px; }
+
+.dse-dropdown [class*="-control"],
+.dse-dropdown .Select-control {
+    background: var(--bg) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
+    box-shadow: none !important;
+    min-height: 34px !important;
+    border-radius: var(--radius) !important;
+    cursor: pointer !important;
+}
+.dse-dropdown [class*="-control"]:hover {
+    border-color: var(--accent2) !important;
+}
+
+.dse-dropdown [class*="-singleValue"],
+.dse-dropdown .Select-value-label {
+    color: var(--text) !important;
+    font-size: 13px !important;
+}
+
+.dse-dropdown [class*="-placeholder"],
+.dse-dropdown .Select-placeholder,
+.dse-dropdown .dash-dropdown-placeholder {
+    color: var(--muted) !important;
+}
+
+.dse-dropdown input {
+    color: var(--text) !important;
+    caret-color: var(--accent) !important;
+}
+
+.dse-dropdown [class*="-indicatorContainer"] svg {
+    fill: var(--muted) !important;
+    width: 16px !important;
+    height: 16px !important;
+}
+.dse-dropdown [class*="-indicatorSeparator"] {
+    background-color: var(--border) !important;
+}
+
+.dse-dropdown [class*="-menu"],
+.dse-dropdown .Select-menu-outer {
+    background: var(--bg) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius) !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08) !important;
+    z-index: 9999 !important;
+    margin-top: 4px !important;
+}
+
+.dse-dropdown [class*="-MenuList"],
+.dse-dropdown [class*="-menuList"] {
+    background: var(--bg) !important;
+    padding: 4px !important;
+}
+
+.dse-dropdown [class*="-option"],
+.dse-dropdown .Select-option,
+.dse-dropdown .dash-dropdown-option {
+    background: transparent !important;
+    color: var(--text) !important;
+    cursor: pointer !important;
+    border-radius: 4px !important;
+    padding: 7px 10px !important;
+    font-size: 13px !important;
+}
+
+.dse-dropdown [class*="-option"]:hover,
+.dse-dropdown .Select-option.is-focused,
+.dse-dropdown .dash-dropdown-option:hover,
+.dse-dropdown .VirtualizedSelectFocusedOption {
+    background: var(--surface) !important;
+    color: var(--accent) !important;
+}
+
+.dse-dropdown [class*="-option"][aria-selected="true"] {
+    background: var(--surface2) !important;
+    color: var(--accent) !important;
+    font-weight: 600 !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   NUMBER INPUT
+   ═══════════════════════════════════════════════════════════════════ */
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+input[type="number"] { -moz-appearance: textfield; }
+
+.dse-input {
+    background: var(--bg) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
+    border-radius: var(--radius) !important;
+    font-family: "SF Mono", "JetBrains Mono", monospace !important;
+    font-size: 13px !important;
+}
+.dse-input:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 2px rgba(43, 43, 43, 0.08) !important;
+    outline: none !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   CHECKBOX
+   ═══════════════════════════════════════════════════════════════════ */
+
+input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 15px;
+    height: 15px;
+    cursor: pointer;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   SCROLLBARS
+   ═══════════════════════════════════════════════════════════════════ */
+
+.sidebar-scroll, .config-scroll {
+    overflow-y: auto;
+    max-height: calc(100vh - 52px);
+}
+.sidebar-scroll::-webkit-scrollbar,
+.config-scroll::-webkit-scrollbar {
+    width: 5px;
+}
+.sidebar-scroll::-webkit-scrollbar-track,
+.config-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb,
+.config-scroll::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover,
+.config-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--muted);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   PLOTLY MODEBAR
+   ═══════════════════════════════════════════════════════════════════ */
+
+.modebar { background: transparent !important; }
+.modebar-btn path { fill: var(--muted) !important; }
+.modebar-btn:hover path { fill: var(--accent) !important; }
+.modebar-btn.active path { fill: var(--accent) !important; }

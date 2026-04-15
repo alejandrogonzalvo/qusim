@@ -86,6 +86,78 @@ class QusimResult:
 
 from qusim.hqa.placement import InitialPlacement, PlacementConfig, generate_initial_placement
 
+
+def estimate_fidelity_from_cache(
+    gs_sparse: np.ndarray,
+    placements: np.ndarray,
+    distance_matrix: np.ndarray,
+    sparse_swaps: np.ndarray,
+    gate_error_arr: np.ndarray,
+    gate_time_arr: np.ndarray,
+    single_gate_error: float = 1e-4,
+    two_gate_error: float = 1e-3,
+    teleportation_error_per_hop: float = 1e-2,
+    single_gate_time: float = 20.0,
+    two_gate_time: float = 100.0,
+    teleportation_time_per_hop: float = 1000.0,
+    t1: float = 100_000.0,
+    t2: float = 50_000.0,
+    dynamic_decoupling: bool = False,
+    readout_mitigation_factor: float = 0.0,
+) -> dict:
+    """
+    Fast fidelity re-estimation using pre-cached structural mapping data.
+
+    Calls the Rust ``estimate_hardware_fidelity`` binding directly, bypassing
+    the expensive circuit transpilation and HQA/SABRE mapping stages.  Use this
+    on the hot path when only noise parameters have changed.
+
+    Args:
+        gs_sparse: Gate-sparse interaction tensor, shape ``(E, 5)``.
+        placements: Per-layer qubit-to-core assignments, shape ``(L+1, N)``.
+        distance_matrix: Core-to-core hop distances, shape ``(C, C)``.
+        sparse_swaps: SABRE-injected swap list, shape ``(S, 3)``.
+        gate_error_arr: Per gate-type error overrides (nan = use scalar).
+        gate_time_arr: Per gate-type timing overrides (nan = use scalar).
+        single_gate_error: Scalar 1Q error rate.
+        two_gate_error: Scalar 2Q error rate.
+        teleportation_error_per_hop: Fidelity loss per inter-core hop.
+        single_gate_time: 1Q gate duration in nanoseconds.
+        two_gate_time: 2Q gate duration in nanoseconds.
+        teleportation_time_per_hop: Teleportation latency per hop in nanoseconds.
+        t1: T1 relaxation time constant in nanoseconds.
+        t2: T2 dephasing time constant in nanoseconds.
+        dynamic_decoupling: Whether dynamic decoupling is applied.
+        readout_mitigation_factor: TREX mitigation factor (0–1).
+
+    Returns:
+        Dict with keys: overall_fidelity, algorithmic_fidelity, routing_fidelity,
+        coherence_fidelity, total_circuit_time_ns, and fidelity grid arrays.
+    """
+    return estimate_hardware_fidelity(
+        gs_sparse=gs_sparse,
+        placements=placements,
+        distance_matrix=distance_matrix,
+        sparse_swaps=sparse_swaps,
+        single_gate_error=single_gate_error,
+        two_gate_error=two_gate_error,
+        teleportation_error_per_hop=teleportation_error_per_hop,
+        single_gate_time=single_gate_time,
+        two_gate_time=two_gate_time,
+        teleportation_time_per_hop=teleportation_time_per_hop,
+        t1=t1,
+        t2=t2,
+        single_gate_error_per_qubit=None,
+        two_gate_error_per_pair=None,
+        t1_per_qubit=None,
+        t2_per_qubit=None,
+        gate_error_per_type=gate_error_arr,
+        gate_time_per_type=gate_time_arr,
+        dynamic_decoupling=dynamic_decoupling,
+        readout_error_per_qubit=None,
+        readout_mitigation_factor=readout_mitigation_factor,
+    )
+
 # Gates that are virtual (zero error, zero duration) and should be excluded
 # from the interaction tensor. These are frame rotations implemented in
 # classical control electronics, not physical operations on the qubit.

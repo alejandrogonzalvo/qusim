@@ -1,0 +1,5 @@
+dash>=2.14
+dash-bootstrap-components>=1.5
+plotly>=5.18
+numpy
+qiskit>=1.0
