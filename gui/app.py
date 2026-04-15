@@ -12,15 +12,16 @@ Layout
 └──────────────────────────────────────────────────────────┘
 """
 
-import sys
 import os
+import sys
+import threading
 import time
 from typing import Any
 
-import numpy as np
 import dash
-from dash import dcc, html, Input, Output, State, ctx, ALL
 import dash_bootstrap_components as dbc
+import numpy as np
+from dash import ALL, Input, Output, State, ctx, dcc, html
 
 # ---------------------------------------------------------------------------
 # Path setup
@@ -28,25 +29,26 @@ import dash_bootstrap_components as dbc
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
+from gui.components import (
+    COLORS,
+    _linear_marks,
+    _log_marks,
+    make_add_metric_button,
+    make_fixed_config_panel,
+    make_metric_selector,
+    make_view_tab_bar,
+)
 from gui.constants import (
-    SWEEPABLE_METRICS,
+    ANALYSIS_TABS,
     METRIC_BY_KEY,
     NOISE_DEFAULTS,
     OUTPUT_METRICS,
+    SWEEPABLE_METRICS,
+    VIEW_TAB_DEFAULTS,
+    VIEW_TABS,
 )
-from gui.components import (
-    COLORS,
-    make_metric_selector,
-    make_add_metric_button,
-    make_fixed_config_panel,
-    make_view_tab_bar,
-    _log_marks,
-    _linear_marks,
-)
-from gui.constants import VIEW_TAB_DEFAULTS, VIEW_TABS, ANALYSIS_TABS
-from gui.plotting import build_figure, plot_empty, sweep_to_csv
 from gui.dse_engine import DSEEngine
-
+from gui.plotting import build_figure, plot_empty, sweep_to_csv
 
 _ANALYSIS_VIEW_KEYS = {t["value"] for t in ANALYSIS_TABS}
 _SWEEP_VIEW_KEYS: dict[int, set[str]] = {
@@ -89,6 +91,7 @@ def should_skip_poll(
             return True
     return False
 
+
 # ---------------------------------------------------------------------------
 # App init
 # ---------------------------------------------------------------------------
@@ -104,6 +107,7 @@ app = dash.Dash(
 server = app.server
 
 _engine = DSEEngine()
+sweep_lock = threading.Lock()
 MAX_METRICS = 3
 
 
@@ -112,6 +116,7 @@ MAX_METRICS = 3
 # ---------------------------------------------------------------------------
 # Layout helpers
 # ---------------------------------------------------------------------------
+
 
 def _topbar() -> html.Div:
     return html.Div(
@@ -128,15 +133,30 @@ def _topbar() -> html.Div:
             html.Div(
                 style={"display": "flex", "alignItems": "center", "gap": "10px"},
                 children=[
-                    html.Span("qusim", style={"fontSize": "18px", "fontWeight": "700",
-                                              "color": COLORS["accent"]}),
-                    html.Span("DSE Explorer", style={"fontSize": "14px",
-                                                     "color": COLORS["text_muted"]}),
+                    html.Span(
+                        "qusim",
+                        style={
+                            "fontSize": "18px",
+                            "fontWeight": "700",
+                            "color": COLORS["accent"],
+                        },
+                    ),
+                    html.Span(
+                        "DSE Explorer",
+                        style={"fontSize": "14px", "color": COLORS["text_muted"]},
+                    ),
                 ],
             ),
-            html.Div(id="status-bar", children="Ready",
-                     style={"fontSize": "12px", "color": COLORS["text_muted"],
-                            "flex": "1", "textAlign": "center"}),
+            html.Div(
+                id="status-bar",
+                children="Ready",
+                style={
+                    "fontSize": "12px",
+                    "color": COLORS["text_muted"],
+                    "flex": "1",
+                    "textAlign": "center",
+                },
+            ),
             html.Div(
                 style={"display": "flex", "alignItems": "center", "gap": "12px"},
                 children=[
@@ -182,18 +202,23 @@ def _left_sidebar() -> html.Div:
             "flexDirection": "column",
         },
         children=[
-            html.Div("Sweep Axes", style={
-                "fontSize": "11px", "fontWeight": "700",
-                "textTransform": "uppercase", "letterSpacing": "0.08em",
-                "color": COLORS["accent"], "marginBottom": "8px",
-                "paddingBottom": "6px",
-                "borderBottom": f"1px solid {COLORS['border']}",
-            }),
+            html.Div(
+                "Sweep Axes",
+                style={
+                    "fontSize": "11px",
+                    "fontWeight": "700",
+                    "textTransform": "uppercase",
+                    "letterSpacing": "0.08em",
+                    "color": COLORS["accent"],
+                    "marginBottom": "8px",
+                    "paddingBottom": "6px",
+                    "borderBottom": f"1px solid {COLORS['border']}",
+                },
+            ),
             # Always render all 3 rows; show/hide via 'display'
             html.Div(id="metric-row-wrap-0", children=[make_metric_selector(0)]),
             html.Div(id="metric-row-wrap-1", children=[make_metric_selector(1)]),
             html.Div(id="metric-row-wrap-2", children=[make_metric_selector(2)]),
-
             # Add / remove buttons
             html.Div(
                 style={"display": "flex", "gap": "8px", "marginTop": "4px"},
@@ -236,13 +261,27 @@ def _left_sidebar() -> html.Div:
 
 def _center_panel() -> html.Div:
     return html.Div(
-        style={"flex": "1", "minWidth": "0", "padding": "10px",
-               "display": "flex", "flexDirection": "column"},
+        style={
+            "flex": "1",
+            "minWidth": "0",
+            "padding": "10px",
+            "display": "flex",
+            "flexDirection": "column",
+        },
         children=[
             html.Div(
-                style={"display": "flex", "alignItems": "center", "justifyContent": "space-between"},
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "justifyContent": "space-between",
+                },
                 children=[
-                    html.Div(id="view-tab-container", children=[make_view_tab_bar(num_metrics=3, active="isosurface")]),
+                    html.Div(
+                        id="view-tab-container",
+                        children=[
+                            make_view_tab_bar(num_metrics=3, active="isosurface")
+                        ],
+                    ),
                     html.Button(
                         "CSV",
                         id="export-csv-btn",
@@ -264,7 +303,12 @@ def _center_panel() -> html.Div:
                 type="circle",
                 color=COLORS["accent"],
                 delay_show=1000,
-                parent_style={"flex": "1", "minHeight": "0", "display": "flex", "flexDirection": "column"},
+                parent_style={
+                    "flex": "1",
+                    "minHeight": "0",
+                    "display": "flex",
+                    "flexDirection": "column",
+                },
                 children=dcc.Graph(
                     id="main-plot",
                     figure=plot_empty(),
@@ -274,7 +318,10 @@ def _center_panel() -> html.Div:
                         "displayModeBar": True,
                         "modeBarButtonsToRemove": ["select2d", "lasso2d"],
                         "toImageButtonOptions": {
-                            "format": "png", "width": 1200, "height": 800, "scale": 2,
+                            "format": "png",
+                            "width": 1200,
+                            "height": 800,
+                            "scale": 2,
                         },
                     },
                 ),
@@ -297,13 +344,19 @@ def _right_panel() -> html.Div:
             "overflow": "hidden",
         },
         children=[
-            html.Div("Configuration", style={
-                "fontSize": "11px", "fontWeight": "700",
-                "textTransform": "uppercase", "letterSpacing": "0.08em",
-                "color": COLORS["accent"], "marginBottom": "8px",
-                "paddingBottom": "6px",
-                "borderBottom": f"1px solid {COLORS['border']}",
-            }),
+            html.Div(
+                "Configuration",
+                style={
+                    "fontSize": "11px",
+                    "fontWeight": "700",
+                    "textTransform": "uppercase",
+                    "letterSpacing": "0.08em",
+                    "color": COLORS["accent"],
+                    "marginBottom": "8px",
+                    "paddingBottom": "6px",
+                    "borderBottom": f"1px solid {COLORS['border']}",
+                },
+            ),
             html.Div(
                 id="fixed-config-container",
                 className="config-scroll",
@@ -323,7 +376,11 @@ app.layout = html.Div(
     children=[
         _topbar(),
         html.Div(
-            style={"display": "flex", "height": "calc(100vh - 52px)", "overflow": "hidden"},
+            style={
+                "display": "flex",
+                "height": "calc(100vh - 52px)",
+                "overflow": "hidden",
+            },
             children=[_left_sidebar(), _center_panel(), _right_panel()],
         ),
         # State stores
@@ -333,8 +390,10 @@ app.layout = html.Div(
         dcc.Store(id="num-thresholds-store", data=3, storage_type="memory"),
         dcc.Store(id="sweep-dirty", data=1, storage_type="memory"),
         dcc.Store(id="sweep-processed", data=0, storage_type="memory"),
-        dcc.Interval(id="auto-run-trigger", interval=500, n_intervals=0, max_intervals=1),
-        dcc.Interval(id="sweep-poll", interval=100, n_intervals=0),
+        dcc.Interval(
+            id="auto-run-trigger", interval=500, n_intervals=0, max_intervals=1
+        ),
+        dcc.Interval(id="sweep-poll", interval=16, n_intervals=0),
     ],
 )
 
@@ -342,6 +401,7 @@ app.layout = html.Div(
 # ---------------------------------------------------------------------------
 # Callback: add / remove metric rows (show/hide)
 # ---------------------------------------------------------------------------
+
 
 @app.callback(
     Output("metric-row-wrap-0", "style"),
@@ -361,8 +421,11 @@ def toggle_metric_rows(add_clicks, remove_clicks, num_metrics):
     elif triggered == "remove-metric-btn":
         num_metrics = max(1, num_metrics - 1)
 
-    def _show(): return {}
-    def _hide(): return {"display": "none"}
+    def _show():
+        return {}
+
+    def _hide():
+        return {"display": "none"}
 
     row_styles = [
         _show(),
@@ -392,6 +455,7 @@ def toggle_metric_rows(add_clicks, remove_clicks, num_metrics):
 # Callback: add / remove threshold rows
 # ---------------------------------------------------------------------------
 
+
 @app.callback(
     *[Output(f"threshold-row-{i}", "style") for i in range(5)],
     Output("remove-threshold-btn", "style"),
@@ -408,18 +472,18 @@ def toggle_threshold_rows(add_clicks, remove_clicks, num_thresholds):
     elif triggered == "remove-threshold-btn":
         num_thresholds = max(1, num_thresholds - 1)
 
-    row_styles = [
-        {} if i < num_thresholds else {"display": "none"}
-        for i in range(5)
-    ]
+    row_styles = [{} if i < num_thresholds else {"display": "none"} for i in range(5)]
 
     remove_style = (
         {
             "background": "transparent",
             "border": f"1px solid {COLORS['border']}",
             "color": COLORS["text_muted"],
-            "borderRadius": "4px", "width": "28px", "height": "28px",
-            "cursor": "pointer", "fontSize": "14px",
+            "borderRadius": "4px",
+            "width": "28px",
+            "height": "28px",
+            "cursor": "pointer",
+            "fontSize": "14px",
         }
         if num_thresholds > 1
         else {"display": "none"}
@@ -434,6 +498,7 @@ def toggle_threshold_rows(add_clicks, remove_clicks, num_thresholds):
 # All noise-row-{key} divs are always in the DOM; we toggle display only.
 
 from gui.constants import SWEEPABLE_METRICS as _SM
+
 
 @app.callback(
     [Output(f"noise-row-{m.key}", "style") for m in _SM],
@@ -455,9 +520,14 @@ def toggle_noise_rows(m0, m1, m2, num_metrics):
 # Helper: convert result dict/object to plain JSON-safe dict
 # ---------------------------------------------------------------------------
 
+
 def _result_to_dict(r: Any) -> dict:
     if isinstance(r, dict):
-        return {k: float(v) for k, v in r.items() if isinstance(v, (int, float, np.floating))}
+        return {
+            k: float(v)
+            for k, v in r.items()
+            if isinstance(v, (int, float, np.floating))
+        }
     return {
         "overall_fidelity": float(r.overall_fidelity),
         "algorithmic_fidelity": float(r.algorithmic_fidelity),
@@ -469,7 +539,7 @@ def _result_to_dict(r: Any) -> dict:
 
 
 def _slider_to_value(slider_pos: float, log_scale: bool) -> float:
-    return 10.0 ** slider_pos if log_scale else slider_pos
+    return 10.0**slider_pos if log_scale else slider_pos
 
 
 # ---------------------------------------------------------------------------
@@ -547,18 +617,38 @@ app.clientside_callback(
     prevent_initial_call=True,
 )
 def run_sweep(
-    n_clicks, auto_run_intervals, poll_intervals,
-    dirty, processed, hot_reload,
-    m0_key, m0_range,
-    m1_key, m1_range,
-    m2_key, m2_range,
+    n_clicks,
+    auto_run_intervals,
+    poll_intervals,
+    dirty,
+    processed,
+    hot_reload,
+    m0_key,
+    m0_range,
+    m1_key,
+    m1_range,
+    m2_key,
+    m2_range,
     num_metrics,
-    circuit_type, num_qubits, num_cores, topology, placement, seed,
+    circuit_type,
+    num_qubits,
+    num_cores,
+    topology,
+    placement,
+    seed,
     dynamic_decoupling,
     output_key,
     threshold_enable,
-    t0, t1, t2, t3, t4,
-    tc0, tc1, tc2, tc3, tc4,
+    t0,
+    t1,
+    t2,
+    t3,
+    t4,
+    tc0,
+    tc1,
+    tc2,
+    tc3,
+    tc4,
     num_thresholds,
     current_view,
     *noise_slider_vals,
@@ -567,32 +657,41 @@ def run_sweep(
     if should_skip_poll(triggered_ids, hot_reload, dirty, processed):
         return _NO_UPDATE_6
 
-    t_start = time.time()
-
-    # Build fixed noise dict from right-panel sliders
-    fixed_noise: dict = {}
-    for i, m in enumerate(SWEEPABLE_METRICS):
-        val = noise_slider_vals[i]
-        if val is not None:
-            fixed_noise[m.key] = _slider_to_value(val, m.log_scale)
-        else:
-            fixed_noise[m.key] = NOISE_DEFAULTS[m.key]
-    fixed_noise["dynamic_decoupling"] = bool(dynamic_decoupling)
-
-    # Active metrics
-    all_inputs = [(m0_key, m0_range), (m1_key, m1_range), (m2_key, m2_range)]
-    active = []
-    seen: set = set()
-    for i, (k, r) in enumerate(all_inputs[:int(num_metrics or 1)]):
-        if k and r and k not in seen:
-            seen.add(k)
-            active.append((k, r))
-
-    if not active:
-        return (plot_empty("Add at least one metric axis and click Run"), None,
-                "No metrics configured", dash.no_update, dash.no_update, dirty)
+    if not sweep_lock.acquire(blocking=False):
+        return _NO_UPDATE_6
 
     try:
+        t_start = time.time()
+
+        # Build fixed noise dict from right-panel sliders
+        fixed_noise: dict = {}
+        for i, m in enumerate(SWEEPABLE_METRICS):
+            val = noise_slider_vals[i]
+            if val is not None:
+                fixed_noise[m.key] = _slider_to_value(val, m.log_scale)
+            else:
+                fixed_noise[m.key] = NOISE_DEFAULTS[m.key]
+        fixed_noise["dynamic_decoupling"] = bool(dynamic_decoupling)
+
+        # Active metrics
+        all_inputs = [(m0_key, m0_range), (m1_key, m1_range), (m2_key, m2_range)]
+        active = []
+        seen: set = set()
+        for i, (k, r) in enumerate(all_inputs[: int(num_metrics or 1)]):
+            if k and r and k not in seen:
+                seen.add(k)
+                active.append((k, r))
+
+        if not active:
+            return (
+                plot_empty("Add at least one metric axis and click Run"),
+                None,
+                "No metrics configured",
+                dash.no_update,
+                dash.no_update,
+                dirty,
+            )
+
         cached = _engine.run_cold(
             circuit_type=circuit_type or "qft",
             num_qubits=int(num_qubits or 16),
@@ -616,7 +715,14 @@ def run_sweep(
             k0, r0 = active[0]
             k1, r1 = active[1]
             xs, ys, grid = _engine.sweep_2d(
-                cached, k0, r0[0], r0[1], k1, r1[0], r1[1], fixed_noise,
+                cached,
+                k0,
+                r0[0],
+                r0[1],
+                k1,
+                r1[0],
+                r1[1],
+                fixed_noise,
             )
             sweep_data["xs"] = xs.tolist()
             sweep_data["ys"] = ys.tolist()
@@ -628,22 +734,29 @@ def run_sweep(
             k2, r2 = active[2]
             xs, ys, zs, grid = _engine.sweep_3d(
                 cached,
-                k0, r0[0], r0[1],
-                k1, r1[0], r1[1],
-                k2, r2[0], r2[1],
+                k0,
+                r0[0],
+                r0[1],
+                k1,
+                r1[0],
+                r1[1],
+                k2,
+                r2[0],
+                r2[1],
                 fixed_noise,
             )
             sweep_data["xs"] = xs.tolist()
             sweep_data["ys"] = ys.tolist()
             sweep_data["zs"] = zs.tolist()
             sweep_data["grid"] = [
-                [[_result_to_dict(r) for r in row] for row in plane]
-                for plane in grid
+                [[_result_to_dict(r) for r in row] for row in plane] for plane in grid
             ]
 
         sweep_elapsed = time.time() - t_start - cold_elapsed
         total_elapsed = time.time() - t_start
-        cache_indicator = "cached ✓" if cached.cold_time_s < 0.1 else f"mapped in {cold_elapsed:.1f}s"
+        cache_indicator = (
+            "cached ✓" if cached.cold_time_s < 0.1 else f"mapped in {cold_elapsed:.1f}s"
+        )
         status = (
             f"Cold path: {cache_indicator}  |  "
             f"Sweep ({len(active)}D, {_count_points(sweep_data)} pts): {sweep_elapsed:.2f}s  |  "
@@ -659,13 +772,34 @@ def run_sweep(
         thresh = thresh_vals if threshold_enable and "yes" in threshold_enable else None
         if view in ("isosurface", "scatter3d"):
             thresh = thresh_vals or None
-        fig = build_figure(len(active), sweep_data, output_key or "overall_fidelity",
-                           view_type=view, thresholds=thresh,
-                           threshold_colors=thresh_colors or None)
-        return fig, sweep_data, status, view, make_view_tab_bar(len(active), view), dirty
+        fig = build_figure(
+            len(active),
+            sweep_data,
+            output_key or "overall_fidelity",
+            view_type=view,
+            thresholds=thresh,
+            threshold_colors=thresh_colors or None,
+        )
+        return (
+            fig,
+            sweep_data,
+            status,
+            view,
+            make_view_tab_bar(len(active), view),
+            dirty,
+        )
 
     except Exception as exc:
-        return plot_empty(f"Error: {exc}"), None, f"Error: {exc}", dash.no_update, dash.no_update, dirty
+        return (
+            plot_empty(f"Error: {exc}"),
+            None,
+            f"Error: {exc}",
+            dash.no_update,
+            dash.no_update,
+            dirty,
+        )
+    finally:
+        sweep_lock.release()
 
 
 def _count_points(sweep_data: dict) -> int:
@@ -679,6 +813,7 @@ def _count_points(sweep_data: dict) -> int:
 # Callback: re-plot when output metric changes (no re-sweep needed)
 # ---------------------------------------------------------------------------
 
+
 @app.callback(
     Output("main-plot", "figure", allow_duplicate=True),
     Input("cfg-output-metric", "value"),
@@ -690,10 +825,23 @@ def _count_points(sweep_data: dict) -> int:
     State("num-thresholds-store", "data"),
     prevent_initial_call=True,
 )
-def replot_on_output_change(output_key, threshold_enable,
-                            t0, t1, t2, t3, t4,
-                            tc0, tc1, tc2, tc3, tc4,
-                            sweep_data, view_type, num_thresholds):
+def replot_on_output_change(
+    output_key,
+    threshold_enable,
+    t0,
+    t1,
+    t2,
+    t3,
+    t4,
+    tc0,
+    tc1,
+    tc2,
+    tc3,
+    tc4,
+    sweep_data,
+    view_type,
+    num_thresholds,
+):
     if sweep_data is None:
         return dash.no_update
     num_metrics = len(sweep_data.get("metric_keys", []))
@@ -705,9 +853,14 @@ def replot_on_output_change(output_key, threshold_enable,
     thresh = thresh_vals if threshold_enable and "yes" in threshold_enable else None
     if view_type in ("isosurface", "scatter3d"):
         thresh = thresh_vals or None
-    return build_figure(num_metrics, sweep_data, output_key or "overall_fidelity",
-                        view_type=view_type, thresholds=thresh,
-                        threshold_colors=thresh_colors or None)
+    return build_figure(
+        num_metrics,
+        sweep_data,
+        output_key or "overall_fidelity",
+        view_type=view_type,
+        thresholds=thresh,
+        threshold_colors=thresh_colors or None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +868,7 @@ def replot_on_output_change(output_key, threshold_enable,
 # ---------------------------------------------------------------------------
 
 for _idx in range(MAX_METRICS):
+
     @app.callback(
         Output(f"metric-range-label-{_idx}", "children"),
         Input(f"metric-slider-{_idx}", "value"),
@@ -755,22 +909,41 @@ for _idx in range(MAX_METRICS):
     )
     def _reconfigure_slider(metric_key, _i=_idx):
         if not metric_key:
-            return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+            return (
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+            )
         m = METRIC_BY_KEY.get(metric_key)
         if m is None:
-            return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+            return (
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+            )
         marks = (
             _log_marks(m.slider_min, m.slider_max)
             if m.log_scale
             else _linear_marks(m.slider_min, m.slider_max)
         )
         step = (m.slider_max - m.slider_min) / 200
-        return m.slider_min, m.slider_max, step, marks, [m.slider_default_low, m.slider_default_high]
+        return (
+            m.slider_min,
+            m.slider_max,
+            step,
+            marks,
+            [m.slider_default_low, m.slider_default_high],
+        )
 
 
 # ---------------------------------------------------------------------------
 # Callback: view tab click — switch plot type without re-sweep
 # ---------------------------------------------------------------------------
+
 
 @app.callback(
     Output("main-plot", "figure", allow_duplicate=True),
@@ -786,9 +959,24 @@ for _idx in range(MAX_METRICS):
     State("num-thresholds-store", "data"),
     prevent_initial_call=True,
 )
-def on_view_tab_click(n_clicks_list, sweep_data, num_metrics, output_key,
-                      threshold_enable, t0, t1, t2, t3, t4,
-                      tc0, tc1, tc2, tc3, tc4, num_thresholds):
+def on_view_tab_click(
+    n_clicks_list,
+    sweep_data,
+    num_metrics,
+    output_key,
+    threshold_enable,
+    t0,
+    t1,
+    t2,
+    t3,
+    t4,
+    tc0,
+    tc1,
+    tc2,
+    tc3,
+    tc4,
+    num_thresholds,
+):
     if not ctx.triggered_id or not any(n_clicks_list):
         return dash.no_update, dash.no_update, dash.no_update
 
@@ -806,15 +994,21 @@ def on_view_tab_click(n_clicks_list, sweep_data, num_metrics, output_key,
     thresh = thresh_vals if threshold_enable and "yes" in threshold_enable else None
     if view_type in ("isosurface", "scatter3d"):
         thresh = thresh_vals or None
-    fig = build_figure(actual_metrics, sweep_data, output_key or "overall_fidelity",
-                       view_type=view_type, thresholds=thresh,
-                       threshold_colors=thresh_colors or None)
+    fig = build_figure(
+        actual_metrics,
+        sweep_data,
+        output_key or "overall_fidelity",
+        view_type=view_type,
+        thresholds=thresh,
+        threshold_colors=thresh_colors or None,
+    )
     return fig, view_type, make_view_tab_bar(actual_metrics, view_type)
 
 
 # ---------------------------------------------------------------------------
 # Callback: CSV export
 # ---------------------------------------------------------------------------
+
 
 @app.callback(
     Output("csv-download", "data"),

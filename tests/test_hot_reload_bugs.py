@@ -1,8 +1,11 @@
 """Tests for hot-reload view preservation and initial load trigger bugs."""
 
+import threading
+import time
+
 import pytest
 
-from gui.app import resolve_view_type, should_skip_poll
+from gui.app import resolve_view_type, should_skip_poll, sweep_lock
 
 
 # ---------------------------------------------------------------------------
@@ -82,3 +85,51 @@ class TestShouldSkipPoll:
     def test_does_not_skip_auto_run_even_with_hot_reload_off(self):
         """auto-run-trigger is the initial load — must run regardless of hot reload toggle."""
         assert should_skip_poll(["auto-run-trigger"], [], 0, 0) is False
+
+
+# ---------------------------------------------------------------------------
+# Sweep lock: prevents concurrent sweeps from crashing the engine
+# ---------------------------------------------------------------------------
+
+class TestSweepLock:
+    """sweep_lock is a non-blocking lock that serialises sweep execution."""
+
+    def test_acquire_when_free(self):
+        assert sweep_lock.acquire(blocking=False) is True
+        sweep_lock.release()
+
+    def test_blocks_concurrent_acquire(self):
+        sweep_lock.acquire()
+        try:
+            assert sweep_lock.acquire(blocking=False) is False
+        finally:
+            sweep_lock.release()
+
+    def test_reacquire_after_release(self):
+        sweep_lock.acquire()
+        sweep_lock.release()
+        assert sweep_lock.acquire(blocking=False) is True
+        sweep_lock.release()
+
+    def test_concurrent_threads_serialised(self):
+        """Two threads contending the lock: only one enters at a time."""
+        results = []
+        barrier = threading.Barrier(2)
+
+        def worker(worker_id):
+            barrier.wait()
+            acquired = sweep_lock.acquire(blocking=False)
+            results.append((worker_id, acquired))
+            if acquired:
+                time.sleep(0.05)
+                sweep_lock.release()
+
+        t1 = threading.Thread(target=worker, args=(1,))
+        t2 = threading.Thread(target=worker, args=(2,))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        acquired_count = sum(1 for _, a in results if a)
+        assert acquired_count == 1
