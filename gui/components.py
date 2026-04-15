@@ -16,6 +16,7 @@ from .constants import (
     VIEW_TABS,
     VIEW_TAB_DEFAULTS,
     ANALYSIS_TABS,
+    DEFAULT_SWEEP_AXES,
 )
 
 
@@ -87,8 +88,8 @@ def make_metric_selector(index: int) -> html.Div:
     One sweep metric row: dropdown (choose which param) + range slider.
     ``index`` is 0, 1, or 2.
     """
-    default_metric = SWEEPABLE_METRICS[index % len(SWEEPABLE_METRICS)]
-    m = default_metric
+    default_key = DEFAULT_SWEEP_AXES[index] if index < len(DEFAULT_SWEEP_AXES) else SWEEPABLE_METRICS[index % len(SWEEPABLE_METRICS)].key
+    m = METRIC_BY_KEY[default_key]
 
     marks = _log_marks(m.slider_min, m.slider_max) if m.log_scale else _linear_marks(m.slider_min, m.slider_max)
 
@@ -124,7 +125,7 @@ def make_metric_selector(index: int) -> html.Div:
             dcc.Dropdown(
                 id=f"metric-dropdown-{index}",
                 options=[{"label": m.label, "value": m.key} for m in SWEEPABLE_METRICS],
-                value=default_metric.key,
+                value=default_key,
                 clearable=False,
                 style={"marginBottom": "10px"},
                 className="dse-dropdown",
@@ -137,7 +138,7 @@ def make_metric_selector(index: int) -> html.Div:
                         min=m.slider_min,
                         max=m.slider_max,
                         step=(m.slider_max - m.slider_min) / 200,
-                        value=[m.slider_default_low, m.slider_default_high],
+                        value=[m.slider_min, m.slider_max],
                         marks=marks,
                         tooltip={"placement": "bottom", "always_visible": True},
                         className="dse-range-slider",
@@ -247,7 +248,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
         _label("Cores"),
         dcc.Slider(
             id="cfg-num-cores",
-            min=1, max=16, step=1, value=4,
+            min=1, max=16, step=1, value=1,
             marks={"1": "1", "4": "4", "8": "8", "12": "12", "16": "16"},
             tooltip={"placement": "bottom"},
             className="dse-slider",

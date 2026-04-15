@@ -112,6 +112,8 @@ SWEEPABLE_METRICS: List[MetricDef] = [
 
 METRIC_BY_KEY = {m.key: m for m in SWEEPABLE_METRICS}
 
+DEFAULT_SWEEP_AXES = ["t1", "t2", "two_gate_time"]
+
 # Default scalar noise values shown in the right panel
 NOISE_DEFAULTS = {
     "single_gate_error": 1e-4,
@@ -178,7 +180,7 @@ VIEW_TABS: dict[int, list[dict]] = {
 VIEW_TAB_DEFAULTS: dict[int, str] = {
     1: "line",
     2: "contour",
-    3: "scatter3d",
+    3: "isosurface",
 }
 
 ANALYSIS_TABS: list[dict] = [

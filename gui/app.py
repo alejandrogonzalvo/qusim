@@ -134,10 +134,8 @@ def _left_sidebar() -> html.Div:
             }),
             # Always render all 3 rows; show/hide via 'display'
             html.Div(id="metric-row-wrap-0", children=[make_metric_selector(0)]),
-            html.Div(id="metric-row-wrap-1", children=[make_metric_selector(1)],
-                     style={"display": "none"}),
-            html.Div(id="metric-row-wrap-2", children=[make_metric_selector(2)],
-                     style={"display": "none"}),
+            html.Div(id="metric-row-wrap-1", children=[make_metric_selector(1)]),
+            html.Div(id="metric-row-wrap-2", children=[make_metric_selector(2)]),
 
             # Add / remove buttons
             html.Div(
@@ -171,7 +169,6 @@ def _left_sidebar() -> html.Div:
                             "padding": "6px",
                             "cursor": "pointer",
                             "fontSize": "12px",
-                            "display": "none",
                         },
                     ),
                 ],
@@ -188,7 +185,7 @@ def _center_panel() -> html.Div:
             html.Div(
                 style={"display": "flex", "alignItems": "center", "justifyContent": "space-between"},
                 children=[
-                    html.Div(id="view-tab-container", children=[make_view_tab_bar(num_metrics=1)]),
+                    html.Div(id="view-tab-container", children=[make_view_tab_bar(num_metrics=3, active="isosurface")]),
                     html.Button(
                         "CSV",
                         id="export-csv-btn",
@@ -261,10 +258,11 @@ app.layout = html.Div(
             children=[_left_sidebar(), _center_panel(), _right_panel()],
         ),
         # State stores
-        dcc.Store(id="num-metrics-store", data=1, storage_type="memory"),
+        dcc.Store(id="num-metrics-store", data=3, storage_type="memory"),
         dcc.Store(id="sweep-result-store", data=None, storage_type="memory"),
-        dcc.Store(id="view-type-store", data=None, storage_type="memory"),
+        dcc.Store(id="view-type-store", data="isosurface", storage_type="memory"),
         dcc.Store(id="num-thresholds-store", data=3, storage_type="memory"),
+        dcc.Interval(id="auto-run-trigger", interval=500, n_intervals=0, max_intervals=1),
     ],
 )
 
@@ -416,6 +414,7 @@ _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METR
     Output("view-type-store", "data"),
     Output("view-tab-container", "children"),
     Input("run-btn", "n_clicks"),
+    Input("auto-run-trigger", "n_intervals"),
     State("metric-dropdown-0", "value"),
     State("metric-slider-0", "value"),
     State("metric-dropdown-1", "value"),
@@ -439,7 +438,7 @@ _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METR
     prevent_initial_call=True,
 )
 def run_sweep(
-    n_clicks,
+    n_clicks, auto_run_intervals,
     m0_key, m0_range,
     m1_key, m1_range,
     m2_key, m2_range,
@@ -453,7 +452,7 @@ def run_sweep(
     num_thresholds,
     *noise_slider_vals,
 ):
-    if not n_clicks:
+    if not n_clicks and not auto_run_intervals:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     t_start = time.time()
