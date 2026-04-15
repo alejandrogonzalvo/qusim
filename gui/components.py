@@ -422,14 +422,25 @@ _THRESHOLD_INPUT_STYLE = {
     "textAlign": "center",
 }
 
-_COLOR_PICKER_STYLE = {
-    "width": "28px",
-    "height": "28px",
-    "padding": "1px",
-    "border": f"1px solid {COLORS['border']}",
+_COLOR_SWATCH_STYLE = {
+    "width": "24px",
+    "height": "24px",
     "borderRadius": "4px",
-    "cursor": "pointer",
-    "background": "transparent",
+    "border": f"1px solid {COLORS['border']}",
+    "flexShrink": "0",
+}
+
+_COLOR_INPUT_STYLE = {
+    "width": "70px",
+    "background": COLORS["surface2"],
+    "border": f"1px solid {COLORS['border']}",
+    "color": COLORS["text"],
+    "borderRadius": "4px",
+    "padding": "3px 5px",
+    "fontSize": "10px",
+    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+    "outline": "none",
+    "textAlign": "center",
 }
 
 
@@ -448,11 +459,9 @@ def _make_threshold_inputs() -> list:
                         style={"display": "flex", "alignItems": "center", "gap": "6px",
                                "marginBottom": "4px"},
                         children=[
-                            html.Input(
-                                id=f"cfg-threshold-color-{i}",
-                                type="color",
-                                value=default_color,
-                                style=_COLOR_PICKER_STYLE,
+                            html.Div(
+                                id=f"cfg-threshold-swatch-{i}",
+                                style={**_COLOR_SWATCH_STYLE, "background": default_color},
                             ),
                             dcc.Input(
                                 id=f"cfg-threshold-{i}",
@@ -461,6 +470,13 @@ def _make_threshold_inputs() -> list:
                                 min=0, max=1, step=0.01,
                                 debounce=True,
                                 style=_THRESHOLD_INPUT_STYLE,
+                            ),
+                            dcc.Input(
+                                id=f"cfg-threshold-color-{i}",
+                                type="text",
+                                value=default_color,
+                                debounce=True,
+                                style=_COLOR_INPUT_STYLE,
                             ),
                         ],
                     ),

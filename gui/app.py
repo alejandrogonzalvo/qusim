@@ -729,6 +729,27 @@ def export_csv(n_clicks, sweep_data):
 
 
 # ---------------------------------------------------------------------------
+# Clientside callbacks: sync threshold color swatches
+# ---------------------------------------------------------------------------
+
+for _ci in range(5):
+    app.clientside_callback(
+        """function(color) {
+            return {
+                "width": "24px", "height": "24px",
+                "borderRadius": "4px",
+                "border": "1px solid #D4D4D4",
+                "flexShrink": "0",
+                "background": color || "#ccc"
+            };
+        }""",
+        Output(f"cfg-threshold-swatch-{_ci}", "style"),
+        Input(f"cfg-threshold-color-{_ci}", "value"),
+        prevent_initial_call=False,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
