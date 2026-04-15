@@ -604,68 +604,79 @@ class TestBuildFigureCorrelationRouting:
 
 
 # ---------------------------------------------------------------------------
-# Tests: threshold overlay (cross-cutting feature)
+# Tests: threshold overlay (cross-cutting feature — multi-threshold)
 # ---------------------------------------------------------------------------
 
 class TestThresholdOverlay:
-    def test_1d_no_threshold_no_extra_shapes(self, sweep_1d_data):
+    # --- 1D line ---
+
+    def test_1d_no_thresholds_no_shapes(self, sweep_1d_data):
         xs, results = sweep_1d_data
         fig = plot_1d(xs, results, "single_gate_error", "overall_fidelity")
         shapes = fig.layout.shapes or ()
         assert len(shapes) == 0
 
-    def test_1d_threshold_adds_hline(self, sweep_1d_data):
+    def test_1d_single_threshold_adds_line_and_rect(self, sweep_1d_data):
         xs, results = sweep_1d_data
         fig = plot_1d(xs, results, "single_gate_error", "overall_fidelity",
-                      threshold=0.9)
+                      thresholds=[0.9])
         shapes = list(fig.layout.shapes)
-        hlines = [s for s in shapes if s.type == "line" and s.y0 == s.y1 == 0.9]
-        assert len(hlines) == 1
-
-    def test_1d_threshold_adds_shaded_region(self, sweep_1d_data):
-        xs, results = sweep_1d_data
-        fig = plot_1d(xs, results, "single_gate_error", "overall_fidelity",
-                      threshold=0.9)
-        shapes = list(fig.layout.shapes)
+        hlines = [s for s in shapes if s.type == "line"]
         rects = [s for s in shapes if s.type == "rect"]
+        assert len(hlines) == 1
         assert len(rects) == 1
 
-    def test_1d_threshold_none_no_shapes(self, sweep_1d_data):
+    def test_1d_multiple_thresholds(self, sweep_1d_data):
         xs, results = sweep_1d_data
         fig = plot_1d(xs, results, "single_gate_error", "overall_fidelity",
-                      threshold=None)
+                      thresholds=[0.5, 0.7, 0.9])
+        shapes = list(fig.layout.shapes)
+        hlines = [s for s in shapes if s.type == "line"]
+        assert len(hlines) == 3
+
+    def test_1d_none_thresholds_no_shapes(self, sweep_1d_data):
+        xs, results = sweep_1d_data
+        fig = plot_1d(xs, results, "single_gate_error", "overall_fidelity",
+                      thresholds=None)
         shapes = fig.layout.shapes or ()
         assert len(shapes) == 0
 
-    def test_2d_contour_threshold_adds_bold_contour(self, sweep_2d_data):
+    # --- 2D contour ---
+
+    def test_2d_contour_thresholds_add_bold_contours(self, sweep_2d_data):
         xs, ys, grid = sweep_2d_data
         fig = plot_2d_contour(xs, ys, grid, "single_gate_error", "two_gate_error",
-                              "overall_fidelity", threshold=0.9)
+                              "overall_fidelity", thresholds=[0.8, 0.9])
         contour_traces = [t for t in fig.data if isinstance(t, go.Contour)]
-        assert len(contour_traces) >= 2
+        assert len(contour_traces) >= 3
 
-    def test_2d_contour_no_threshold_normal(self, sweep_2d_data):
+    def test_2d_contour_no_thresholds_normal(self, sweep_2d_data):
         xs, ys, grid = sweep_2d_data
         fig = plot_2d_contour(xs, ys, grid, "single_gate_error", "two_gate_error",
                               "overall_fidelity")
         contour_traces = [t for t in fig.data if isinstance(t, go.Contour)]
         assert len(contour_traces) == 1
 
-    def test_pareto_threshold_adds_hline(self, sweep_data_store_2d):
-        fig = plot_pareto(sweep_data_store_2d, "overall_fidelity", threshold=0.9)
-        shapes = list(fig.layout.shapes)
-        hlines = [s for s in shapes if s.type == "line" and s.y0 == s.y1 == 0.9]
-        assert len(hlines) == 1
+    # --- Pareto ---
 
-    def test_build_figure_passes_threshold(self, sweep_data_store_1d):
+    def test_pareto_thresholds_add_hlines(self, sweep_data_store_2d):
+        fig = plot_pareto(sweep_data_store_2d, "overall_fidelity",
+                          thresholds=[0.7, 0.9])
+        shapes = list(fig.layout.shapes)
+        hlines = [s for s in shapes if s.type == "line"]
+        assert len(hlines) == 2
+
+    # --- build_figure ---
+
+    def test_build_figure_passes_thresholds(self, sweep_data_store_1d):
         fig = build_figure(1, sweep_data_store_1d, "overall_fidelity",
-                           threshold=0.9)
+                           thresholds=[0.9])
         shapes = list(fig.layout.shapes)
         assert len(shapes) >= 1
 
-    # --- 3D scatter threshold ---
+    # --- 3D scatter: highlight boundary points near thresholds ---
 
-    def test_scatter3d_no_threshold_single_trace(self, sweep_3d_data):
+    def test_scatter3d_no_thresholds_single_trace(self, sweep_3d_data):
         xs, ys, zs, grid = sweep_3d_data
         fig = plot_3d(xs, ys, zs, grid,
                       "single_gate_error", "two_gate_error", "t1",
@@ -673,62 +684,63 @@ class TestThresholdOverlay:
         scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter3d)]
         assert len(scatter_traces) == 1
 
-    def test_scatter3d_threshold_splits_into_two_traces(self, sweep_3d_data):
+    def test_scatter3d_threshold_adds_highlight_trace(self, sweep_3d_data):
         xs, ys, zs, grid = sweep_3d_data
         fig = plot_3d(xs, ys, zs, grid,
                       "single_gate_error", "two_gate_error", "t1",
-                      "overall_fidelity", threshold=0.9)
+                      "overall_fidelity", thresholds=[0.9])
         scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter3d)]
-        assert len(scatter_traces) == 2
+        assert len(scatter_traces) >= 2
+        boundary = [t for t in scatter_traces if "0.9" in (t.name or "")]
+        assert len(boundary) == 1
 
-    def test_scatter3d_threshold_dimmed_trace_has_low_opacity(self, sweep_3d_data):
+    def test_scatter3d_multiple_thresholds_add_multiple_traces(self, sweep_3d_data):
         xs, ys, zs, grid = sweep_3d_data
         fig = plot_3d(xs, ys, zs, grid,
                       "single_gate_error", "two_gate_error", "t1",
-                      "overall_fidelity", threshold=0.9)
+                      "overall_fidelity", thresholds=[0.8, 0.9])
         scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter3d)]
-        dimmed = [t for t in scatter_traces if "below" in (t.name or "").lower()]
-        assert len(dimmed) == 1
-        assert dimmed[0].marker.opacity <= 0.3
+        assert len(scatter_traces) >= 3
 
-    def test_scatter3d_threshold_none_no_split(self, sweep_3d_data):
+    def test_scatter3d_boundary_points_have_larger_markers(self, sweep_3d_data):
         xs, ys, zs, grid = sweep_3d_data
         fig = plot_3d(xs, ys, zs, grid,
                       "single_gate_error", "two_gate_error", "t1",
-                      "overall_fidelity", threshold=None)
+                      "overall_fidelity", thresholds=[0.9])
         scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter3d)]
-        assert len(scatter_traces) == 1
+        base_trace = scatter_traces[0]
+        boundary = [t for t in scatter_traces if "0.9" in (t.name or "")][0]
+        assert boundary.marker.size > base_trace.marker.size
 
-    # --- 3D isosurface threshold ---
+    # --- 3D isosurface: one surface per threshold ---
 
-    def test_isosurface_threshold_adds_extra_surface(self, sweep_3d_data):
+    def test_isosurface_thresholds_render_as_surfaces(self, sweep_3d_data):
         xs, ys, zs, grid = sweep_3d_data
         fig = plot_3d_isosurface(xs, ys, zs, grid,
                                  "single_gate_error", "two_gate_error", "t1",
-                                 "overall_fidelity", threshold=0.7)
+                                 "overall_fidelity", thresholds=[0.5, 0.7, 0.9])
         iso_traces = [t for t in fig.data if isinstance(t, go.Isosurface)]
-        assert len(iso_traces) == 2
+        assert len(iso_traces) == 3
 
-    def test_isosurface_threshold_surface_is_red(self, sweep_3d_data):
-        xs, ys, zs, grid = sweep_3d_data
-        fig = plot_3d_isosurface(xs, ys, zs, grid,
-                                 "single_gate_error", "two_gate_error", "t1",
-                                 "overall_fidelity", threshold=0.7)
-        iso_traces = [t for t in fig.data if isinstance(t, go.Isosurface)]
-        threshold_iso = [t for t in iso_traces if "threshold" in (t.name or "").lower()]
-        assert len(threshold_iso) == 1
-
-    def test_isosurface_no_threshold_single_iso(self, sweep_3d_data):
+    def test_isosurface_no_thresholds_still_has_defaults(self, sweep_3d_data):
         xs, ys, zs, grid = sweep_3d_data
         fig = plot_3d_isosurface(xs, ys, zs, grid,
                                  "single_gate_error", "two_gate_error", "t1",
                                  "overall_fidelity")
         iso_traces = [t for t in fig.data if isinstance(t, go.Isosurface)]
+        assert len(iso_traces) == 3
+
+    def test_isosurface_single_threshold(self, sweep_3d_data):
+        xs, ys, zs, grid = sweep_3d_data
+        fig = plot_3d_isosurface(xs, ys, zs, grid,
+                                 "single_gate_error", "two_gate_error", "t1",
+                                 "overall_fidelity", thresholds=[0.9])
+        iso_traces = [t for t in fig.data if isinstance(t, go.Isosurface)]
         assert len(iso_traces) == 1
 
-    def test_build_figure_3d_passes_threshold(self, sweep_data_store_3d):
+    def test_build_figure_3d_passes_thresholds(self, sweep_data_store_3d):
         fig = build_figure(3, sweep_data_store_3d, "overall_fidelity",
-                           threshold=0.7)
+                           thresholds=[0.5, 0.7, 0.9])
         assert isinstance(fig, go.Figure)
 
 
