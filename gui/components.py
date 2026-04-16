@@ -194,7 +194,11 @@ def make_add_metric_button() -> html.Div:
 # Right panel: fixed configuration
 # ---------------------------------------------------------------------------
 
+_tooltip_counter = 0
+
+
 def _section_header(title: str, tooltip: str | None = None) -> html.Div:
+    global _tooltip_counter
     header_style = {
         "fontSize": "10px",
         "fontWeight": "700",
@@ -207,22 +211,29 @@ def _section_header(title: str, tooltip: str | None = None) -> html.Div:
     if tooltip is None:
         return html.Div(title, style=header_style)
 
+    _tooltip_counter += 1
+    target_id = f"help-icon-{_tooltip_counter}"
+
     return html.Div(
         style={**header_style, "display": "flex", "alignItems": "center", "gap": "6px"},
         children=[
             html.Span(title),
-            html.Div(
-                className="help-icon-wrap",
-                children=[
-                    html.Span(
-                        "?",
-                        className="help-icon",
-                    ),
-                    html.Div(
-                        tooltip,
-                        className="help-tooltip",
-                    ),
-                ],
+            html.Span(
+                "?",
+                id=target_id,
+                className="help-icon",
+            ),
+            dbc.Tooltip(
+                tooltip,
+                target=target_id,
+                placement="top",
+                style={
+                    "fontSize": "11px",
+                    "maxWidth": "240px",
+                    "textTransform": "none",
+                    "letterSpacing": "normal",
+                    "fontWeight": "400",
+                },
             ),
         ],
     )

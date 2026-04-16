@@ -255,14 +255,8 @@ input[type="checkbox"] {
 
 
 /* ═══════════════════════════════════════════════════════════════════
-   HELP ICON + TOOLTIP
+   HELP ICON  (tooltip handled by dbc.Tooltip — escapes overflow)
    ═══════════════════════════════════════════════════════════════════ */
-
-.help-icon-wrap {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-}
 
 .help-icon {
     display: inline-flex;
@@ -283,40 +277,6 @@ input[type="checkbox"] {
 .help-icon:hover {
     border-color: var(--accent2);
     color: var(--accent2);
-}
-
-.help-tooltip {
-    display: none;
-    position: absolute;
-    bottom: calc(100% + 8px);
-    left: 50%;
-    transform: translateX(-50%);
-    width: 220px;
-    padding: 10px 12px;
-    background: var(--accent);
-    color: #fff;
-    font-size: 11px;
-    font-weight: 400;
-    line-height: 1.45;
-    text-transform: none;
-    letter-spacing: normal;
-    border-radius: 6px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
-    z-index: 9999;
-    pointer-events: none;
-}
-.help-tooltip::after {
-    content: "";
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    border: 5px solid transparent;
-    border-top-color: var(--accent);
-}
-
-.help-icon-wrap:hover .help-tooltip {
-    display: block;
 }
 
 
