@@ -30,6 +30,9 @@ from .constants import (
     SWEEP_POINTS_1D,
     SWEEP_POINTS_2D,
     SWEEP_POINTS_3D,
+    SWEEP_POINTS_COLD_1D,
+    SWEEP_POINTS_COLD_2D,
+    SWEEP_POINTS_COLD_3D,
 )
 
 
@@ -70,29 +73,58 @@ def _build_topology(
     num_qubits: int,
     num_cores: int,
     topology_type: str,
+    intracore_topology: str = "all_to_all",
 ) -> tuple[CouplingMap, dict[int, int]]:
-    """Build full_coupling_map and core_mapping for the given topology."""
+    """Build full_coupling_map and core_mapping for the given topology.
+
+    Physical qubits are ceil-divided across cores so every logical qubit
+    has a slot even when num_qubits % num_cores != 0.
+    """
+    import math
     if num_cores < 1:
         num_cores = 1
-    # Clamp so qubits_per_core >= 1
-    qubits_per_core = max(1, num_qubits // num_cores)
-    actual_qubits = qubits_per_core * num_cores
+    num_cores = min(num_cores, num_qubits)
+
+    qubits_per_core = math.ceil(num_qubits / num_cores)
+    num_physical = qubits_per_core * num_cores
 
     cm = CouplingMap()
-    for i in range(actual_qubits):
+    for i in range(num_physical):
         cm.add_physical_qubit(i)
 
     core_mapping: dict[int, int] = {}
 
-    # All-to-all intra-core connections
     for c in range(num_cores):
         offset = c * qubits_per_core
         for q in range(qubits_per_core):
             core_mapping[offset + q] = c
-        for q in range(qubits_per_core):
-            for r in range(q + 1, qubits_per_core):
-                cm.add_edge(offset + q, offset + r)
-                cm.add_edge(offset + r, offset + q)
+
+        if intracore_topology == "all_to_all":
+            for q in range(qubits_per_core):
+                for r in range(q + 1, qubits_per_core):
+                    cm.add_edge(offset + q, offset + r)
+                    cm.add_edge(offset + r, offset + q)
+        elif intracore_topology == "linear":
+            for q in range(qubits_per_core - 1):
+                cm.add_edge(offset + q, offset + q + 1)
+                cm.add_edge(offset + q + 1, offset + q)
+        elif intracore_topology == "ring":
+            for q in range(qubits_per_core):
+                nxt = (q + 1) % qubits_per_core
+                cm.add_edge(offset + q, offset + nxt)
+                cm.add_edge(offset + nxt, offset + q)
+        elif intracore_topology == "grid":
+            side = math.isqrt(qubits_per_core)
+            if side * side < qubits_per_core:
+                side += 1
+            for q in range(qubits_per_core):
+                row, col = divmod(q, side)
+                if col + 1 < side and q + 1 < qubits_per_core:
+                    cm.add_edge(offset + q, offset + q + 1)
+                    cm.add_edge(offset + q + 1, offset + q)
+                if q + side < qubits_per_core:
+                    cm.add_edge(offset + q, offset + q + side)
+                    cm.add_edge(offset + q + side, offset + q)
 
     if num_cores > 1:
         if topology_type == "ring":
@@ -190,12 +222,13 @@ class DSEEngine:
         placement_policy: str,
         seed: int,
         noise: Optional[dict] = None,
+        intracore_topology: str = "all_to_all",
     ) -> CachedMapping:
         """
         Full circuit transpilation + HQA mapping. Returns a CachedMapping that
         can be reused for many hot-path fidelity evaluations.
         """
-        config_key = (circuit_type, num_qubits, num_cores, topology_type, placement_policy, seed)
+        config_key = (circuit_type, num_qubits, num_cores, topology_type, intracore_topology, placement_policy, seed)
         if self._cache is not None and self._cache.config_key == config_key:
             return self._cache
 
@@ -204,7 +237,10 @@ class DSEEngine:
         circ = _build_circuit(circuit_type, num_qubits, seed)
         transp = _transpile_circuit(circ, seed)
 
-        full_coupling_map, core_mapping = _build_topology(num_qubits, num_cores, topology_type)
+        full_coupling_map, core_mapping = _build_topology(
+            num_qubits, num_cores, topology_type,
+            intracore_topology=intracore_topology,
+        )
 
         actual_qubits = transp.num_qubits
 
@@ -301,12 +337,42 @@ class DSEEngine:
 
     # -- Sweep methods -------------------------------------------------------
 
+    COLD_PATH_KEYS = frozenset({"num_qubits", "num_cores"})
+
     def _metric_values(self, metric_key: str, low: float, high: float, n: int) -> np.ndarray:
         m = METRIC_BY_KEY[metric_key]
         if m.log_scale:
             return np.logspace(low, high, n)
-        else:
-            return np.linspace(low, high, n)
+        vals = np.linspace(low, high, n)
+        if metric_key in self.COLD_PATH_KEYS:
+            vals = np.unique(np.round(vals).astype(int))
+        return vals
+
+    def _has_cold(self, *keys: str) -> bool:
+        return any(k in self.COLD_PATH_KEYS for k in keys)
+
+    def _sweep_points(self, ndim: int, has_cold: bool) -> int:
+        if has_cold:
+            return [SWEEP_POINTS_COLD_1D, SWEEP_POINTS_COLD_2D, SWEEP_POINTS_COLD_3D][ndim - 1]
+        return [SWEEP_POINTS_1D, SWEEP_POINTS_2D, SWEEP_POINTS_3D][ndim - 1]
+
+    def _eval_point(
+        self,
+        cold_config: dict,
+        noise: dict,
+        swept: dict[str, float],
+    ) -> dict:
+        """Evaluate a single design point, re-running cold path if needed."""
+        cfg = dict(cold_config)
+        hot_noise = dict(noise)
+        for k, v in swept.items():
+            if k in self.COLD_PATH_KEYS:
+                cfg[k] = int(v)
+            else:
+                hot_noise[k] = v
+        cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
+        cached = self.run_cold(**cfg, noise=hot_noise)
+        return self.run_hot(cached, hot_noise)
 
     def sweep_1d(
         self,
@@ -315,14 +381,18 @@ class DSEEngine:
         low: float,
         high: float,
         fixed_noise: dict,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Sweep one metric, return (x_values, fidelity_values)."""
-        xs = self._metric_values(metric_key, low, high, SWEEP_POINTS_1D)
+        cold_config: dict | None = None,
+    ) -> tuple[np.ndarray, list]:
+        has_cold = self._has_cold(metric_key)
+        n = self._sweep_points(1, has_cold)
+        xs = self._metric_values(metric_key, low, high, n)
         results = []
         for v in xs:
-            noise = {**fixed_noise, metric_key: v}
-            r = self.run_hot(cached, noise)
-            results.append(r)
+            if has_cold:
+                results.append(self._eval_point(cold_config, fixed_noise, {metric_key: v}))
+            else:
+                noise = {**fixed_noise, metric_key: v}
+                results.append(self.run_hot(cached, noise))
         return xs, results
 
     def sweep_2d(
@@ -331,16 +401,22 @@ class DSEEngine:
         metric_key1: str, low1: float, high1: float,
         metric_key2: str, low2: float, high2: float,
         fixed_noise: dict,
+        cold_config: dict | None = None,
     ) -> tuple[np.ndarray, np.ndarray, list]:
-        """Sweep two metrics, return (x_values, y_values, grid_of_result_dicts)."""
-        xs = self._metric_values(metric_key1, low1, high1, SWEEP_POINTS_2D)
-        ys = self._metric_values(metric_key2, low2, high2, SWEEP_POINTS_2D)
+        has_cold = self._has_cold(metric_key1, metric_key2)
+        n = self._sweep_points(2, has_cold)
+        xs = self._metric_values(metric_key1, low1, high1, n)
+        ys = self._metric_values(metric_key2, low2, high2, n)
         grid = []
         for v1 in xs:
             row = []
             for v2 in ys:
-                noise = {**fixed_noise, metric_key1: v1, metric_key2: v2}
-                row.append(self.run_hot(cached, noise))
+                swept = {metric_key1: v1, metric_key2: v2}
+                if has_cold:
+                    row.append(self._eval_point(cold_config, fixed_noise, swept))
+                else:
+                    noise = {**fixed_noise, **swept}
+                    row.append(self.run_hot(cached, noise))
             grid.append(row)
         return xs, ys, grid
 
@@ -351,20 +427,26 @@ class DSEEngine:
         metric_key2: str, low2: float, high2: float,
         metric_key3: str, low3: float, high3: float,
         fixed_noise: dict,
+        cold_config: dict | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
-        """Sweep three metrics, return (x, y, z values, 3d grid of result dicts)."""
-        xs = self._metric_values(metric_key1, low1, high1, SWEEP_POINTS_3D)
-        ys = self._metric_values(metric_key2, low2, high2, SWEEP_POINTS_3D)
-        zs = self._metric_values(metric_key3, low3, high3, SWEEP_POINTS_3D)
+        has_cold = self._has_cold(metric_key1, metric_key2, metric_key3)
+        n = self._sweep_points(3, has_cold)
+        xs = self._metric_values(metric_key1, low1, high1, n)
+        ys = self._metric_values(metric_key2, low2, high2, n)
+        zs = self._metric_values(metric_key3, low3, high3, n)
         grid = []
         for v1 in xs:
             plane = []
             for v2 in ys:
-                row = []
+                row_list = []
                 for v3 in zs:
-                    noise = {**fixed_noise, metric_key1: v1, metric_key2: v2, metric_key3: v3}
-                    row.append(self.run_hot(cached, noise))
-                plane.append(row)
+                    swept = {metric_key1: v1, metric_key2: v2, metric_key3: v3}
+                    if has_cold:
+                        row_list.append(self._eval_point(cold_config, fixed_noise, swept))
+                    else:
+                        noise = {**fixed_noise, **swept}
+                        row_list.append(self.run_hot(cached, noise))
+                plane.append(row_list)
             grid.append(plane)
         return xs, ys, zs, grid
 

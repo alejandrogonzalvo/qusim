@@ -10,6 +10,7 @@ from .constants import (
     METRIC_BY_KEY,
     CIRCUIT_TYPES,
     TOPOLOGY_TYPES,
+    INTRACORE_TOPOLOGY_TYPES,
     PLACEMENT_OPTIONS,
     OUTPUT_METRICS,
     NOISE_DEFAULTS,
@@ -285,6 +286,16 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             style={"marginBottom": "10px"},
         ),
 
+        _label("Intra-core connectivity"),
+        dcc.Dropdown(
+            id="cfg-intracore-topology",
+            options=INTRACORE_TOPOLOGY_TYPES,
+            value="all_to_all",
+            clearable=False,
+            className="dse-dropdown",
+            style={"marginBottom": "10px"},
+        ),
+
         _label("Initial placement"),
         dcc.Dropdown(
             id="cfg-placement",
@@ -334,10 +345,12 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             if m.log_scale
             else _linear_marks(m.slider_min, m.slider_max)
         )
-        default_slider = (
-            math.log10(NOISE_DEFAULTS[m.key]) if m.log_scale else NOISE_DEFAULTS[m.key]
-        )
-        hidden = m.key in swept_keys
+        default_val = NOISE_DEFAULTS.get(m.key)
+        if default_val is not None:
+            default_slider = math.log10(default_val) if m.log_scale else default_val
+        else:
+            default_slider = m.slider_default_low
+        hidden = m.is_cold_path or m.key in swept_keys
         noise_controls.append(
             html.Div(
                 id=f"noise-row-{m.key}",

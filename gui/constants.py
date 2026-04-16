@@ -108,6 +108,24 @@ SWEEPABLE_METRICS: List[MetricDef] = [
         is_cold_path=False,
         description="TREX readout error mitigation factor (0=none, 1=full)",
     ),
+    MetricDef(
+        key="num_qubits",
+        label="Qubits",
+        slider_min=4, slider_max=32,
+        slider_default_low=4, slider_default_high=20,
+        num_steps=15, log_scale=False, unit="",
+        is_cold_path=True,
+        description="Number of logical qubits in the circuit",
+    ),
+    MetricDef(
+        key="num_cores",
+        label="Cores",
+        slider_min=1, slider_max=8,
+        slider_default_low=1, slider_default_high=8,
+        num_steps=8, log_scale=False, unit="",
+        is_cold_path=True,
+        description="Number of processor cores in the multi-core architecture",
+    ),
 ]
 
 METRIC_BY_KEY = {m.key: m for m in SWEEPABLE_METRICS}
@@ -141,6 +159,14 @@ TOPOLOGY_TYPES = [
     {"label": "Linear Chain", "value": "linear"},
 ]
 
+# Intra-core (on-chip) qubit connectivity
+INTRACORE_TOPOLOGY_TYPES = [
+    {"label": "All-to-All", "value": "all_to_all"},
+    {"label": "Linear Chain", "value": "linear"},
+    {"label": "Ring", "value": "ring"},
+    {"label": "Grid", "value": "grid"},
+]
+
 # HQA initial placement policies
 PLACEMENT_OPTIONS = [
     {"label": "Random", "value": "random"},
@@ -161,6 +187,11 @@ OUTPUT_METRICS = [
 SWEEP_POINTS_1D = 60
 SWEEP_POINTS_2D = 30
 SWEEP_POINTS_3D = 12
+
+# Cold-path sweeps (num_qubits, num_cores) are much slower per point
+SWEEP_POINTS_COLD_1D = 15
+SWEEP_POINTS_COLD_2D = 8
+SWEEP_POINTS_COLD_3D = 5
 
 # View tab definitions per sweep dimensionality
 VIEW_TABS: dict[int, list[dict]] = {

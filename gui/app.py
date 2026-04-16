@@ -591,7 +591,7 @@ def toggle_noise_rows(m0, m1, m2, num_metrics):
     for i, val in enumerate([m0, m1, m2]):
         if i < (num_metrics or 1) and val:
             swept.add(val)
-    return [{"display": "none"} if m.key in swept else {} for m in _SM]
+    return [{"display": "none"} if m.is_cold_path or m.key in swept else {} for m in _SM]
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +642,7 @@ _SIM_INPUTS = [
     Input("cfg-num-qubits", "value"),
     Input("cfg-num-cores", "value"),
     Input("cfg-topology", "value"),
+    Input("cfg-intracore-topology", "value"),
     Input("cfg-placement", "value"),
     Input("cfg-seed", "value"),
     Input("cfg-dynamic-decoupling", "value"),
@@ -686,6 +687,7 @@ app.clientside_callback(
     State("cfg-num-qubits", "value"),
     State("cfg-num-cores", "value"),
     State("cfg-topology", "value"),
+    State("cfg-intracore-topology", "value"),
     State("cfg-placement", "value"),
     State("cfg-seed", "value"),
     State("cfg-dynamic-decoupling", "value"),
@@ -714,6 +716,7 @@ def run_sweep(
     num_qubits,
     num_cores,
     topology,
+    intracore_topology,
     placement,
     seed,
     dynamic_decoupling,
@@ -746,6 +749,8 @@ def run_sweep(
         # Build fixed noise dict from right-panel sliders
         fixed_noise: dict = {}
         for i, m in enumerate(SWEEPABLE_METRICS):
+            if m.is_cold_path:
+                continue
             val = noise_slider_vals[i]
             if val is not None:
                 fixed_noise[m.key] = _slider_to_value(val, m.log_scale)
@@ -777,22 +782,26 @@ def run_sweep(
                 dash.no_update,
             )
 
-        cached = _engine.run_cold(
-            circuit_type=circuit_type or "qft",
-            num_qubits=int(num_qubits or 16),
-            num_cores=int(num_cores or 4),
-            topology_type=topology or "ring",
-            placement_policy=placement or "random",
-            seed=int(seed or 42),
-            noise=fixed_noise,
-        )
+        cold_config = {
+            "circuit_type": circuit_type or "qft",
+            "num_qubits": int(num_qubits or 16),
+            "num_cores": int(num_cores or 4),
+            "topology_type": topology or "ring",
+            "placement_policy": placement or "random",
+            "seed": int(seed or 42),
+            "intracore_topology": intracore_topology or "all_to_all",
+        }
+
+        cached = _engine.run_cold(**cold_config, noise=fixed_noise)
         cold_elapsed = time.time() - t_start
 
         sweep_data: dict = {"metric_keys": [k for k, _ in active]}
 
         if len(active) == 1:
             k0, r0 = active[0]
-            xs, results = _engine.sweep_1d(cached, k0, r0[0], r0[1], fixed_noise)
+            xs, results = _engine.sweep_1d(
+                cached, k0, r0[0], r0[1], fixed_noise, cold_config=cold_config,
+            )
             sweep_data["xs"] = xs.tolist()
             sweep_data["grid"] = [_result_to_dict(r) for r in results]
 
@@ -801,13 +810,10 @@ def run_sweep(
             k1, r1 = active[1]
             xs, ys, grid = _engine.sweep_2d(
                 cached,
-                k0,
-                r0[0],
-                r0[1],
-                k1,
-                r1[0],
-                r1[1],
+                k0, r0[0], r0[1],
+                k1, r1[0], r1[1],
                 fixed_noise,
+                cold_config=cold_config,
             )
             sweep_data["xs"] = xs.tolist()
             sweep_data["ys"] = ys.tolist()
@@ -819,16 +825,11 @@ def run_sweep(
             k2, r2 = active[2]
             xs, ys, zs, grid = _engine.sweep_3d(
                 cached,
-                k0,
-                r0[0],
-                r0[1],
-                k1,
-                r1[0],
-                r1[1],
-                k2,
-                r2[0],
-                r2[1],
+                k0, r0[0], r0[1],
+                k1, r1[0], r1[1],
+                k2, r2[0], r2[1],
                 fixed_noise,
+                cold_config=cold_config,
             )
             sweep_data["xs"] = xs.tolist()
             sweep_data["ys"] = ys.tolist()
@@ -1042,7 +1043,10 @@ for _idx in range(MAX_METRICS):
             if m.log_scale
             else _linear_marks(m.slider_min, m.slider_max)
         )
-        step = (m.slider_max - m.slider_min) / 200
+        if m.is_cold_path:
+            step = 2 if m.key == "num_qubits" else 1
+        else:
+            step = (m.slider_max - m.slider_min) / 200
         return (
             m.slider_min,
             m.slider_max,
