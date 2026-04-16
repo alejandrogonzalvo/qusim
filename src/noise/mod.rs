@@ -309,6 +309,141 @@ pub fn estimate_fidelity(
     }
 }
 
+/// Scalar-only fidelity result for batch evaluation (no grids).
+#[derive(Debug, Clone)]
+pub struct FidelityScalars {
+    pub algorithmic_fidelity: f64,
+    pub routing_fidelity: f64,
+    pub coherence_fidelity: f64,
+    pub readout_fidelity: f64,
+    pub overall_fidelity: f64,
+    pub total_circuit_time: f64,
+}
+
+/// Evaluate fidelity for multiple noise configurations sharing the same structural data.
+///
+/// Parses the structural inputs (tensor, routing, sparse_swaps) once, then loops
+/// over each `ArchitectureParams` set.  Returns only scalar metrics (no per-qubit
+/// grids) to minimise allocation overhead.
+pub fn estimate_fidelity_batch(
+    tensor: &InteractionTensor,
+    routing: &RoutingSummary,
+    params_batch: &[ArchitectureParams],
+    sparse_swaps: Option<ndarray::ArrayView2<i32>>,
+) -> Vec<FidelityScalars> {
+    let num_layers = tensor.num_layers();
+    let num_qubits = tensor.num_qubits();
+
+    // Pre-parse swap structure once (shared across all configs)
+    let layer_swaps = parse_sparse_swaps(sparse_swaps, num_layers);
+
+    // Pre-collect per-layer teleportation events (shared across all configs)
+    let layer_teleportations: Vec<Vec<&crate::routing::TeleportationEvent>> = (0..num_layers)
+        .map(|layer| {
+            routing.events.iter().filter(|e| e.timeslice == layer + 1).collect()
+        })
+        .collect();
+
+    // Pre-collect per-layer gates
+    let layer_gates: Vec<&[(usize, usize, f64, usize)]> = (0..num_layers)
+        .map(|layer| tensor.layer_gates(layer))
+        .collect();
+
+    params_batch
+        .iter()
+        .map(|params| {
+            estimate_fidelity_scalars_inner(
+                num_layers,
+                num_qubits,
+                &layer_gates,
+                &layer_swaps,
+                &layer_teleportations,
+                params,
+            )
+        })
+        .collect()
+}
+
+/// Inner loop: evaluate a single params config using pre-parsed structural data.
+fn estimate_fidelity_scalars_inner(
+    num_layers: usize,
+    num_qubits: usize,
+    layer_gates: &[&[(usize, usize, f64, usize)]],
+    layer_swaps: &[Vec<(usize, usize)>],
+    layer_teleportations: &[Vec<&crate::routing::TeleportationEvent>],
+    params: &ArchitectureParams,
+) -> FidelityScalars {
+    let mut overall_routing = 1.0_f64;
+
+    // We only need the *final* per-qubit fidelities, so use 1-D slices
+    let mut algo_grid = vec![1.0_f64; num_qubits];
+    let mut routing_grid = vec![1.0_f64; num_qubits];
+    let mut coh_grid = vec![1.0_f64; num_qubits];
+
+    let mut qubit_timeline_ns = vec![0.0_f64; num_qubits];
+
+    for layer in 0..num_layers {
+        process_computational_gates(
+            layer_gates[layer],
+            params,
+            &mut qubit_timeline_ns,
+            &mut algo_grid,
+            &mut coh_grid,
+        );
+
+        let mut layer_routing = process_sabre_swaps(
+            &layer_swaps[layer],
+            params,
+            &mut qubit_timeline_ns,
+            &mut routing_grid,
+            &mut coh_grid,
+        );
+
+        layer_routing *= process_teleportations(
+            &layer_teleportations[layer],
+            params,
+            &mut qubit_timeline_ns,
+            &mut routing_grid,
+            &mut coh_grid,
+        );
+
+        overall_routing *= layer_routing;
+    }
+
+    // Trailing idle decoherence
+    let total_circuit_time = qubit_timeline_ns.iter().copied().fold(f64::NAN, f64::max);
+    if num_layers > 0 {
+        for q in 0..num_qubits {
+            let idle = total_circuit_time - qubit_timeline_ns[q];
+            if idle > 0.0 {
+                let q_t1 = params.t1_per_qubit.as_ref().map_or(params.t1, |v| v[q]);
+                let q_t2 = params.t2_per_qubit.as_ref().map_or(params.t2, |v| v[q]);
+                coh_grid[q] *= decoherence_fidelity(idle, q_t1, q_t2);
+            }
+        }
+    }
+
+    let global_coherence: f64 = coh_grid.iter().product();
+    let overall_algorithmic: f64 = algo_grid.iter().product();
+
+    let mut readout_fidelity = 1.0_f64;
+    if let Some(ref readout_errors) = params.readout_error_per_qubit {
+        let residual = 1.0 - params.readout_mitigation_factor;
+        for q in 0..num_qubits.min(readout_errors.len()) {
+            readout_fidelity *= 1.0 - readout_errors[q] * residual;
+        }
+    }
+
+    FidelityScalars {
+        algorithmic_fidelity: overall_algorithmic,
+        routing_fidelity: overall_routing,
+        coherence_fidelity: global_coherence,
+        readout_fidelity,
+        overall_fidelity: overall_algorithmic * overall_routing * global_coherence * readout_fidelity,
+        total_circuit_time,
+    }
+}
+
 /// Minimum idle gap (ns) required to fit a DD echo sequence.
 /// IBM Heron XY4 needs ~4 SX gates × 35 ns ≈ 140 ns; we use a conservative 100 ns.
 const DD_MIN_IDLE_NS: f64 = 100.0;

@@ -7,7 +7,7 @@ from qusim.orchestrator import MultiCoreOrchestrator
 
 # Import the compiled Rust extension
 try:
-    from qusim.rust_core import map_and_estimate, estimate_hardware_fidelity
+    from qusim.rust_core import map_and_estimate, estimate_hardware_fidelity, estimate_hardware_fidelity_batch
 except ImportError:
     import warnings
     warnings.warn("qusim.rust_core not found. Ensure you have built the maturin extension.")
@@ -157,6 +157,33 @@ def estimate_fidelity_from_cache(
         readout_error_per_qubit=None,
         readout_mitigation_factor=readout_mitigation_factor,
     )
+
+def estimate_fidelity_from_cache_batch(
+    gs_sparse: np.ndarray,
+    placements: np.ndarray,
+    distance_matrix: np.ndarray,
+    sparse_swaps: np.ndarray,
+    gate_error_arr: np.ndarray,
+    gate_time_arr: np.ndarray,
+    noise_dicts: list[dict],
+) -> list[dict]:
+    """
+    Batch fidelity estimation: parse structural data once, evaluate many noise configs.
+
+    Each element of *noise_dicts* is a dict with scalar noise keys
+    (single_gate_error, two_gate_error, t1, t2, ...).  Returns a list of
+    result dicts with scalar metrics only (no grids).
+    """
+    return list(estimate_hardware_fidelity_batch(
+        gs_sparse=gs_sparse,
+        placements=placements,
+        distance_matrix=distance_matrix,
+        sparse_swaps=sparse_swaps,
+        noise_params_list=noise_dicts,
+        gate_error_per_type=gate_error_arr,
+        gate_time_per_type=gate_time_arr,
+    ))
+
 
 # Gates that are virtual (zero error, zero duration) and should be excluded
 # from the interaction tensor. These are frame rotations implemented in
