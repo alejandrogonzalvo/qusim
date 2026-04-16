@@ -37,6 +37,9 @@ from .constants import (
     SWEEP_POINTS_COLD_1D,
     SWEEP_POINTS_COLD_2D,
     SWEEP_POINTS_COLD_3D,
+    MAX_TOTAL_POINTS_HOT,
+    MAX_TOTAL_POINTS_COLD,
+    MIN_POINTS_PER_AXIS,
 )
 
 
@@ -229,6 +232,74 @@ class SweepProgress:
 
 
 # ---------------------------------------------------------------------------
+# N-D sweep result
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SweepResult:
+    """N-dimensional sweep result with numpy object grid.
+
+    Attributes:
+        metric_keys: Names of the swept parameters.
+        axes: One array of sample values per swept parameter.
+        grid: numpy object array of shape (len(axes[0]), ..., len(axes[N-1])),
+              each element is a result dict.
+    """
+    metric_keys: list[str]
+    axes: list[np.ndarray]
+    grid: np.ndarray  # dtype=object, shape matches axis lengths
+
+    @property
+    def ndim(self) -> int:
+        return len(self.metric_keys)
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return tuple(len(ax) for ax in self.axes)
+
+    @property
+    def total_points(self) -> int:
+        return int(np.prod([len(ax) for ax in self.axes]))
+
+    def to_sweep_data(self) -> dict:
+        """Convert to the dict format consumed by plotting functions.
+
+        For 1-3D: produces the legacy xs/ys/zs + nested-list grid.
+        For 4D+:  produces axes list + flat grid list with shape metadata.
+        """
+        sd: dict = {"metric_keys": self.metric_keys}
+        n = self.ndim
+
+        if n >= 1:
+            sd["xs"] = self.axes[0].tolist()
+        if n >= 2:
+            sd["ys"] = self.axes[1].tolist()
+        if n >= 3:
+            sd["zs"] = self.axes[2].tolist()
+
+        if n == 1:
+            sd["grid"] = [self.grid[i] for i in range(len(self.axes[0]))]
+        elif n == 2:
+            sd["grid"] = [
+                [self.grid[i, j] for j in range(len(self.axes[1]))]
+                for i in range(len(self.axes[0]))
+            ]
+        elif n == 3:
+            sd["grid"] = [
+                [[self.grid[i, j, k] for k in range(len(self.axes[2]))]
+                 for j in range(len(self.axes[1]))]
+                for i in range(len(self.axes[0]))
+            ]
+        else:
+            # N >= 4: flat list + shape metadata + axes
+            sd["axes"] = [ax.tolist() for ax in self.axes]
+            sd["shape"] = self.shape
+            sd["grid"] = [self.grid[idx] for idx in np.ndindex(self.shape)]
+
+        return sd
+
+
+# ---------------------------------------------------------------------------
 # DSE Engine
 # ---------------------------------------------------------------------------
 
@@ -410,6 +481,19 @@ class DSEEngine:
         if has_cold:
             return [SWEEP_POINTS_COLD_1D, SWEEP_POINTS_COLD_2D, SWEEP_POINTS_COLD_3D][ndim - 1]
         return [SWEEP_POINTS_1D, SWEEP_POINTS_2D, SWEEP_POINTS_3D][ndim - 1]
+
+    def _points_per_axis(self, ndim: int, has_cold: bool) -> int:
+        """Compute points per axis for an N-D sweep within the total budget."""
+        budget = MAX_TOTAL_POINTS_COLD if has_cold else MAX_TOTAL_POINTS_HOT
+        # For 1-3D, use legacy values for backward compatibility
+        if ndim <= 3:
+            return self._sweep_points(ndim, has_cold)
+        # For N >= 4, compute from budget
+        n = max(MIN_POINTS_PER_AXIS, int(budget ** (1.0 / ndim)))
+        # Clamp so total doesn't exceed budget
+        while n ** ndim > budget and n > MIN_POINTS_PER_AXIS:
+            n -= 1
+        return n
 
     def _eval_point(
         self,
@@ -638,6 +722,83 @@ class DSEEngine:
                 plane.append(row_list)
             grid.append(plane)
         return xs, ys, zs, grid
+
+    # -- N-D sweep (unified) ---------------------------------------------------
+
+    def sweep_nd(
+        self,
+        cached: CachedMapping,
+        sweep_axes: list[tuple[str, float, float]],
+        fixed_noise: dict,
+        cold_config: dict | None = None,
+        progress_callback: Callable[[SweepProgress], None] | None = None,
+        parallel: bool = False,
+        max_workers: int | None = None,
+    ) -> SweepResult:
+        """N-dimensional sweep over arbitrary axes.
+
+        Parameters
+        ----------
+        sweep_axes : list of (metric_key, low, high) tuples
+        """
+        import itertools
+
+        ndim = len(sweep_axes)
+        keys = [k for k, _, _ in sweep_axes]
+        has_cold = self._has_cold(*keys)
+        n = self._points_per_axis(ndim, has_cold)
+
+        axes = [self._metric_values(k, lo, hi, n) for k, lo, hi in sweep_axes]
+        shape = tuple(len(ax) for ax in axes)
+        total = int(np.prod(shape))
+
+        grid = np.empty(shape, dtype=object)
+
+        if parallel and has_cold and cold_config is not None:
+            indexed = []
+            for idx in np.ndindex(shape):
+                swept = {keys[d]: float(axes[d][idx[d]]) for d in range(ndim)}
+                indexed.append((idx, swept))
+            rmap = self._parallel_cold_sweep(
+                cold_config, fixed_noise, indexed, total, progress_callback, max_workers,
+            )
+            for idx in np.ndindex(shape):
+                grid[idx] = rmap[idx]
+        elif has_cold and cold_config is not None:
+            count = 0
+            for idx in np.ndindex(shape):
+                swept = {keys[d]: float(axes[d][idx[d]]) for d in range(ndim)}
+                grid[idx] = self._eval_point(cold_config, fixed_noise, swept)
+                count += 1
+                if progress_callback is not None:
+                    progress_callback(SweepProgress(
+                        completed=count,
+                        total=total,
+                        current_params={k: float(v) for k, v in swept.items()},
+                    ))
+        else:
+            # Pure hot-path: batch all points
+            noise_dicts = []
+            indices = list(np.ndindex(shape))
+            for idx in indices:
+                noise = dict(fixed_noise)
+                for d in range(ndim):
+                    noise[keys[d]] = float(axes[d][idx[d]])
+                noise_dicts.append(noise)
+
+            results = self.run_hot_batch(cached, noise_dicts)
+            for i, idx in enumerate(indices):
+                grid[idx] = results[i]
+                if progress_callback is not None:
+                    progress_callback(SweepProgress(
+                        completed=i + 1,
+                        total=total,
+                        current_params={
+                            keys[d]: float(axes[d][idx[d]]) for d in range(ndim)
+                        },
+                    ))
+
+        return SweepResult(metric_keys=keys, axes=axes, grid=grid)
 
 
 # ---------------------------------------------------------------------------

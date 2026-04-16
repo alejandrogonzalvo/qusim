@@ -87,9 +87,14 @@ def _linear_marks(slider_min: float, slider_max: float, n: int = 5) -> dict:
 def make_metric_selector(index: int) -> html.Div:
     """
     One sweep metric row: dropdown (choose which param) + range slider.
-    ``index`` is 0, 1, or 2.
+    ``index`` is 0-based, supports up to len(SWEEPABLE_METRICS) rows.
     """
-    default_key = DEFAULT_SWEEP_AXES[index] if index < len(DEFAULT_SWEEP_AXES) else SWEEPABLE_METRICS[index % len(SWEEPABLE_METRICS)].key
+    if index < len(DEFAULT_SWEEP_AXES):
+        default_key = DEFAULT_SWEEP_AXES[index]
+    else:
+        # Cycle through remaining metrics not in DEFAULT_SWEEP_AXES
+        remaining = [m.key for m in SWEEPABLE_METRICS if m.key not in DEFAULT_SWEEP_AXES]
+        default_key = remaining[(index - len(DEFAULT_SWEEP_AXES)) % len(remaining)] if remaining else SWEEPABLE_METRICS[0].key
     m = METRIC_BY_KEY[default_key]
 
     marks = _log_marks(m.slider_min, m.slider_max) if m.log_scale else _linear_marks(m.slider_min, m.slider_max)

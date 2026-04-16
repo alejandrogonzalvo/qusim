@@ -284,3 +284,59 @@ def frozen_slider_config(sweep_data: dict) -> dict | None:
         "metric_key": metric_keys[2],
         "step": (z_max - z_min) / max(1, len(zs) - 1) / 4,
     }
+
+
+def frozen_slider_config_nd(
+    sweep_data: dict,
+    free_axes: list[int] | None = None,
+) -> list[dict]:
+    """Return frozen slider configs for N-D sweeps.
+
+    Given *free_axes* (the axes to keep free for plotting), returns one
+    slider config per frozen axis.
+
+    Parameters
+    ----------
+    sweep_data : dict with ``metric_keys`` and ``axes`` (or zs for 3D).
+    free_axes : indices of axes to keep free (default: [0, 1]).
+
+    Returns
+    -------
+    List of dicts, each with keys: min, max, default, metric_key, step.
+    """
+    metric_keys = sweep_data.get("metric_keys", [])
+    ndim = len(metric_keys)
+    if ndim < 3:
+        return []
+
+    if free_axes is None:
+        free_axes = [0, 1]
+
+    # Get axis values
+    axes = sweep_data.get("axes", [])
+    if not axes:
+        # Fall back to legacy format
+        axes = [sweep_data.get("xs", [])]
+        if ndim >= 2:
+            axes.append(sweep_data.get("ys", []))
+        if ndim >= 3:
+            axes.append(sweep_data.get("zs", []))
+
+    configs = []
+    for d in range(ndim):
+        if d in free_axes:
+            continue
+        ax = axes[d] if d < len(axes) else []
+        if len(ax) < 2:
+            continue
+        ax_min = float(ax[0])
+        ax_max = float(ax[-1])
+        configs.append({
+            "min": ax_min,
+            "max": ax_max,
+            "default": (ax_min + ax_max) / 2,
+            "metric_key": metric_keys[d],
+            "step": (ax_max - ax_min) / max(1, len(ax) - 1) / 4,
+        })
+
+    return configs

@@ -183,7 +183,7 @@ OUTPUT_METRICS = [
     {"label": "Total EPR Pairs", "value": "total_epr_pairs"},
 ]
 
-# Number of sweep points per dimension
+# Number of sweep points per dimension (legacy, kept for backward compat)
 SWEEP_POINTS_1D = 60
 SWEEP_POINTS_2D = 30
 SWEEP_POINTS_3D = 12
@@ -192,6 +192,13 @@ SWEEP_POINTS_3D = 12
 SWEEP_POINTS_COLD_1D = 15
 SWEEP_POINTS_COLD_2D = 8
 SWEEP_POINTS_COLD_3D = 5
+
+# N-D grid point budget: total points across all dimensions
+MAX_TOTAL_POINTS_HOT = 5000
+MAX_TOTAL_POINTS_COLD = 500
+
+# Minimum points per axis regardless of dimensionality
+MIN_POINTS_PER_AXIS = 3
 
 # View tab definitions per sweep dimensionality
 VIEW_TABS: dict[int, list[dict]] = {
@@ -215,6 +222,9 @@ VIEW_TAB_DEFAULTS: dict[int, str] = {
     2: "contour",
     3: "isosurface",
 }
+
+# For N >= 4, the default view is the first analysis tab
+VIEW_TAB_DEFAULT_ND = "parallel"
 
 ANALYSIS_TABS: list[dict] = [
     {"value": "parallel", "label": "Parallel"},
