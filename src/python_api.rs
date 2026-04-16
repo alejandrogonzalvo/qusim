@@ -43,6 +43,9 @@ fn build_params<'py>(
     dynamic_decoupling: bool,
     readout_error_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
     readout_mitigation_factor: f64,
+    classical_link_width: u32,
+    classical_clock_freq_hz: f64,
+    classical_routing_cycles: u32,
 ) -> PyResult<ArchitectureParams> {
     Ok(ArchitectureParams {
         single_gate_error,
@@ -65,6 +68,9 @@ fn build_params<'py>(
         dynamic_decoupling,
         readout_error_per_qubit: readout_error_per_qubit.map(|a| a.readonly().as_array().to_vec()),
         readout_mitigation_factor,
+        classical_link_width,
+        classical_clock_freq_hz,
+        classical_routing_cycles,
     })
 }
 
@@ -125,7 +131,10 @@ fn parse_sparse_tensor(gs_sparse: &Bound<'_, PyArray2<f64>>, extra_qubits: usize
     gate_time_per_type = None,
     dynamic_decoupling = false,
     readout_error_per_qubit = None,
-    readout_mitigation_factor = 0.0
+    readout_mitigation_factor = 0.0,
+    classical_link_width = 0,
+    classical_clock_freq_hz = 200e6,
+    classical_routing_cycles = 2
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn map_and_estimate<'py>(
@@ -152,6 +161,9 @@ pub fn map_and_estimate<'py>(
     dynamic_decoupling: bool,
     readout_error_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
     readout_mitigation_factor: f64,
+    classical_link_width: u32,
+    classical_clock_freq_hz: f64,
+    classical_routing_cycles: u32,
 ) -> PyResult<Bound<'py, PyDict>> {
     let part_len = initial_partition.len().unwrap_or(0);
     let (num_layers, num_qubits, edge_list) = parse_sparse_tensor(gs_sparse, part_len);
@@ -192,6 +204,9 @@ pub fn map_and_estimate<'py>(
         dynamic_decoupling,
         readout_error_per_qubit,
         readout_mitigation_factor,
+        classical_link_width,
+        classical_clock_freq_hz,
+        classical_routing_cycles,
     )?;
     let fidelity = estimate_fidelity(&tensor, &routing, &params, None);
 
@@ -255,7 +270,10 @@ pub fn map_and_estimate<'py>(
     gate_time_per_type = None,
     dynamic_decoupling = false,
     readout_error_per_qubit = None,
-    readout_mitigation_factor = 0.0
+    readout_mitigation_factor = 0.0,
+    classical_link_width = 0,
+    classical_clock_freq_hz = 200e6,
+    classical_routing_cycles = 2
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn estimate_hardware_fidelity<'py>(
@@ -281,6 +299,9 @@ pub fn estimate_hardware_fidelity<'py>(
     dynamic_decoupling: bool,
     readout_error_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
     readout_mitigation_factor: f64,
+    classical_link_width: u32,
+    classical_clock_freq_hz: f64,
+    classical_routing_cycles: u32,
 ) -> PyResult<Bound<'py, PyDict>> {
     let (num_layers, num_qubits, edge_list) = parse_sparse_tensor(gs_sparse, 0);
 
@@ -303,6 +324,9 @@ pub fn estimate_hardware_fidelity<'py>(
         dynamic_decoupling,
         readout_error_per_qubit,
         readout_mitigation_factor,
+        classical_link_width,
+        classical_clock_freq_hz,
+        classical_routing_cycles,
     )?;
     let fidelity = estimate_fidelity(&tensor, &routing, &params, Some(sparse_swaps_arr));
 

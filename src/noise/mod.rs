@@ -35,6 +35,12 @@ pub struct ArchitectureParams {
     pub readout_error_per_qubit: Option<Vec<f64>>,
     /// How much of the readout error is mitigated (0.0 = none, 1.0 = fully mitigated).
     pub readout_mitigation_factor: f64,
+    /// Number of parallel wires in the classical inter-core link (0 = disabled / no overhead).
+    pub classical_link_width: u32,
+    /// Classical network clock frequency in Hz (e.g. 200e6 for 200 MHz).
+    pub classical_clock_freq_hz: f64,
+    /// Number of clock cycles consumed by routing/arbitration overhead per hop.
+    pub classical_routing_cycles: u32,
 }
 
 impl Default for ArchitectureParams {
@@ -57,6 +63,9 @@ impl Default for ArchitectureParams {
             dynamic_decoupling: false,
             readout_error_per_qubit: None,
             readout_mitigation_factor: 0.0,
+            classical_link_width: 0,
+            classical_clock_freq_hz: 200e6,
+            classical_routing_cycles: 2,
         }
     }
 }
@@ -77,6 +86,31 @@ impl ArchitectureParams {
             .as_ref()
             .and_then(|m| m.get(&(u, v)).copied())
             .unwrap_or(self.two_gate_error)
+    }
+
+    /// Computes the classical communication latency per teleportation hop (ns).
+    ///
+    /// Based on the paper formula:
+    ///   packet_size = 2 * ceil(log2(total_qubits)) + 2  (bits)
+    ///   transmission_cycles = ceil(packet_size / link_width)
+    ///   total_cycles = transmission_cycles + routing_cycles
+    ///   t_classical = total_cycles / freq  (converted to ns)
+    ///
+    /// Returns 0.0 when classical_link_width == 0 (disabled / backward compat).
+    #[inline]
+    pub fn classical_comm_time_ns(&self, total_qubits: usize) -> f64 {
+        if self.classical_link_width == 0 || self.classical_clock_freq_hz <= 0.0 {
+            return 0.0;
+        }
+        let log2_qubits = if total_qubits <= 1 {
+            1.0
+        } else {
+            (total_qubits as f64).log2().ceil()
+        };
+        let packet_size = 2.0 * log2_qubits + 2.0;
+        let transmission_cycles = (packet_size / self.classical_link_width as f64).ceil();
+        let total_cycles = transmission_cycles + self.classical_routing_cycles as f64;
+        total_cycles / self.classical_clock_freq_hz * 1e9
     }
 }
 
@@ -585,9 +619,12 @@ fn process_teleportations(
     _layer_coh_grid: &mut [f64],
 ) -> f64 {
     let mut layer_routing_fidelity = 1.0;
+    let total_qubits = timeline.len();
+    let classical_time = params.classical_comm_time_ns(total_qubits);
     for event in layer_teleportations {
-        timeline[event.qubit] +=
-            event.network_distance as f64 * params.teleportation_time_per_hop;
+        let quantum_time = event.network_distance as f64 * params.teleportation_time_per_hop;
+        let hop_classical_time = event.network_distance as f64 * classical_time;
+        timeline[event.qubit] += quantum_time + hop_classical_time;
 
         let f = teleportation_fidelity(params.teleportation_error_per_hop, event.network_distance);
         layer_routing_grid[event.qubit] *= f;
