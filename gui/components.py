@@ -194,18 +194,37 @@ def make_add_metric_button() -> html.Div:
 # Right panel: fixed configuration
 # ---------------------------------------------------------------------------
 
-def _section_header(title: str) -> html.Div:
+def _section_header(title: str, tooltip: str | None = None) -> html.Div:
+    header_style = {
+        "fontSize": "10px",
+        "fontWeight": "700",
+        "textTransform": "uppercase",
+        "letterSpacing": "0.08em",
+        "color": COLORS["text_muted"],
+        "marginBottom": "8px",
+        "marginTop": "4px",
+    }
+    if tooltip is None:
+        return html.Div(title, style=header_style)
+
     return html.Div(
-        title,
-        style={
-            "fontSize": "10px",
-            "fontWeight": "700",
-            "textTransform": "uppercase",
-            "letterSpacing": "0.08em",
-            "color": COLORS["text_muted"],
-            "marginBottom": "8px",
-            "marginTop": "4px",
-        },
+        style={**header_style, "display": "flex", "alignItems": "center", "gap": "6px"},
+        children=[
+            html.Span(title),
+            html.Div(
+                className="help-icon-wrap",
+                children=[
+                    html.Span(
+                        "?",
+                        className="help-icon",
+                    ),
+                    html.Div(
+                        tooltip,
+                        className="help-tooltip",
+                    ),
+                ],
+            ),
+        ],
     )
 
 
@@ -365,7 +384,18 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             style={"color": COLORS["text"], "fontSize": "13px", "marginBottom": "12px"},
         ),
 
-        _section_header("Sweep Budget"),
+        _section_header(
+            "Sweep Budget",
+            tooltip=(
+                "Controls how many design points are evaluated. "
+                "Cold compilations are expensive (~1-10 s each) and only "
+                "needed per unique Qubits/Cores combination. "
+                "Hot evaluations are near-free (batched in Rust) and cover "
+                "all noise parameter combinations. "
+                "Increase cold budget to sample more structural configs; "
+                "increase hot budget for finer noise resolution."
+            ),
+        ),
         _label("Max cold compilations", "Caps unique (qubits, cores) combos. Each takes ~1-10s."),
         dcc.Input(
             id="cfg-max-cold",
