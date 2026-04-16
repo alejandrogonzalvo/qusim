@@ -18,6 +18,12 @@ from typing import Callable, Optional
 
 _MP_CONTEXT = multiprocessing.get_context("forkserver")
 
+# Each cold-path worker process uses ~500MB-2GB depending on qubit count.
+# Conservative estimate used to cap concurrent workers.
+_ESTIMATED_WORKER_MB = 800
+# Minimum free RAM (MB) to keep available for OS + UI + browser
+_RESERVED_RAM_MB = 1024
+
 import numpy as np
 import qiskit
 from qiskit import transpile
@@ -439,28 +445,39 @@ class DSEEngine:
         result["total_epr_pairs"] = cached.total_epr_pairs
         return result
 
+    # Max noise configs per Rust batch call to bound peak memory
+    _HOT_BATCH_CHUNK = 5_000
+
     def run_hot_batch(self, cached: CachedMapping, noise_dicts: list[dict]) -> list[dict]:
         """
-        Batch fidelity estimation: single Rust call for many noise configs.
+        Batch fidelity estimation: chunked Rust calls for many noise configs.
 
-        Structural data (tensor, placements, routing) is parsed once inside Rust.
-        Returns scalar-only result dicts (no grids).
+        Structural data (tensor, placements, routing) is parsed once per chunk.
+        Chunks keep peak memory bounded instead of allocating all results at once.
         """
-        merged_list = [_merge_noise(n) for n in noise_dicts]
-        gate_error_arr, gate_time_arr = _make_gate_arrays(cached.gate_names, merged_list[0])
-
-        results = qusim.estimate_fidelity_from_cache_batch(
-            gs_sparse=cached.gs_sparse,
-            placements=cached.placements,
-            distance_matrix=cached.distance_matrix,
-            sparse_swaps=cached.sparse_swaps,
-            gate_error_arr=gate_error_arr,
-            gate_time_arr=gate_time_arr,
-            noise_dicts=merged_list,
+        gate_error_arr, gate_time_arr = _make_gate_arrays(
+            cached.gate_names, _merge_noise(noise_dicts[0]),
         )
-        for r in results:
-            r["total_epr_pairs"] = cached.total_epr_pairs
-        return results
+        all_results: list[dict] = []
+
+        for start in range(0, len(noise_dicts), self._HOT_BATCH_CHUNK):
+            chunk = noise_dicts[start : start + self._HOT_BATCH_CHUNK]
+            merged_chunk = [_merge_noise(n) for n in chunk]
+
+            chunk_results = qusim.estimate_fidelity_from_cache_batch(
+                gs_sparse=cached.gs_sparse,
+                placements=cached.placements,
+                distance_matrix=cached.distance_matrix,
+                sparse_swaps=cached.sparse_swaps,
+                gate_error_arr=gate_error_arr,
+                gate_time_arr=gate_time_arr,
+                noise_dicts=merged_chunk,
+            )
+            for r in chunk_results:
+                r["total_epr_pairs"] = cached.total_epr_pairs
+            all_results.extend(chunk_results)
+
+        return all_results
 
     # -- Sweep methods -------------------------------------------------------
 
@@ -591,6 +608,21 @@ class DSEEngine:
         cached = self.run_cold(**cfg, noise=hot_noise)
         return self.run_hot(cached, hot_noise)
 
+    @staticmethod
+    def _max_workers_by_memory() -> int:
+        """Estimate how many cold-path workers fit in available RAM."""
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        avail_mb = int(line.split()[1]) // 1024
+                        usable = max(0, avail_mb - _RESERVED_RAM_MB)
+                        return max(1, usable // _ESTIMATED_WORKER_MB)
+        except OSError:
+            pass
+        # Fallback: conservative 2 workers when /proc/meminfo unavailable
+        return 2
+
     def _parallel_cold_sweep(
         self,
         cold_config: dict,
@@ -616,9 +648,10 @@ class DSEEngine:
             ))
             groups.setdefault(cold_vals, []).append((idx_key, swept))
 
-        # Cap at half the CPUs so the UI thread, browser, and OS stay responsive
+        # Cap by CPU, memory, and group count — pick the smallest
         cpu_cap = max(1, (os.cpu_count() or 2) // 2)
-        n_workers = max_workers if max_workers else min(cpu_cap, len(groups))
+        mem_cap = self._max_workers_by_memory()
+        n_workers = max_workers if max_workers else min(cpu_cap, mem_cap, len(groups))
         results: dict[tuple, dict] = {}
         completed = 0
 
@@ -862,26 +895,31 @@ class DSEEngine:
                         current_params={k: float(v) for k, v in swept.items()},
                     ))
         else:
-            # Pure hot-path: batch all points
-            noise_dicts = []
+            # Pure hot-path: chunk to bound memory
             indices = list(np.ndindex(shape))
-            for idx in indices:
-                noise = dict(fixed_noise)
-                for d in range(ndim):
-                    noise[keys[d]] = float(axes[d][idx[d]])
-                noise_dicts.append(noise)
+            completed = 0
+            for chunk_start in range(0, len(indices), self._HOT_BATCH_CHUNK):
+                chunk_indices = indices[chunk_start : chunk_start + self._HOT_BATCH_CHUNK]
+                noise_dicts = []
+                for idx in chunk_indices:
+                    noise = dict(fixed_noise)
+                    for d in range(ndim):
+                        noise[keys[d]] = float(axes[d][idx[d]])
+                    noise_dicts.append(noise)
 
-            results = self.run_hot_batch(cached, noise_dicts)
-            for i, idx in enumerate(indices):
-                grid[idx] = results[i]
-                if progress_callback is not None:
-                    progress_callback(SweepProgress(
-                        completed=i + 1,
-                        total=total,
-                        current_params={
-                            keys[d]: float(axes[d][idx[d]]) for d in range(ndim)
-                        },
-                    ))
+                chunk_results = self.run_hot_batch(cached, noise_dicts)
+                for i, idx in enumerate(chunk_indices):
+                    grid[idx] = chunk_results[i]
+                    completed += 1
+                    if progress_callback is not None:
+                        progress_callback(SweepProgress(
+                            completed=completed,
+                            total=total,
+                            current_params={
+                                keys[d]: float(axes[d][idx[d]]) for d in range(ndim)
+                            },
+                        ))
+                del noise_dicts, chunk_results
 
         return SweepResult(metric_keys=keys, axes=axes, grid=grid)
 
