@@ -2,26 +2,25 @@
 Reusable Dash UI component factories for the DSE GUI.
 """
 
-from dash import dcc, html
 import dash_bootstrap_components as dbc
+from dash import dcc, html
 
 from .constants import (
-    SWEEPABLE_METRICS,
-    METRIC_BY_KEY,
-    CIRCUIT_TYPES,
-    TOPOLOGY_TYPES,
-    INTRACORE_TOPOLOGY_TYPES,
-    PLACEMENT_OPTIONS,
-    OUTPUT_METRICS,
-    NOISE_DEFAULTS,
-    VIEW_TABS,
-    VIEW_TAB_DEFAULTS,
     ANALYSIS_TABS,
+    CIRCUIT_TYPES,
     DEFAULT_SWEEP_AXES,
+    INTRACORE_TOPOLOGY_TYPES,
     MAX_COLD_COMPILATIONS,
     MAX_TOTAL_POINTS_HOT,
+    METRIC_BY_KEY,
+    NOISE_DEFAULTS,
+    OUTPUT_METRICS,
+    PLACEMENT_OPTIONS,
+    SWEEPABLE_METRICS,
+    TOPOLOGY_TYPES,
+    VIEW_TAB_DEFAULTS,
+    VIEW_TABS,
 )
-
 
 # ---------------------------------------------------------------------------
 # Colour palette (dark theme)
@@ -50,10 +49,11 @@ CARD_STYLE = {
 # Format helpers
 # ---------------------------------------------------------------------------
 
+
 def _fmt_value(value: float, log_scale: bool) -> str:
     """Format a slider position as a human-readable value."""
     if log_scale:
-        v = 10 ** value
+        v = 10**value
         if v < 1e-3:
             return f"{v:.2e}"
         if v < 1:
@@ -68,23 +68,31 @@ def _log_marks(slider_min: float, slider_max: float) -> dict:
     """Generate integer-exponent marks for a log-scale slider (string keys for orjson)."""
     marks = {}
     for exp in range(int(slider_min), int(slider_max) + 1):
-        marks[str(exp)] = {"label": f"10^{exp}", "style": {"color": COLORS["text_muted"], "fontSize": "10px"}}
+        marks[str(exp)] = {
+            "label": f"10^{exp}",
+            "style": {"color": COLORS["text_muted"], "fontSize": "10px"},
+        }
     return marks
 
 
 def _linear_marks(slider_min: float, slider_max: float, n: int = 5) -> dict:
     import numpy as np
+
     vals = np.linspace(slider_min, slider_max, n)
     marks = {}
     for v in vals:
         label = f"{v:.2f}" if v != int(v) else str(int(v))
-        marks[str(round(v, 6))] = {"label": label, "style": {"color": COLORS["text_muted"], "fontSize": "10px"}}
+        marks[str(round(v, 6))] = {
+            "label": label,
+            "style": {"color": COLORS["text_muted"], "fontSize": "10px"},
+        }
     return marks
 
 
 # ---------------------------------------------------------------------------
 # Metric selector (left sidebar row)
 # ---------------------------------------------------------------------------
+
 
 def make_metric_selector(index: int) -> html.Div:
     """
@@ -95,19 +103,43 @@ def make_metric_selector(index: int) -> html.Div:
         default_key = DEFAULT_SWEEP_AXES[index]
     else:
         # Cycle through remaining metrics not in DEFAULT_SWEEP_AXES
-        remaining = [m.key for m in SWEEPABLE_METRICS if m.key not in DEFAULT_SWEEP_AXES]
-        default_key = remaining[(index - len(DEFAULT_SWEEP_AXES)) % len(remaining)] if remaining else SWEEPABLE_METRICS[0].key
+        remaining = [
+            m.key for m in SWEEPABLE_METRICS if m.key not in DEFAULT_SWEEP_AXES
+        ]
+        default_key = (
+            remaining[(index - len(DEFAULT_SWEEP_AXES)) % len(remaining)]
+            if remaining
+            else SWEEPABLE_METRICS[0].key
+        )
     m = METRIC_BY_KEY[default_key]
 
-    marks = _log_marks(m.slider_min, m.slider_max) if m.log_scale else _linear_marks(m.slider_min, m.slider_max)
+    marks = (
+        _log_marks(m.slider_min, m.slider_max)
+        if m.log_scale
+        else _linear_marks(m.slider_min, m.slider_max)
+    )
 
     return html.Div(
         id=f"metric-row-{index}",
         children=[
             html.Div(
-                style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "6px"},
+                style={
+                    "display": "flex",
+                    "justifyContent": "space-between",
+                    "alignItems": "center",
+                    "marginBottom": "6px",
+                },
                 children=[
-                    html.Span(f"Metric {index + 1}", style={"color": COLORS["text_muted"], "fontSize": "11px", "fontWeight": "600", "textTransform": "uppercase", "letterSpacing": "0.05em"}),
+                    html.Span(
+                        f"Metric {index + 1}",
+                        style={
+                            "color": COLORS["text_muted"],
+                            "fontSize": "11px",
+                            "fontWeight": "600",
+                            "textTransform": "uppercase",
+                            "letterSpacing": "0.05em",
+                        },
+                    ),
                     html.Button(
                         "×",
                         id=f"remove-metric-{index}",
@@ -157,7 +189,13 @@ def make_metric_selector(index: int) -> html.Div:
             ),
             html.Div(
                 id=f"metric-range-label-{index}",
-                style={"display": "flex", "justifyContent": "space-between", "fontSize": "11px", "color": COLORS["accent2"], "marginTop": "-20px"},
+                style={
+                    "display": "flex",
+                    "justifyContent": "space-between",
+                    "fontSize": "11px",
+                    "color": COLORS["accent2"],
+                    "marginTop": "-20px",
+                },
             ),
         ],
         style=CARD_STYLE,
@@ -167,6 +205,7 @@ def make_metric_selector(index: int) -> html.Div:
 # ---------------------------------------------------------------------------
 # "Add metric" button
 # ---------------------------------------------------------------------------
+
 
 def make_add_metric_button() -> html.Div:
     return html.Div(
@@ -243,7 +282,12 @@ def _label(text: str, tooltip: str = "") -> html.Div:
     return html.Div(
         text,
         title=tooltip,
-        style={"fontSize": "12px", "color": COLORS["text"], "marginBottom": "4px", "cursor": "help" if tooltip else "default"},
+        style={
+            "fontSize": "12px",
+            "color": COLORS["text"],
+            "marginBottom": "4px",
+            "cursor": "help" if tooltip else "default",
+        },
     )
 
 
@@ -275,185 +319,192 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     Swept keys are visually hidden with ``display:none`` rather than removed.
     """
     import math
+
     swept_keys = swept_keys or set()
 
     # --- Circuit/Topology tab content ---
-    circuit_content = html.Div([
-        _label("Circuit type"),
-        dcc.Dropdown(
-            id="cfg-circuit-type",
-            options=CIRCUIT_TYPES,
-            value="qft",
-            clearable=False,
-            className="dse-dropdown",
-            style={"marginBottom": "10px"},
-        ),
-
-        html.Div(
-            id="cfg-row-num-qubits",
-            style={"display": "none"} if "num_qubits" in swept_keys else {},
-            children=[
-                _label("Qubits"),
-                dcc.Slider(
-                    id="cfg-num-qubits",
-                    min=int(METRIC_BY_KEY["num_qubits"].slider_min),
-                    max=int(METRIC_BY_KEY["num_qubits"].slider_max),
-                    step=2, value=16,
-                    marks=_linear_marks(
-                        METRIC_BY_KEY["num_qubits"].slider_min,
-                        METRIC_BY_KEY["num_qubits"].slider_max,
-                    ),
-                    tooltip={"placement": "bottom"},
-                    updatemode="drag",
-                    className="dse-slider",
-                ),
-                html.Div(style={"height": "10px"}),
-            ],
-        ),
-
-        html.Div(
-            id="cfg-row-num-cores",
-            style={"display": "none"} if "num_cores" in swept_keys else {},
-            children=[
-                _label("Cores"),
-                dcc.Slider(
-                    id="cfg-num-cores",
-                    min=int(METRIC_BY_KEY["num_cores"].slider_min),
-                    max=int(METRIC_BY_KEY["num_cores"].slider_max),
-                    step=1, value=1,
-                    marks={
-                        str(i): str(i) for i in range(
-                            int(METRIC_BY_KEY["num_cores"].slider_min),
-                            int(METRIC_BY_KEY["num_cores"].slider_max) + 1,
-                        )
-                    },
-                    tooltip={"placement": "bottom"},
-                    updatemode="drag",
-                    className="dse-slider",
-                ),
-                html.Div(style={"height": "10px"}),
-            ],
-        ),
-
-        _label("Inter-core topology"),
-        dcc.Dropdown(
-            id="cfg-topology",
-            options=TOPOLOGY_TYPES,
-            value="ring",
-            clearable=False,
-            className="dse-dropdown",
-            style={"marginBottom": "10px"},
-        ),
-
-        _label("Intra-core connectivity"),
-        dcc.Dropdown(
-            id="cfg-intracore-topology",
-            options=INTRACORE_TOPOLOGY_TYPES,
-            value="all_to_all",
-            clearable=False,
-            className="dse-dropdown",
-            style={"marginBottom": "10px"},
-        ),
-
-        _label("Initial placement"),
-        dcc.Dropdown(
-            id="cfg-placement",
-            options=PLACEMENT_OPTIONS,
-            value="random",
-            clearable=False,
-            className="dse-dropdown",
-            style={"marginBottom": "10px"},
-        ),
-
-        _label("Seed"),
-        dcc.Input(
-            id="cfg-seed",
-            type="number",
-            value=42,
-            min=0,
-            debounce=True,
-            className="dse-input",
-            style={
-                "width": "100%",
-                "background": COLORS["surface2"],
-                "border": f"1px solid {COLORS['border']}",
-                "color": COLORS["text"],
-                "borderRadius": "6px",
-                "padding": "6px 10px",
-                "fontSize": "13px",
-                "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
-                "marginBottom": "10px",
-                "outline": "none",
-            },
-        ),
-
-        _label("Dynamic decoupling"),
-        dcc.Checklist(
-            id="cfg-dynamic-decoupling",
-            options=[{"label": " Enable", "value": "yes"}],
-            value=[],
-            style={"color": COLORS["text"], "fontSize": "13px", "marginBottom": "12px"},
-        ),
-
-        _section_header(
-            "Sweep Budget",
-            tooltip=(
-                "Controls how many design points are evaluated. "
-                "Cold compilations are expensive (~1-10 s each) and only "
-                "needed per unique Qubits/Cores combination. "
-                "Hot evaluations are near-free (batched in Rust) and cover "
-                "all noise parameter combinations. "
-                "Increase cold budget to sample more structural configs; "
-                "increase hot budget for finer noise resolution."
+    circuit_content = html.Div(
+        [
+            _label("Circuit type"),
+            dcc.Dropdown(
+                id="cfg-circuit-type",
+                options=CIRCUIT_TYPES,
+                value="qft",
+                clearable=False,
+                className="dse-dropdown",
+                style={"marginBottom": "10px"},
             ),
-        ),
-        _label("Max cold compilations", "Caps unique (qubits, cores) combos. Each takes ~1-10s."),
-        dcc.Input(
-            id="cfg-max-cold",
-            type="number",
-            value=MAX_COLD_COMPILATIONS,
-            min=1,
-            max=1024,
-            step=1,
-            debounce=True,
-            className="dse-input",
-            style={
-                "width": "100%",
-                "background": COLORS["surface2"],
-                "border": f"1px solid {COLORS['border']}",
-                "color": COLORS["text"],
-                "borderRadius": "6px",
-                "padding": "6px 10px",
-                "fontSize": "13px",
-                "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
-                "marginBottom": "10px",
-                "outline": "none",
-            },
-        ),
-        _label("Max hot evaluations", "Total grid points. Hot path is batched in Rust (~free)."),
-        dcc.Input(
-            id="cfg-max-hot",
-            type="number",
-            value=MAX_TOTAL_POINTS_HOT,
-            min=100,
-            max=1_000_000,
-            step=100,
-            debounce=True,
-            className="dse-input",
-            style={
-                "width": "100%",
-                "background": COLORS["surface2"],
-                "border": f"1px solid {COLORS['border']}",
-                "color": COLORS["text"],
-                "borderRadius": "6px",
-                "padding": "6px 10px",
-                "fontSize": "13px",
-                "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
-                "marginBottom": "10px",
-                "outline": "none",
-            },
-        ),
-    ], style={"paddingTop": "8px"})
+            html.Div(
+                id="cfg-row-num-qubits",
+                style={"display": "none"} if "num_qubits" in swept_keys else {},
+                children=[
+                    _label("Qubits"),
+                    dcc.Slider(
+                        id="cfg-num-qubits",
+                        min=int(METRIC_BY_KEY["num_qubits"].slider_min),
+                        max=int(METRIC_BY_KEY["num_qubits"].slider_max),
+                        step=2,
+                        value=16,
+                        marks=_linear_marks(
+                            METRIC_BY_KEY["num_qubits"].slider_min,
+                            METRIC_BY_KEY["num_qubits"].slider_max,
+                        ),
+                        tooltip={"placement": "bottom"},
+                        updatemode="drag",
+                        className="dse-slider",
+                    ),
+                    html.Div(style={"height": "10px"}),
+                ],
+            ),
+            html.Div(
+                id="cfg-row-num-cores",
+                style={"display": "none"} if "num_cores" in swept_keys else {},
+                children=[
+                    _label("Cores"),
+                    dcc.Slider(
+                        id="cfg-num-cores",
+                        min=int(METRIC_BY_KEY["num_cores"].slider_min),
+                        max=int(METRIC_BY_KEY["num_cores"].slider_max),
+                        step=1,
+                        value=1,
+                        marks={
+                            str(i): str(i)
+                            for i in range(
+                                int(METRIC_BY_KEY["num_cores"].slider_min),
+                                int(METRIC_BY_KEY["num_cores"].slider_max) + 1,
+                            )
+                        },
+                        tooltip={"placement": "bottom"},
+                        updatemode="drag",
+                        className="dse-slider",
+                    ),
+                    html.Div(style={"height": "10px"}),
+                ],
+            ),
+            _label("Inter-core topology"),
+            dcc.Dropdown(
+                id="cfg-topology",
+                options=TOPOLOGY_TYPES,
+                value="ring",
+                clearable=False,
+                className="dse-dropdown",
+                style={"marginBottom": "10px"},
+            ),
+            _label("Intra-core connectivity"),
+            dcc.Dropdown(
+                id="cfg-intracore-topology",
+                options=INTRACORE_TOPOLOGY_TYPES,
+                value="all_to_all",
+                clearable=False,
+                className="dse-dropdown",
+                style={"marginBottom": "10px"},
+            ),
+            _label("Initial placement"),
+            dcc.Dropdown(
+                id="cfg-placement",
+                options=PLACEMENT_OPTIONS,
+                value="random",
+                clearable=False,
+                className="dse-dropdown",
+                style={"marginBottom": "10px"},
+            ),
+            _label("Seed"),
+            dcc.Input(
+                id="cfg-seed",
+                type="number",
+                value=42,
+                min=0,
+                debounce=True,
+                className="dse-input",
+                style={
+                    "width": "100%",
+                    "background": COLORS["surface2"],
+                    "border": f"1px solid {COLORS['border']}",
+                    "color": COLORS["text"],
+                    "borderRadius": "6px",
+                    "padding": "6px 10px",
+                    "fontSize": "13px",
+                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                    "marginBottom": "10px",
+                    "outline": "none",
+                },
+            ),
+            _label("Dynamic decoupling"),
+            dcc.Checklist(
+                id="cfg-dynamic-decoupling",
+                options=[{"label": " Enable", "value": "yes"}],
+                value=[],
+                style={
+                    "color": COLORS["text"],
+                    "fontSize": "13px",
+                    "marginBottom": "12px",
+                },
+            ),
+            _section_header(
+                "Sweep Budget",
+                tooltip=(
+                    "Controls how many design points are evaluated. "
+                    "Cold compilations are expensive and only "
+                    "needed per unique structural (e.g. Qubits/Cores) combination. "
+                    "Hot evaluations are near-free (batched in Rust) and cover "
+                    "all noise parameter combinations. "
+                ),
+            ),
+            _label(
+                "Max cold compilations",
+                "Caps unique (qubits, cores) combos. Each takes ~1-10s.",
+            ),
+            dcc.Input(
+                id="cfg-max-cold",
+                type="number",
+                value=MAX_COLD_COMPILATIONS,
+                min=1,
+                max=1024,
+                step=1,
+                debounce=True,
+                className="dse-input",
+                style={
+                    "width": "100%",
+                    "background": COLORS["surface2"],
+                    "border": f"1px solid {COLORS['border']}",
+                    "color": COLORS["text"],
+                    "borderRadius": "6px",
+                    "padding": "6px 10px",
+                    "fontSize": "13px",
+                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                    "marginBottom": "10px",
+                    "outline": "none",
+                },
+            ),
+            _label(
+                "Max hot evaluations",
+                "Total grid points. Hot path is batched in Rust (~free).",
+            ),
+            dcc.Input(
+                id="cfg-max-hot",
+                type="number",
+                value=MAX_TOTAL_POINTS_HOT,
+                min=100,
+                max=1_000_000,
+                step=100,
+                debounce=True,
+                className="dse-input",
+                style={
+                    "width": "100%",
+                    "background": COLORS["surface2"],
+                    "border": f"1px solid {COLORS['border']}",
+                    "color": COLORS["text"],
+                    "borderRadius": "6px",
+                    "padding": "6px 10px",
+                    "fontSize": "13px",
+                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                    "marginBottom": "10px",
+                    "outline": "none",
+                },
+            ),
+        ],
+        style={"paddingTop": "8px"},
+    )
 
     # --- Noise tab content ---
     noise_controls = []
@@ -494,26 +545,32 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     noise_content = html.Div(noise_controls, style={"paddingTop": "8px"})
 
     # --- Thresholds tab content ---
-    threshold_content = html.Div([
-        _section_header("Output (Y-axis)"),
-        dcc.Dropdown(
-            id="cfg-output-metric",
-            options=OUTPUT_METRICS,
-            value="overall_fidelity",
-            clearable=False,
-            className="dse-dropdown",
-            style={"marginBottom": "12px"},
-        ),
-
-        _section_header("Iso-levels"),
-        dcc.Checklist(
-            id="cfg-threshold-enable",
-            options=[{"label": " Show on non-3D views", "value": "yes"}],
-            value=[],
-            style={"color": COLORS["text"], "fontSize": "12px", "marginBottom": "8px"},
-        ),
-        *_make_threshold_inputs(),
-    ], style={"paddingTop": "8px"})
+    threshold_content = html.Div(
+        [
+            _section_header("Output (Y-axis)"),
+            dcc.Dropdown(
+                id="cfg-output-metric",
+                options=OUTPUT_METRICS,
+                value="overall_fidelity",
+                clearable=False,
+                className="dse-dropdown",
+                style={"marginBottom": "12px"},
+            ),
+            _section_header("Iso-levels"),
+            dcc.Checklist(
+                id="cfg-threshold-enable",
+                options=[{"label": " Show on non-3D views", "value": "yes"}],
+                value=[],
+                style={
+                    "color": COLORS["text"],
+                    "fontSize": "12px",
+                    "marginBottom": "8px",
+                },
+            ),
+            *_make_threshold_inputs(),
+        ],
+        style={"paddingTop": "8px"},
+    )
 
     return html.Div(
         id="fixed-config-panel",
@@ -522,12 +579,27 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                 id="config-tabs",
                 value="circuit",
                 children=[
-                    dcc.Tab(label="Circuit", value="circuit", children=[circuit_content],
-                            style=_CONFIG_TAB_STYLE, selected_style=_CONFIG_TAB_ACTIVE_STYLE),
-                    dcc.Tab(label="Noise", value="noise", children=[noise_content],
-                            style=_CONFIG_TAB_STYLE, selected_style=_CONFIG_TAB_ACTIVE_STYLE),
-                    dcc.Tab(label="Thresholds", value="thresholds", children=[threshold_content],
-                            style=_CONFIG_TAB_STYLE, selected_style=_CONFIG_TAB_ACTIVE_STYLE),
+                    dcc.Tab(
+                        label="Circuit",
+                        value="circuit",
+                        children=[circuit_content],
+                        style=_CONFIG_TAB_STYLE,
+                        selected_style=_CONFIG_TAB_ACTIVE_STYLE,
+                    ),
+                    dcc.Tab(
+                        label="Noise",
+                        value="noise",
+                        children=[noise_content],
+                        style=_CONFIG_TAB_STYLE,
+                        selected_style=_CONFIG_TAB_ACTIVE_STYLE,
+                    ),
+                    dcc.Tab(
+                        label="Thresholds",
+                        value="thresholds",
+                        children=[threshold_content],
+                        style=_CONFIG_TAB_STYLE,
+                        selected_style=_CONFIG_TAB_ACTIVE_STYLE,
+                    ),
                 ],
                 style={"height": "auto"},
                 content_style={"overflow": "auto"},
@@ -591,18 +663,27 @@ def _make_threshold_inputs() -> list:
                 style={} if visible else {"display": "none"},
                 children=[
                     html.Div(
-                        style={"display": "flex", "alignItems": "center", "gap": "6px",
-                               "marginBottom": "4px"},
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "6px",
+                            "marginBottom": "4px",
+                        },
                         children=[
                             html.Div(
                                 id=f"cfg-threshold-swatch-{i}",
-                                style={**_COLOR_SWATCH_STYLE, "background": default_color},
+                                style={
+                                    **_COLOR_SWATCH_STYLE,
+                                    "background": default_color,
+                                },
                             ),
                             dcc.Input(
                                 id=f"cfg-threshold-{i}",
                                 type="number",
                                 value=default,
-                                min=0, max=1, step=0.01,
+                                min=0,
+                                max=1,
+                                step=0.01,
                                 debounce=True,
                                 style=_THRESHOLD_INPUT_STYLE,
                             ),
@@ -620,26 +701,41 @@ def _make_threshold_inputs() -> list:
         )
     children.append(
         html.Div(
-            style={"display": "flex", "gap": "6px", "marginTop": "4px", "marginBottom": "12px"},
+            style={
+                "display": "flex",
+                "gap": "6px",
+                "marginTop": "4px",
+                "marginBottom": "12px",
+            },
             children=[
                 html.Button(
-                    "+", id="add-threshold-btn", n_clicks=0,
+                    "+",
+                    id="add-threshold-btn",
+                    n_clicks=0,
                     style={
                         "background": "transparent",
                         "border": f"1px dashed {COLORS['border']}",
                         "color": COLORS["text_muted"],
-                        "borderRadius": "4px", "width": "28px", "height": "28px",
-                        "cursor": "pointer", "fontSize": "14px",
+                        "borderRadius": "4px",
+                        "width": "28px",
+                        "height": "28px",
+                        "cursor": "pointer",
+                        "fontSize": "14px",
                     },
                 ),
                 html.Button(
-                    "−", id="remove-threshold-btn", n_clicks=0,
+                    "−",
+                    id="remove-threshold-btn",
+                    n_clicks=0,
                     style={
                         "background": "transparent",
                         "border": f"1px solid {COLORS['border']}",
                         "color": COLORS["text_muted"],
-                        "borderRadius": "4px", "width": "28px", "height": "28px",
-                        "cursor": "pointer", "fontSize": "14px",
+                        "borderRadius": "4px",
+                        "width": "28px",
+                        "height": "28px",
+                        "cursor": "pointer",
+                        "fontSize": "14px",
                         "display": "none",
                     },
                 ),
@@ -652,6 +748,7 @@ def _make_threshold_inputs() -> list:
 # ---------------------------------------------------------------------------
 # View tab bar (above the plot area)
 # ---------------------------------------------------------------------------
+
 
 def _tab_button(tab: dict, is_active: bool) -> html.Button:
     return html.Button(
@@ -678,20 +775,33 @@ def make_view_tab_bar(num_metrics: int = 2, active: str | None = None) -> html.D
         active = VIEW_TAB_DEFAULTS.get(num_metrics, sweep_tabs[0]["value"])
 
     children = [
-        html.Span("View", style={
-            "fontSize": "10px", "fontWeight": "700",
-            "textTransform": "uppercase", "letterSpacing": "0.08em",
-            "color": COLORS["text_muted"], "marginRight": "6px",
-        }),
+        html.Span(
+            "View",
+            style={
+                "fontSize": "10px",
+                "fontWeight": "700",
+                "textTransform": "uppercase",
+                "letterSpacing": "0.08em",
+                "color": COLORS["text_muted"],
+                "marginRight": "6px",
+            },
+        ),
     ]
 
     for tab in sweep_tabs:
         children.append(_tab_button(tab, tab["value"] == active))
 
     if ANALYSIS_TABS:
-        children.append(html.Span("|", style={
-            "color": COLORS["border"], "margin": "0 4px", "fontSize": "14px",
-        }))
+        children.append(
+            html.Span(
+                "|",
+                style={
+                    "color": COLORS["border"],
+                    "margin": "0 4px",
+                    "fontSize": "14px",
+                },
+            )
+        )
         for tab in ANALYSIS_TABS:
             children.append(_tab_button(tab, tab["value"] == active))
 

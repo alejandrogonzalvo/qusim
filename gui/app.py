@@ -275,11 +275,12 @@ def _left_sidebar() -> html.Div:
                     html.Button(
                         "+ Add axis",
                         id="add-metric-btn",
+                        className="axis-btn axis-btn--add",
                         n_clicks=0,
                         style={
                             "flex": "1",
                             "background": "transparent",
-                            "border": f"1px dashed {COLORS['border']}",
+                            "border": f"1px solid {COLORS['border']}",
                             "color": COLORS["text_muted"],
                             "borderRadius": "6px",
                             "padding": "6px",
@@ -290,11 +291,12 @@ def _left_sidebar() -> html.Div:
                     html.Button(
                         "− Remove",
                         id="remove-metric-btn",
+                        className="axis-btn axis-btn--remove",
                         n_clicks=0,
                         style={
                             "flex": "1",
                             "background": "transparent",
-                            "border": f"1px solid {COLORS['border']}",
+                            "border": f"1px dashed {COLORS['border']}",
                             "color": COLORS["text_muted"],
                             "borderRadius": "6px",
                             "padding": "6px",
@@ -531,15 +533,19 @@ app.clientside_callback(
 
 @app.callback(
     *[Output(f"metric-row-wrap-{i}", "style") for i in range(MAX_METRICS)],
+    *[Output(f"metric-dropdown-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)],
+    Output("add-metric-btn", "style"),
     Output("remove-metric-btn", "style"),
     Output("num-metrics-store", "data"),
     Input("add-metric-btn", "n_clicks"),
     Input("remove-metric-btn", "n_clicks"),
     State("num-metrics-store", "data"),
+    *[State(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
     prevent_initial_call=True,
 )
-def toggle_metric_rows(add_clicks, remove_clicks, num_metrics):
+def toggle_metric_rows(add_clicks, remove_clicks, num_metrics, *dropdown_vals):
     triggered = ctx.triggered_id
+    old_num = num_metrics
     if triggered == "add-metric-btn":
         num_metrics = min(MAX_METRICS, num_metrics + 1)
     elif triggered == "remove-metric-btn":
@@ -550,22 +556,41 @@ def toggle_metric_rows(add_clicks, remove_clicks, num_metrics):
         for i in range(MAX_METRICS)
     ]
 
+    # Build list of taken metric keys from currently visible rows
+    taken = {dropdown_vals[i] for i in range(old_num) if dropdown_vals[i]}
+    all_keys = [m.key for m in SWEEPABLE_METRICS]
+
+    # For newly revealed rows, assign first available untaken metric
+    new_values = list(dropdown_vals)
+    for i in range(old_num, num_metrics):
+        current = new_values[i]
+        if current in taken:
+            available = [k for k in all_keys if k not in taken]
+            new_values[i] = available[0] if available else current
+        taken.add(new_values[i])
+
+    _btn_base = {
+        "flex": "1",
+        "background": "transparent",
+        "borderRadius": "6px",
+        "padding": "6px",
+        "cursor": "pointer",
+        "fontSize": "12px",
+    }
+
+    add_style = (
+        {**_btn_base, "border": f"1px solid {COLORS['border']}", "color": COLORS["text_muted"]}
+        if num_metrics < MAX_METRICS
+        else {"display": "none"}
+    )
+
     remove_style = (
-        {
-            "flex": "1",
-            "background": "transparent",
-            "border": f"1px solid {COLORS['border']}",
-            "color": COLORS["text_muted"],
-            "borderRadius": "6px",
-            "padding": "6px",
-            "cursor": "pointer",
-            "fontSize": "12px",
-        }
+        {**_btn_base, "border": f"1px dashed {COLORS['border']}", "color": COLORS["text_muted"]}
         if num_metrics > 1
         else {"display": "none"}
     )
 
-    return *row_styles, remove_style, num_metrics
+    return *row_styles, *new_values, add_style, remove_style, num_metrics
 
 
 # ---------------------------------------------------------------------------

@@ -305,3 +305,20 @@ input[type="checkbox"] {
     font-family: "Inter", system-ui, sans-serif !important;
     stroke: none !important;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   AXIS ADD / REMOVE BUTTONS
+   ═══════════════════════════════════════════════════════════════════ */
+.axis-btn {
+    transition: background 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, transform 0.1s ease;
+}
+.axis-btn:hover {
+    background: var(--surface2) !important;
+    border-color: var(--accent2) !important;
+    color: var(--text) !important;
+    transform: translateY(-1px);
+}
+.axis-btn:active {
+    transform: translateY(0);
+}
