@@ -252,3 +252,30 @@ input[type="checkbox"] {
 .modebar-btn path { fill: var(--muted) !important; }
 .modebar-btn:hover path { fill: var(--accent) !important; }
 .modebar-btn.active path { fill: var(--accent) !important; }
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   PARALLEL COORDINATES — crisp text rendering
+   ═══════════════════════════════════════════════════════════════════ */
+
+.parcoords text {
+    text-shadow: none !important;
+    paint-order: stroke fill;
+    stroke: none !important;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: geometricPrecision;
+}
+
+/* Remove the white halo/stroke Plotly adds for readability on dark bg */
+.parcoords .axis text,
+.parcoords .axis-title {
+    stroke: none !important;
+    text-shadow: none !important;
+}
+
+/* Sharpen the tick labels */
+.parcoords .tick text {
+    font-family: "Inter", system-ui, sans-serif !important;
+    stroke: none !important;
+}
