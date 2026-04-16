@@ -109,6 +109,33 @@ SWEEPABLE_METRICS: List[MetricDef] = [
         description="TREX readout error mitigation factor (0=none, 1=full)",
     ),
     MetricDef(
+        key="classical_link_width",
+        label="Classical Link Width",
+        slider_min=1, slider_max=15,
+        slider_default_low=1, slider_default_high=15,
+        num_steps=15, log_scale=False, unit="wires",
+        is_cold_path=False,
+        description="Number of parallel wires in the classical inter-core link",
+    ),
+    MetricDef(
+        key="classical_clock_freq_hz",
+        label="Clock Frequency",
+        slider_min=7, slider_max=9,
+        slider_default_low=7, slider_default_high=8.3,
+        num_steps=30, log_scale=True, unit="Hz",
+        is_cold_path=False,
+        description="Classical network clock frequency (10 MHz – 1 GHz)",
+    ),
+    MetricDef(
+        key="classical_routing_cycles",
+        label="Routing Cycles",
+        slider_min=1, slider_max=10,
+        slider_default_low=1, slider_default_high=5,
+        num_steps=10, log_scale=False, unit="cycles",
+        is_cold_path=False,
+        description="Clock cycles for routing/arbitration overhead per hop",
+    ),
+    MetricDef(
         key="num_qubits",
         label="Qubits",
         slider_min=4, slider_max=256,
@@ -143,6 +170,9 @@ NOISE_DEFAULTS = {
     "two_gate_time": 100.0,
     "teleportation_time_per_hop": 1_000.0,
     "readout_mitigation_factor": 0.0,
+    "classical_link_width": 0,
+    "classical_clock_freq_hz": 200e6,
+    "classical_routing_cycles": 2,
 }
 
 # Circuit types available in the dropdown

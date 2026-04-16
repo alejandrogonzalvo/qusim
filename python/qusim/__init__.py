@@ -104,6 +104,9 @@ def estimate_fidelity_from_cache(
     t2: float = 50_000.0,
     dynamic_decoupling: bool = False,
     readout_mitigation_factor: float = 0.0,
+    classical_link_width: int = 0,
+    classical_clock_freq_hz: float = 200e6,
+    classical_routing_cycles: int = 2,
 ) -> dict:
     """
     Fast fidelity re-estimation using pre-cached structural mapping data.
@@ -156,6 +159,9 @@ def estimate_fidelity_from_cache(
         dynamic_decoupling=dynamic_decoupling,
         readout_error_per_qubit=None,
         readout_mitigation_factor=readout_mitigation_factor,
+        classical_link_width=classical_link_width,
+        classical_clock_freq_hz=classical_clock_freq_hz,
+        classical_routing_cycles=classical_routing_cycles,
     )
 
 def estimate_fidelity_from_cache_batch(
@@ -263,6 +269,9 @@ def map_circuit(
     dynamic_decoupling: bool = False,
     readout_error_per_qubit: Optional[np.ndarray] = None,
     readout_mitigation_factor: float = 0.0,
+    classical_link_width: int = 0,
+    classical_clock_freq_hz: float = 200e6,
+    classical_routing_cycles: int = 2,
 ) -> QusimResult:
     """
     Map a Qiskit quantum circuit using HQA and estimate teleportation routing and hardware fidelity.
@@ -369,6 +378,9 @@ def map_circuit(
         dynamic_decoupling=dynamic_decoupling,
         readout_error_per_qubit=readout_error_per_qubit,
         readout_mitigation_factor=readout_mitigation_factor,
+        classical_link_width=classical_link_width,
+        classical_clock_freq_hz=classical_clock_freq_hz,
+        classical_routing_cycles=classical_routing_cycles,
     )
 
     placements = raw_dict["placements"]
@@ -413,6 +425,9 @@ def map_circuit(
         dynamic_decoupling=dynamic_decoupling,
         readout_error_per_qubit=readout_error_per_qubit,
         readout_mitigation_factor=readout_mitigation_factor,
+        classical_link_width=classical_link_width,
+        classical_clock_freq_hz=classical_clock_freq_hz,
+        classical_routing_cycles=classical_routing_cycles,
     )
 
     # 6. Wrap Results

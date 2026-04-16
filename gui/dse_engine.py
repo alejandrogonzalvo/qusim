@@ -378,6 +378,9 @@ class DSEEngine:
             t2=merged["t2"],
             dynamic_decoupling=False,
             readout_mitigation_factor=merged["readout_mitigation_factor"],
+            classical_link_width=int(merged["classical_link_width"]),
+            classical_clock_freq_hz=merged["classical_clock_freq_hz"],
+            classical_routing_cycles=int(merged["classical_routing_cycles"]),
         )
 
         # Reconstruct internal gs_sparse + gate arrays as map_circuit does
@@ -441,6 +444,9 @@ class DSEEngine:
             t2=merged["t2"],
             dynamic_decoupling=merged.get("dynamic_decoupling", False),
             readout_mitigation_factor=merged["readout_mitigation_factor"],
+            classical_link_width=int(merged["classical_link_width"]),
+            classical_clock_freq_hz=merged["classical_clock_freq_hz"],
+            classical_routing_cycles=int(merged["classical_routing_cycles"]),
         )
         result["total_epr_pairs"] = cached.total_epr_pairs
         return result
@@ -482,13 +488,14 @@ class DSEEngine:
     # -- Sweep methods -------------------------------------------------------
 
     COLD_PATH_KEYS = frozenset({"num_qubits", "num_cores"})
+    INTEGER_KEYS = frozenset({"num_qubits", "num_cores", "classical_link_width", "classical_routing_cycles"})
 
     def _metric_values(self, metric_key: str, low: float, high: float, n: int) -> np.ndarray:
         m = METRIC_BY_KEY[metric_key]
         if m.log_scale:
             return np.logspace(low, high, n)
         vals = np.linspace(low, high, n)
-        if metric_key in self.COLD_PATH_KEYS:
+        if metric_key in self.INTEGER_KEYS:
             vals = np.unique(np.round(vals).astype(int))
         return vals
 
