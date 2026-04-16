@@ -621,7 +621,7 @@ from gui.constants import SWEEPABLE_METRICS as _SM
     [Output(f"noise-row-{m.key}", "style") for m in _SM]
     + [Output("cfg-row-num-qubits", "style"), Output("cfg-row-num-cores", "style")],
     *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
-    State("num-metrics-store", "data"),
+    Input("num-metrics-store", "data"),
     prevent_initial_call=False,
 )
 def toggle_noise_rows(*args):
