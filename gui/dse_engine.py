@@ -11,8 +11,8 @@ Two-stage execution model:
 import sys
 import os
 import time
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 import numpy as np
 import qiskit
@@ -207,6 +207,24 @@ def _make_gate_arrays(gate_names: list, noise: dict) -> tuple[np.ndarray, np.nda
 
 
 # ---------------------------------------------------------------------------
+# Sweep progress tracking
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SweepProgress:
+    """Snapshot of sweep progress, emitted on every iteration."""
+    completed: int
+    total: int
+    current_params: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def percentage(self) -> float:
+        if self.total == 0:
+            return 0.0
+        return round(self.completed / self.total * 100, 2)
+
+
+# ---------------------------------------------------------------------------
 # DSE Engine
 # ---------------------------------------------------------------------------
 
@@ -392,17 +410,25 @@ class DSEEngine:
         high: float,
         fixed_noise: dict,
         cold_config: dict | None = None,
+        progress_callback: Callable[[SweepProgress], None] | None = None,
     ) -> tuple[np.ndarray, list]:
         has_cold = self._has_cold(metric_key)
         n = self._sweep_points(1, has_cold)
         xs = self._metric_values(metric_key, low, high, n)
+        total = len(xs)
         results = []
-        for v in xs:
+        for i, v in enumerate(xs):
             if has_cold:
                 results.append(self._eval_point(cold_config, fixed_noise, {metric_key: v}))
             else:
                 noise = {**fixed_noise, metric_key: v}
                 results.append(self.run_hot(cached, noise))
+            if progress_callback is not None:
+                progress_callback(SweepProgress(
+                    completed=i + 1,
+                    total=total,
+                    current_params={metric_key: float(v)},
+                ))
         return xs, results
 
     def sweep_2d(
@@ -412,12 +438,15 @@ class DSEEngine:
         metric_key2: str, low2: float, high2: float,
         fixed_noise: dict,
         cold_config: dict | None = None,
+        progress_callback: Callable[[SweepProgress], None] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, list]:
         has_cold = self._has_cold(metric_key1, metric_key2)
         n = self._sweep_points(2, has_cold)
         xs = self._metric_values(metric_key1, low1, high1, n)
         ys = self._metric_values(metric_key2, low2, high2, n)
+        total = len(xs) * len(ys)
         grid = []
+        count = 0
         for v1 in xs:
             row = []
             for v2 in ys:
@@ -427,6 +456,16 @@ class DSEEngine:
                 else:
                     noise = {**fixed_noise, **swept}
                     row.append(self.run_hot(cached, noise))
+                count += 1
+                if progress_callback is not None:
+                    progress_callback(SweepProgress(
+                        completed=count,
+                        total=total,
+                        current_params={
+                            metric_key1: float(v1),
+                            metric_key2: float(v2),
+                        },
+                    ))
             grid.append(row)
         return xs, ys, grid
 
@@ -438,13 +477,16 @@ class DSEEngine:
         metric_key3: str, low3: float, high3: float,
         fixed_noise: dict,
         cold_config: dict | None = None,
+        progress_callback: Callable[[SweepProgress], None] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
         has_cold = self._has_cold(metric_key1, metric_key2, metric_key3)
         n = self._sweep_points(3, has_cold)
         xs = self._metric_values(metric_key1, low1, high1, n)
         ys = self._metric_values(metric_key2, low2, high2, n)
         zs = self._metric_values(metric_key3, low3, high3, n)
+        total = len(xs) * len(ys) * len(zs)
         grid = []
+        count = 0
         for v1 in xs:
             plane = []
             for v2 in ys:
@@ -456,6 +498,17 @@ class DSEEngine:
                     else:
                         noise = {**fixed_noise, **swept}
                         row_list.append(self.run_hot(cached, noise))
+                    count += 1
+                    if progress_callback is not None:
+                        progress_callback(SweepProgress(
+                            completed=count,
+                            total=total,
+                            current_params={
+                                metric_key1: float(v1),
+                                metric_key2: float(v2),
+                                metric_key3: float(v3),
+                            },
+                        ))
                 plane.append(row_list)
             grid.append(plane)
         return xs, ys, zs, grid

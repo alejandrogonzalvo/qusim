@@ -47,7 +47,7 @@ from gui.constants import (
     VIEW_TAB_DEFAULTS,
     VIEW_TABS,
 )
-from gui.dse_engine import DSEEngine
+from gui.dse_engine import DSEEngine, SweepProgress
 from gui.interpolation import (
     frozen_slider_config,
     is_frozen_view,
@@ -125,6 +125,31 @@ server = app.server
 _engine = DSEEngine()
 sweep_lock = threading.Lock()
 MAX_METRICS = 3
+
+# Shared progress state — written by sweep callback, read by Flask route.
+# Simple dict is safe under the GIL for atomic reads/writes.
+_sweep_progress: dict = {"running": False}
+
+
+def _update_progress(p: SweepProgress) -> None:
+    """Progress callback passed into sweep methods."""
+    global _sweep_progress
+    _sweep_progress = {
+        "running": True,
+        "completed": p.completed,
+        "total": p.total,
+        "percentage": p.percentage,
+        "current_params": {
+            METRIC_BY_KEY[k].label if k in METRIC_BY_KEY else k: v
+            for k, v in p.current_params.items()
+        },
+    }
+
+
+@server.route("/api/progress")
+def _api_progress():
+    import json
+    return json.dumps(_sweep_progress), 200, {"Content-Type": "application/json"}
 
 
 # Global CSS is in gui/assets/style.css — Dash auto-loads it.
@@ -315,32 +340,37 @@ def _center_panel() -> html.Div:
                     ),
                 ],
             ),
-            dcc.Loading(
-                type="circle",
-                color=COLORS["accent"],
-                delay_show=1000,
-                parent_style={
+            html.Div(
+                id="plot-container",
+                style={
                     "flex": "1",
                     "minHeight": "0",
                     "display": "flex",
                     "flexDirection": "column",
+                    "position": "relative",
                 },
-                children=dcc.Graph(
-                    id="main-plot",
-                    figure=plot_empty(),
-                    style={"flex": "1", "minHeight": "0", "height": "100%"},
-                    responsive=True,
-                    config={
-                        "displayModeBar": True,
-                        "modeBarButtonsToRemove": ["select2d", "lasso2d"],
-                        "toImageButtonOptions": {
-                            "format": "png",
-                            "width": 1200,
-                            "height": 800,
-                            "scale": 2,
+                children=[
+                    dcc.Graph(
+                        id="main-plot",
+                        figure=plot_empty(),
+                        style={"flex": "1", "minHeight": "0", "height": "100%"},
+                        responsive=True,
+                        config={
+                            "displayModeBar": True,
+                            "modeBarButtonsToRemove": ["select2d", "lasso2d"],
+                            "toImageButtonOptions": {
+                                "format": "png",
+                                "width": 1200,
+                                "height": 800,
+                                "scale": 2,
+                            },
                         },
-                    },
-                ),
+                    ),
+                    html.Div(
+                        id="sweep-progress-overlay",
+                        style={"display": "none"},
+                    ),
+                ],
             ),
             html.Div(
                 id="frozen-slider-container",
@@ -579,7 +609,8 @@ from gui.constants import SWEEPABLE_METRICS as _SM
 
 
 @app.callback(
-    [Output(f"noise-row-{m.key}", "style") for m in _SM],
+    [Output(f"noise-row-{m.key}", "style") for m in _SM]
+    + [Output("cfg-row-num-qubits", "style"), Output("cfg-row-num-cores", "style")],
     Input("metric-dropdown-0", "value"),
     Input("metric-dropdown-1", "value"),
     Input("metric-dropdown-2", "value"),
@@ -591,7 +622,12 @@ def toggle_noise_rows(m0, m1, m2, num_metrics):
     for i, val in enumerate([m0, m1, m2]):
         if i < (num_metrics or 1) and val:
             swept.add(val)
-    return [{"display": "none"} if m.is_cold_path or m.key in swept else {} for m in _SM]
+    noise_styles = [
+        {"display": "none"} if m.is_cold_path or m.key in swept else {} for m in _SM
+    ]
+    qubits_style = {"display": "none"} if "num_qubits" in swept else {}
+    cores_style = {"display": "none"} if "num_cores" in swept else {}
+    return noise_styles + [qubits_style, cores_style]
 
 
 # ---------------------------------------------------------------------------
@@ -744,6 +780,8 @@ def run_sweep(
     sweep_lock.acquire()
 
     try:
+        global _sweep_progress
+        _sweep_progress = {"running": True, "completed": 0, "total": 0, "percentage": 0, "current_params": {}}
         t_start = time.time()
 
         # Build fixed noise dict from right-panel sliders
@@ -801,6 +839,7 @@ def run_sweep(
             k0, r0 = active[0]
             xs, results = _engine.sweep_1d(
                 cached, k0, r0[0], r0[1], fixed_noise, cold_config=cold_config,
+                progress_callback=_update_progress,
             )
             sweep_data["xs"] = xs.tolist()
             sweep_data["grid"] = [_result_to_dict(r) for r in results]
@@ -814,6 +853,7 @@ def run_sweep(
                 k1, r1[0], r1[1],
                 fixed_noise,
                 cold_config=cold_config,
+                progress_callback=_update_progress,
             )
             sweep_data["xs"] = xs.tolist()
             sweep_data["ys"] = ys.tolist()
@@ -830,6 +870,7 @@ def run_sweep(
                 k2, r2[0], r2[1],
                 fixed_noise,
                 cold_config=cold_config,
+                progress_callback=_update_progress,
             )
             sweep_data["xs"] = xs.tolist()
             sweep_data["ys"] = ys.tolist()
@@ -912,6 +953,7 @@ def run_sweep(
             dash.no_update,
         )
     finally:
+        _sweep_progress = {"running": False}
         sweep_lock.release()
 
 
@@ -1054,6 +1096,34 @@ for _idx in range(MAX_METRICS):
             marks,
             [m.slider_default_low, m.slider_default_high],
         )
+
+
+# ---------------------------------------------------------------------------
+# Callback: filter dropdown options so a metric can't be selected twice
+# ---------------------------------------------------------------------------
+
+_ALL_METRIC_OPTIONS = [{"label": m.label, "value": m.key} for m in SWEEPABLE_METRICS]
+
+
+@app.callback(
+    Output("metric-dropdown-0", "options"),
+    Output("metric-dropdown-1", "options"),
+    Output("metric-dropdown-2", "options"),
+    Input("metric-dropdown-0", "value"),
+    Input("metric-dropdown-1", "value"),
+    Input("metric-dropdown-2", "value"),
+    prevent_initial_call=True,
+)
+def _filter_dropdown_options(v0, v1, v2):
+    values = [v0, v1, v2]
+    results = []
+    for i in range(3):
+        taken = {values[j] for j in range(3) if j != i and values[j]}
+        results.append([
+            {**opt, "disabled": opt["value"] in taken}
+            for opt in _ALL_METRIC_OPTIONS
+        ])
+    return results
 
 
 # ---------------------------------------------------------------------------

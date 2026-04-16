@@ -252,29 +252,51 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             style={"marginBottom": "10px"},
         ),
 
-        _label("Qubits"),
-        dcc.Slider(
-            id="cfg-num-qubits",
-            min=4, max=80, step=2, value=16,
-            marks={"4": "4", "20": "20", "40": "40", "60": "60", "80": "80"},
-            tooltip={"placement": "bottom"},
-            updatemode="drag",
-            className="dse-slider",
+        html.Div(
+            id="cfg-row-num-qubits",
+            style={"display": "none"} if "num_qubits" in swept_keys else {},
+            children=[
+                _label("Qubits"),
+                dcc.Slider(
+                    id="cfg-num-qubits",
+                    min=int(METRIC_BY_KEY["num_qubits"].slider_min),
+                    max=int(METRIC_BY_KEY["num_qubits"].slider_max),
+                    step=2, value=16,
+                    marks=_linear_marks(
+                        METRIC_BY_KEY["num_qubits"].slider_min,
+                        METRIC_BY_KEY["num_qubits"].slider_max,
+                    ),
+                    tooltip={"placement": "bottom"},
+                    updatemode="drag",
+                    className="dse-slider",
+                ),
+                html.Div(style={"height": "10px"}),
+            ],
         ),
 
-        html.Div(style={"height": "10px"}),
-
-        _label("Cores"),
-        dcc.Slider(
-            id="cfg-num-cores",
-            min=1, max=16, step=1, value=1,
-            marks={"1": "1", "4": "4", "8": "8", "12": "12", "16": "16"},
-            tooltip={"placement": "bottom"},
-            updatemode="drag",
-            className="dse-slider",
+        html.Div(
+            id="cfg-row-num-cores",
+            style={"display": "none"} if "num_cores" in swept_keys else {},
+            children=[
+                _label("Cores"),
+                dcc.Slider(
+                    id="cfg-num-cores",
+                    min=int(METRIC_BY_KEY["num_cores"].slider_min),
+                    max=int(METRIC_BY_KEY["num_cores"].slider_max),
+                    step=1, value=1,
+                    marks={
+                        str(i): str(i) for i in range(
+                            int(METRIC_BY_KEY["num_cores"].slider_min),
+                            int(METRIC_BY_KEY["num_cores"].slider_max) + 1,
+                        )
+                    },
+                    tooltip={"placement": "bottom"},
+                    updatemode="drag",
+                    className="dse-slider",
+                ),
+                html.Div(style={"height": "10px"}),
+            ],
         ),
-
-        html.Div(style={"height": "10px"}),
 
         _label("Inter-core topology"),
         dcc.Dropdown(

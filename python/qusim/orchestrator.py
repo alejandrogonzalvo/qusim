@@ -131,13 +131,17 @@ class MultiCoreOrchestrator:
     def _build_global_layout(self, global_circuit: QuantumCircuit, hqa_mapping: List[List[int]]):
         self.global_layout_dict = {}
         core_phys_available = {c: sorted([p for p, core in self.core_mapping.items() if core == c]) for c in range(self.num_cores)}
+        used_phys: set[int] = set()
+        all_phys = sorted(self.core_mapping.keys())
         for q in range(global_circuit.num_qubits):
             c = hqa_mapping[0][q]
             if len(core_phys_available[c]) > 0:
                 p = core_phys_available[c].pop(0)
-                self.global_layout_dict[global_circuit.qubits[q]] = p
             else:
-                self.global_layout_dict[global_circuit.qubits[q]] = 0
+                # Core over-allocated by HQA — find any unused physical qubit
+                p = next((pp for pp in all_phys if pp not in used_phys), 0)
+            used_phys.add(p)
+            self.global_layout_dict[global_circuit.qubits[q]] = p
 
     def _init_sub_dags(self, global_circuit: QuantumCircuit) -> List[DAGCircuit]:
         sub_dags = [DAGCircuit() for _ in range(self.num_cores)]
@@ -226,15 +230,25 @@ class MultiCoreOrchestrator:
     def _route_single_core(self, core_idx: int, circ: QuantumCircuit) -> QuantumCircuit:
         if not circ.data:
             return circ
-            
+
         layout = Layout(self.global_layout_dict)
         pm = PassManager([
             SetLayout(layout),
             SabreSwap(coupling_map=self.core_topologies[core_idx], heuristic='basic', seed=42)
         ])
-        
+
         try:
-            routed = pm.run(circ)
+            import concurrent.futures
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            future = pool.submit(pm.run, circ)
+            try:
+                routed = future.result(timeout=30)
+            except concurrent.futures.TimeoutError:
+                print(f"Warning: SABRE routing timed out on core {core_idx}, skipping local routing")
+                pool.shutdown(wait=False, cancel_futures=True)
+                return circ
+            finally:
+                pool.shutdown(wait=False)
             return self._strip_dummy_cx(routed)
         except Exception as e:
             print(f"Warning: SABRE routing failed on core {core_idx}: {e}")

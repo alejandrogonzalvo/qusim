@@ -130,8 +130,8 @@ impl TimesliceState {
 
         let mut free_spaces = core_capacities.to_vec();
         for &assignment in &placement_row {
-            if assignment >= 0 {
-                free_spaces[assignment as usize] -= 1;
+            if assignment >= 0 && (assignment as usize) < num_cores {
+                free_spaces[assignment as usize] = free_spaces[assignment as usize].saturating_sub(1);
             }
         }
 
@@ -139,7 +139,7 @@ impl TimesliceState {
 
         let mut movable_qubits = vec![Vec::new(); num_cores];
         for (q, &assignment) in placement_row.iter().enumerate() {
-            if !active_qubits.contains(&q) && assignment >= 0 {
+            if !active_qubits.contains(&q) && assignment >= 0 && (assignment as usize) < num_cores {
                 movable_qubits[assignment as usize].push(q);
             }
         }
@@ -161,8 +161,9 @@ impl TimesliceState {
     /// Removes a qubit from its current core assignment, freeing the slot.
     #[inline]
     fn evict_qubit(&mut self, qubit: usize) {
-        if self.next_placement[qubit] != -1 {
-            self.free_spaces[self.placement_row[qubit] as usize] += 1;
+        let core = self.next_placement[qubit];
+        if core >= 0 && (core as usize) < self.num_cores {
+            self.free_spaces[core as usize] += 1;
             self.next_placement[qubit] = -1;
         }
     }
@@ -171,9 +172,9 @@ impl TimesliceState {
     #[inline]
     fn accumulate_likelihood(&mut self, qubit: usize) {
         for qaux in 0..self.num_qubits {
-            if self.placement_row[qaux] >= 0 {
-                let core_idx = self.placement_row[qaux] as usize;
-                self.core_likelihood[qubit][core_idx] += self.lookahead_matrix[[qubit, qaux]];
+            let core = self.placement_row[qaux];
+            if core >= 0 && (core as usize) < self.num_cores {
+                self.core_likelihood[qubit][core as usize] += self.lookahead_matrix[[qubit, qaux]];
             }
         }
     }
@@ -281,8 +282,18 @@ impl TimesliceState {
                 for c in 0..max_dim {
                     if r < self.unplaced_qubits.len() && c < self.num_cores {
                         let [q1, q2] = self.unplaced_qubits[r];
-                        let core_1 = self.placement_row[q1] as usize;
-                        let core_2 = self.placement_row[q2] as usize;
+                        let raw_1 = self.placement_row[q1];
+                        let raw_2 = self.placement_row[q2];
+                        let core_1 = if raw_1 >= 0 && (raw_1 as usize) < self.num_cores {
+                            raw_1 as usize
+                        } else {
+                            c // treat unplaced qubit as if on target core (zero cost)
+                        };
+                        let core_2 = if raw_2 >= 0 && (raw_2 as usize) < self.num_cores {
+                            raw_2 as usize
+                        } else {
+                            c
+                        };
 
                         let cost = if self.free_spaces[c] < 2 {
                             inf_cost
@@ -330,6 +341,36 @@ impl TimesliceState {
                 self.well_placed_qubits.insert(qubit_2);
 
                 pairs_to_remove.push(row_idx);
+            }
+
+            if pairs_to_remove.is_empty() {
+                // No pairs could be assigned (no core has >= 2 free spaces).
+                // Fall back to placing each qubit individually in the best
+                // available core that still has capacity.
+                let remaining: Vec<[usize; 2]> = self.unplaced_qubits.drain(..).collect();
+                for [q1, q2] in remaining {
+                    for q in [q1, q2] {
+                        if self.well_placed_qubits.contains(&q) {
+                            continue;
+                        }
+                        let prev_core = self.placement_row[q];
+                        let best_core = (0..self.num_cores)
+                            .filter(|&c| self.free_spaces[c] > 0)
+                            .min_by_key(|&c| {
+                                if prev_core >= 0 && (prev_core as usize) < self.num_cores {
+                                    distance_matrix[[prev_core as usize, c]]
+                                } else {
+                                    0 // no previous placement — any core is fine
+                                }
+                            });
+                        if let Some(c) = best_core {
+                            self.next_placement[q] = c as i32;
+                            self.free_spaces[c] -= 1;
+                            self.well_placed_qubits.insert(q);
+                        }
+                    }
+                }
+                break;
             }
 
             pairs_to_remove.sort_unstable_by(|a: &usize, b: &usize| b.cmp(a));
