@@ -193,9 +193,15 @@ SWEEP_POINTS_COLD_1D = 15
 SWEEP_POINTS_COLD_2D = 8
 SWEEP_POINTS_COLD_3D = 5
 
-# N-D grid point budget: total points across all dimensions
-MAX_TOTAL_POINTS_HOT = 5000
-MAX_TOTAL_POINTS_COLD = 500
+# N-D grid point budgets — split by cost model:
+#   Cold compilations: expensive (~1-10s each), only needed per unique
+#     (num_qubits, num_cores) combination.
+#   Hot evaluations:   near-free when batched via Rust, safe to run many.
+MAX_COLD_COMPILATIONS = 64       # cap on unique cold-path configs
+MAX_TOTAL_POINTS_HOT = 50_000   # cap on total grid points (hot eval is cheap)
+
+# Legacy alias kept for backward compat in _points_per_axis
+MAX_TOTAL_POINTS_COLD = MAX_COLD_COMPILATIONS
 
 # Minimum points per axis regardless of dimensionality
 MIN_POINTS_PER_AXIS = 3

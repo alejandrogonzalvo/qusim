@@ -689,6 +689,8 @@ _SIM_INPUTS = [
     Input("cfg-placement", "value"),
     Input("cfg-seed", "value"),
     Input("cfg-dynamic-decoupling", "value"),
+    Input("cfg-max-cold", "value"),
+    Input("cfg-max-hot", "value"),
     *[Input(f"noise-{m.key}", "value") for m in SWEEPABLE_METRICS],
 ]
 
@@ -734,6 +736,8 @@ _METRIC_SLIDER_STATES = [State(f"metric-slider-{i}", "value") for i in range(MAX
     State("cfg-placement", "value"),
     State("cfg-seed", "value"),
     State("cfg-dynamic-decoupling", "value"),
+    State("cfg-max-cold", "value"),
+    State("cfg-max-hot", "value"),
     State("cfg-output-metric", "value"),
     State("cfg-threshold-enable", "value"),
     *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
@@ -768,6 +772,8 @@ def run_sweep(
     placement = all_args[idx]; idx += 1
     seed = all_args[idx]; idx += 1
     dynamic_decoupling = all_args[idx]; idx += 1
+    max_cold = all_args[idx]; idx += 1
+    max_hot = all_args[idx]; idx += 1
     output_key = all_args[idx]; idx += 1
     threshold_enable = all_args[idx]; idx += 1
     t_vals = all_args[idx:idx + 5]; idx += 5
@@ -843,6 +849,8 @@ def run_sweep(
                 cold_config=cold_config,
                 progress_callback=_update_progress,
                 parallel=True,
+                max_cold=int(max_cold) if max_cold else None,
+                max_hot=int(max_hot) if max_hot else None,
             )
             sweep_data = result.to_sweep_data()
             # Convert result dicts to JSON-safe format

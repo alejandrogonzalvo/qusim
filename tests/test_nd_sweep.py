@@ -205,6 +205,34 @@ class TestGridPointBudget:
         n = engine._points_per_axis(1, has_cold=False)
         assert n >= 50
 
+    def test_split_budget_cold_gets_natural_range(self, engine):
+        """Cold-path axes should get their natural integer range."""
+        from gui.constants import MAX_COLD_COMPILATIONS
+        axes = [
+            ("num_cores", 1, 8),
+            ("t1", 4, 6),
+            ("t2", 4, 6),
+            ("single_gate_error", -5, -3),
+        ]
+        counts = engine._compute_axis_counts(axes, has_cold=True)
+        # num_cores 1-8 = 8 natural points, should get all of them
+        assert counts[0] == 8
+        # Cold compilations should be within budget
+        assert counts[0] <= MAX_COLD_COMPILATIONS
+
+    def test_split_budget_hot_axes_get_more(self, engine):
+        """With only 1 cold axis, hot axes should get generous counts."""
+        from gui.constants import MIN_POINTS_PER_AXIS as MIN_PTS
+        axes = [
+            ("num_cores", 1, 4),
+            ("t1", 4, 6),
+            ("t2", 4, 6),
+        ]
+        counts = engine._compute_axis_counts(axes, has_cold=True)
+        # Hot axes should get more than MIN_POINTS_PER_AXIS
+        assert counts[1] > MIN_PTS
+        assert counts[2] > MIN_PTS
+
 
 # ---------------------------------------------------------------------------
 # sweep_nd: backward compatibility with 1D/2D/3D
@@ -342,7 +370,12 @@ class TestSweepNdHigherDimensions:
         )
 
         assert result.ndim == 4
-        assert result.total_points <= MAX_TOTAL_POINTS_COLD
+        # Total points may exceed cold budget — only cold compilations
+        # (unique num_cores values) are capped, not the total grid.
+        assert result.total_points <= MAX_TOTAL_POINTS_HOT
+        # Cold axis (num_cores) count should be within cold budget
+        from gui.constants import MAX_COLD_COMPILATIONS
+        assert len(result.axes[0]) <= MAX_COLD_COMPILATIONS
         for idx in np.ndindex(result.shape):
             assert "overall_fidelity" in result.grid[idx]
 
