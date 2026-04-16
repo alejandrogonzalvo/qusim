@@ -586,51 +586,88 @@ _OUTPUT_KEYS = ["overall_fidelity", "algorithmic_fidelity", "routing_fidelity",
 def _flatten_sweep_to_table(sweep_data: dict) -> tuple[list[str], list[str], list[list[float]]]:
     metric_keys = sweep_data["metric_keys"]
     grid = sweep_data["grid"]
-    xs = sweep_data["xs"]
-
-    available_outputs = []
-    sample = grid[0] if isinstance(grid[0], dict) else None
-    if sample is None:
-        nested = grid[0]
-        while isinstance(nested, list):
-            nested = nested[0]
-        sample = nested
-    for k in _OUTPUT_KEYS:
-        if k in sample:
-            available_outputs.append(k)
-
-    rows: list[list[float]] = []
     ndim = len(metric_keys)
 
-    if ndim == 1:
-        for i, x in enumerate(xs):
-            r = grid[i]
-            row = [float(x)]
-            for k in available_outputs:
-                row.append(float(r.get(k, 0.0) if isinstance(r, dict) else getattr(r, k, 0.0)))
-            rows.append(row)
-    elif ndim == 2:
-        ys = sweep_data["ys"]
-        for i, x in enumerate(xs):
-            for j, y in enumerate(ys):
-                r = grid[i][j]
-                row = [float(x), float(y)]
-                for k in available_outputs:
-                    row.append(float(r.get(k, 0.0) if isinstance(r, dict) else getattr(r, k, 0.0)))
-                rows.append(row)
-    elif ndim == 3:
-        ys = sweep_data["ys"]
-        zs = sweep_data["zs"]
-        for i, x in enumerate(xs):
-            for j, y in enumerate(ys):
-                for ki, z in enumerate(zs):
-                    r = grid[i][j][ki]
-                    row = [float(x), float(y), float(z)]
-                    for k in available_outputs:
-                        row.append(float(r.get(k, 0.0) if isinstance(r, dict) else getattr(r, k, 0.0)))
-                    rows.append(row)
+    # Find a sample result to determine available outputs
+    sample = _find_sample(grid, ndim)
+    available_outputs = [k for k in _OUTPUT_KEYS if k in sample] if sample else []
+
+    # Resolve axis values for all dimensions
+    axes = _resolve_axes(sweep_data, ndim)
+
+    rows: list[list[float]] = []
+
+    if ndim <= 3:
+        # Legacy nested-list format
+        _flatten_nested(grid, axes, ndim, available_outputs, rows)
+    else:
+        # N >= 4: flat grid list + shape metadata
+        shape = tuple(sweep_data.get("shape", [len(ax) for ax in axes]))
+        _flatten_nd(grid, axes, shape, ndim, available_outputs, rows)
 
     return metric_keys, available_outputs, rows
+
+
+def _find_sample(grid, ndim: int) -> dict | None:
+    """Extract one sample result dict from the grid."""
+    if not grid:
+        return None
+    item = grid[0]
+    if isinstance(item, dict):
+        return item
+    # Nested list: drill down
+    nested = item
+    while isinstance(nested, list) and nested:
+        nested = nested[0]
+    return nested if isinstance(nested, dict) else None
+
+
+def _resolve_axes(sweep_data: dict, ndim: int) -> list[list]:
+    """Get axis values for each dimension from sweep_data."""
+    if "axes" in sweep_data and len(sweep_data["axes"]) == ndim:
+        return sweep_data["axes"]
+    axes = [sweep_data["xs"]]
+    if ndim >= 2:
+        axes.append(sweep_data["ys"])
+    if ndim >= 3:
+        axes.append(sweep_data["zs"])
+    return axes
+
+
+def _flatten_nested(
+    grid, axes: list, ndim: int, outputs: list[str], rows: list,
+) -> None:
+    """Flatten 1-3D nested-list grids into rows."""
+    import itertools
+    axis_values = [list(enumerate(ax)) for ax in axes[:ndim]]
+    for combo in itertools.product(*axis_values):
+        indices = [c[0] for c in combo]
+        values = [float(c[1]) for c in combo]
+        r = grid
+        for idx in indices:
+            r = r[idx]
+        row = values[:]
+        for k in outputs:
+            row.append(float(r.get(k, 0.0) if isinstance(r, dict) else getattr(r, k, 0.0)))
+        rows.append(row)
+
+
+def _flatten_nd(
+    grid: list, axes: list, shape: tuple, ndim: int,
+    outputs: list[str], rows: list,
+) -> None:
+    """Flatten N-D (N >= 4) flat grid list into rows."""
+    import itertools
+    ranges = [range(s) for s in shape]
+    flat_idx = 0
+    for combo in itertools.product(*ranges):
+        values = [float(axes[d][combo[d]]) for d in range(ndim)]
+        r = grid[flat_idx]
+        row = values[:]
+        for k in outputs:
+            row.append(float(r.get(k, 0.0) if isinstance(r, dict) else getattr(r, k, 0.0)))
+        rows.append(row)
+        flat_idx += 1
 
 
 def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
@@ -1163,8 +1200,11 @@ def build_figure(
                     fig = plot_3d_isosurface(**_3d_args)
                 else:
                     fig = plot_3d(**_3d_args)
+            elif num_metrics >= 4:
+                # For N >= 4, default to parallel coordinates
+                fig = plot_parallel_coordinates(sweep_data, output_key)
             else:
-                return plot_empty("Add 1\u20133 metric axes on the left to start a sweep")
+                return plot_empty("Add at least one metric axis on the left to start a sweep")
         except Exception as exc:
             return plot_empty(f"Plot error: {exc}")
 
