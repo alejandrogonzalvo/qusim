@@ -1140,12 +1140,20 @@ _ALL_METRIC_OPTIONS = [{"label": m.label, "value": m.key} for m in SWEEPABLE_MET
 @app.callback(
     *[Output(f"metric-dropdown-{i}", "options") for i in range(MAX_METRICS)],
     *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
+    Input("num-metrics-store", "data"),
     prevent_initial_call=True,
 )
-def _filter_dropdown_options(*values):
+def _filter_dropdown_options(*args):
+    values = args[:MAX_METRICS]
+    num_metrics = args[MAX_METRICS] or 1
+    # Only consider dropdowns from visible (active) rows as "taken"
     results = []
     for i in range(MAX_METRICS):
-        taken = {values[j] for j in range(MAX_METRICS) if j != i and values[j]}
+        taken = {
+            values[j]
+            for j in range(num_metrics)
+            if j != i and values[j]
+        }
         results.append([
             {**opt, "disabled": opt["value"] in taken}
             for opt in _ALL_METRIC_OPTIONS
