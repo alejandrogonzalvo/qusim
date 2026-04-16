@@ -7,7 +7,7 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 
 use crate::circuit::InteractionTensor;
 use crate::hqa::hqa_mapping;
-use crate::noise::{estimate_fidelity, ArchitectureParams};
+use crate::noise::{estimate_fidelity, estimate_fidelity_batch, ArchitectureParams};
 use crate::routing::extract_inter_core_communications;
 
 /// Convert a Python dict of {(int,int): float} to a Rust HashMap<(usize,usize), f64>.
@@ -331,10 +331,106 @@ pub fn estimate_hardware_fidelity<'py>(
     Ok(dict)
 }
 
+/// Batch fidelity estimation: parse structural data once, evaluate many noise configs.
+///
+/// Each element of `noise_params_list` is a dict with keys matching the scalar
+/// noise parameters of `estimate_hardware_fidelity`.  Returns a list of dicts,
+/// each containing only scalar metrics (no grids) for maximum throughput.
+#[pyfunction]
+#[pyo3(signature = (
+    gs_sparse,
+    placements,
+    distance_matrix,
+    sparse_swaps,
+    noise_params_list,
+    gate_error_per_type = None,
+    gate_time_per_type = None
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_hardware_fidelity_batch<'py>(
+    py: Python<'py>,
+    gs_sparse: &Bound<'py, PyArray2<f64>>,
+    placements: &Bound<'py, PyArray2<i32>>,
+    distance_matrix: &Bound<'py, PyArray2<i32>>,
+    sparse_swaps: &Bound<'py, PyArray2<i32>>,
+    noise_params_list: &Bound<'py, PyList>,
+    gate_error_per_type: Option<&Bound<'py, PyArray1<f64>>>,
+    gate_time_per_type: Option<&Bound<'py, PyArray1<f64>>>,
+) -> PyResult<Bound<'py, PyList>> {
+    // Parse structural data once
+    let (num_layers, num_qubits, edge_list) = parse_sparse_tensor(gs_sparse, 0);
+    let tensor = InteractionTensor::from_sparse(&edge_list, num_layers, num_qubits);
+    let placements_arr = placements.readonly().as_array().to_owned();
+    let dist_array = distance_matrix.readonly().as_array().to_owned();
+    let swaps_readonly = sparse_swaps.readonly();
+    let sparse_swaps_arr = swaps_readonly.as_array();
+    let routing = extract_inter_core_communications(&placements_arr, dist_array.view());
+
+    // Shared per-type overrides (same for all configs in DSE hot path)
+    let shared_gate_error_per_type = gate_error_per_type.map(|a| a.readonly().as_array().to_vec());
+    let shared_gate_time_per_type = gate_time_per_type.map(|a| a.readonly().as_array().to_vec());
+
+    // Build params batch from list of dicts
+    let mut params_batch = Vec::with_capacity(noise_params_list.len());
+    for item in noise_params_list.iter() {
+        let d = item.downcast::<PyDict>()?;
+        let get_f64 = |key: &str, default: f64| -> f64 {
+            d.get_item(key)
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<f64>().ok())
+                .unwrap_or(default)
+        };
+        let get_bool = |key: &str, default: bool| -> bool {
+            d.get_item(key)
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<bool>().ok())
+                .unwrap_or(default)
+        };
+
+        params_batch.push(ArchitectureParams {
+            single_gate_error: get_f64("single_gate_error", 1e-4),
+            two_gate_error: get_f64("two_gate_error", 1e-3),
+            teleportation_error_per_hop: get_f64("teleportation_error_per_hop", 1e-2),
+            single_gate_time: get_f64("single_gate_time", 20.0),
+            two_gate_time: get_f64("two_gate_time", 100.0),
+            teleportation_time_per_hop: get_f64("teleportation_time_per_hop", 1000.0),
+            t1: get_f64("t1", 100_000.0),
+            t2: get_f64("t2", 50_000.0),
+            single_gate_error_per_qubit: None,
+            two_gate_error_per_pair: None,
+            t1_per_qubit: None,
+            t2_per_qubit: None,
+            gate_error_per_type: shared_gate_error_per_type.clone(),
+            gate_time_per_type: shared_gate_time_per_type.clone(),
+            dynamic_decoupling: get_bool("dynamic_decoupling", false),
+            readout_error_per_qubit: None,
+            readout_mitigation_factor: get_f64("readout_mitigation_factor", 0.0),
+        });
+    }
+
+    let results = estimate_fidelity_batch(&tensor, &routing, &params_batch, Some(sparse_swaps_arr));
+
+    let out = PyList::empty_bound(py);
+    for r in &results {
+        let d = PyDict::new_bound(py);
+        d.set_item("algorithmic_fidelity", r.algorithmic_fidelity)?;
+        d.set_item("routing_fidelity", r.routing_fidelity)?;
+        d.set_item("coherence_fidelity", r.coherence_fidelity)?;
+        d.set_item("readout_fidelity", r.readout_fidelity)?;
+        d.set_item("overall_fidelity", r.overall_fidelity)?;
+        d.set_item("total_circuit_time_ns", r.total_circuit_time)?;
+        out.append(d)?;
+    }
+    Ok(out)
+}
+
 /// The core native module compiled by Maturin
 #[pymodule]
 fn rust_core<'py>(_py: Python<'py>, m: &Bound<'py, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(map_and_estimate, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_hardware_fidelity, m)?)?;
+    m.add_function(wrap_pyfunction!(estimate_hardware_fidelity_batch, m)?)?;
     Ok(())
 }

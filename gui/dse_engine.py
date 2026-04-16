@@ -11,8 +11,12 @@ Two-stage execution model:
 import sys
 import os
 import time
+import multiprocessing
+import concurrent.futures
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+
+_MP_CONTEXT = multiprocessing.get_context("forkserver")
 
 import numpy as np
 import qiskit
@@ -363,6 +367,29 @@ class DSEEngine:
         result["total_epr_pairs"] = cached.total_epr_pairs
         return result
 
+    def run_hot_batch(self, cached: CachedMapping, noise_dicts: list[dict]) -> list[dict]:
+        """
+        Batch fidelity estimation: single Rust call for many noise configs.
+
+        Structural data (tensor, placements, routing) is parsed once inside Rust.
+        Returns scalar-only result dicts (no grids).
+        """
+        merged_list = [_merge_noise(n) for n in noise_dicts]
+        gate_error_arr, gate_time_arr = _make_gate_arrays(cached.gate_names, merged_list[0])
+
+        results = qusim.estimate_fidelity_from_cache_batch(
+            gs_sparse=cached.gs_sparse,
+            placements=cached.placements,
+            distance_matrix=cached.distance_matrix,
+            sparse_swaps=cached.sparse_swaps,
+            gate_error_arr=gate_error_arr,
+            gate_time_arr=gate_time_arr,
+            noise_dicts=merged_list,
+        )
+        for r in results:
+            r["total_epr_pairs"] = cached.total_epr_pairs
+        return results
+
     # -- Sweep methods -------------------------------------------------------
 
     COLD_PATH_KEYS = frozenset({"num_qubits", "num_cores"})
@@ -402,6 +429,61 @@ class DSEEngine:
         cached = self.run_cold(**cfg, noise=hot_noise)
         return self.run_hot(cached, hot_noise)
 
+    def _parallel_cold_sweep(
+        self,
+        cold_config: dict,
+        noise: dict,
+        indexed_points: list[tuple[tuple, dict]],
+        total: int,
+        progress_callback: Callable[[SweepProgress], None] | None,
+        max_workers: int | None,
+    ) -> dict[tuple, dict]:
+        """Run cold-path sweep points in parallel, grouped by cold-path values.
+
+        Each group shares the same cold-path config and is submitted as a single
+        batch to a process pool.  Within a batch the first _eval_point triggers
+        cold compilation; subsequent calls hit the engine's cache.
+
+        Returns a mapping of index_key -> result_dict.
+        """
+        # Group by cold-path values so each batch compiles only once
+        groups: dict[tuple, list[tuple[tuple, dict]]] = {}
+        for idx_key, swept in indexed_points:
+            cold_vals = tuple(sorted(
+                (k, int(v)) for k, v in swept.items() if k in self.COLD_PATH_KEYS
+            ))
+            groups.setdefault(cold_vals, []).append((idx_key, swept))
+
+        # Cap at half the CPUs so the UI thread, browser, and OS stay responsive
+        cpu_cap = max(1, (os.cpu_count() or 2) // 2)
+        n_workers = max_workers if max_workers else min(cpu_cap, len(groups))
+        results: dict[tuple, dict] = {}
+        completed = 0
+
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=n_workers, mp_context=_MP_CONTEXT,
+        ) as pool:
+            future_map = {}
+            for cold_vals, group in groups.items():
+                swept_list = [s for _, s in group]
+                future = pool.submit(_eval_cold_batch, cold_config, noise, swept_list)
+                future_map[future] = group
+
+            for future in concurrent.futures.as_completed(future_map):
+                group = future_map[future]
+                batch_results = future.result()
+                for (idx_key, swept), result in zip(group, batch_results):
+                    results[idx_key] = result
+                    completed += 1
+                    if progress_callback is not None:
+                        progress_callback(SweepProgress(
+                            completed=completed,
+                            total=total,
+                            current_params={k: float(v) for k, v in swept.items()},
+                        ))
+
+        return results
+
     def sweep_1d(
         self,
         cached: CachedMapping,
@@ -411,11 +493,21 @@ class DSEEngine:
         fixed_noise: dict,
         cold_config: dict | None = None,
         progress_callback: Callable[[SweepProgress], None] | None = None,
+        parallel: bool = False,
+        max_workers: int | None = None,
     ) -> tuple[np.ndarray, list]:
         has_cold = self._has_cold(metric_key)
         n = self._sweep_points(1, has_cold)
         xs = self._metric_values(metric_key, low, high, n)
         total = len(xs)
+
+        if parallel and has_cold and cold_config is not None:
+            indexed = [((i,), {metric_key: v}) for i, v in enumerate(xs)]
+            rmap = self._parallel_cold_sweep(
+                cold_config, fixed_noise, indexed, total, progress_callback, max_workers,
+            )
+            return xs, [rmap[(i,)] for i in range(total)]
+
         results = []
         for i, v in enumerate(xs):
             if has_cold:
@@ -439,12 +531,27 @@ class DSEEngine:
         fixed_noise: dict,
         cold_config: dict | None = None,
         progress_callback: Callable[[SweepProgress], None] | None = None,
+        parallel: bool = False,
+        max_workers: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, list]:
         has_cold = self._has_cold(metric_key1, metric_key2)
         n = self._sweep_points(2, has_cold)
         xs = self._metric_values(metric_key1, low1, high1, n)
         ys = self._metric_values(metric_key2, low2, high2, n)
         total = len(xs) * len(ys)
+
+        if parallel and has_cold and cold_config is not None:
+            indexed = [
+                ((i, j), {metric_key1: v1, metric_key2: v2})
+                for i, v1 in enumerate(xs)
+                for j, v2 in enumerate(ys)
+            ]
+            rmap = self._parallel_cold_sweep(
+                cold_config, fixed_noise, indexed, total, progress_callback, max_workers,
+            )
+            grid = [[rmap[(i, j)] for j in range(len(ys))] for i in range(len(xs))]
+            return xs, ys, grid
+
         grid = []
         count = 0
         for v1 in xs:
@@ -478,6 +585,8 @@ class DSEEngine:
         fixed_noise: dict,
         cold_config: dict | None = None,
         progress_callback: Callable[[SweepProgress], None] | None = None,
+        parallel: bool = False,
+        max_workers: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
         has_cold = self._has_cold(metric_key1, metric_key2, metric_key3)
         n = self._sweep_points(3, has_cold)
@@ -485,6 +594,23 @@ class DSEEngine:
         ys = self._metric_values(metric_key2, low2, high2, n)
         zs = self._metric_values(metric_key3, low3, high3, n)
         total = len(xs) * len(ys) * len(zs)
+
+        if parallel and has_cold and cold_config is not None:
+            indexed = [
+                ((i, j, k), {metric_key1: v1, metric_key2: v2, metric_key3: v3})
+                for i, v1 in enumerate(xs)
+                for j, v2 in enumerate(ys)
+                for k, v3 in enumerate(zs)
+            ]
+            rmap = self._parallel_cold_sweep(
+                cold_config, fixed_noise, indexed, total, progress_callback, max_workers,
+            )
+            grid = [
+                [[rmap[(i, j, k)] for k in range(len(zs))] for j in range(len(ys))]
+                for i in range(len(xs))
+            ]
+            return xs, ys, zs, grid
+
         grid = []
         count = 0
         for v1 in xs:
@@ -512,6 +638,41 @@ class DSEEngine:
                 plane.append(row_list)
             grid.append(plane)
         return xs, ys, zs, grid
+
+
+# ---------------------------------------------------------------------------
+# Process-pool worker (must be module-level for pickling)
+# ---------------------------------------------------------------------------
+
+def _eval_cold_batch(cold_config: dict, noise: dict, swept_list: list[dict]) -> list[dict]:
+    """Evaluate a batch of design points sharing the same cold-path config.
+
+    Compiles the circuit once (cold path), then evaluates all noise
+    variations in a single batched Rust call (no per-point Python↔Rust overhead).
+    """
+    engine = DSEEngine()
+
+    # Apply cold-path overrides from the first swept dict (all share the same cold keys)
+    cfg = dict(cold_config)
+    for k, v in swept_list[0].items():
+        if k in DSEEngine.COLD_PATH_KEYS:
+            cfg[k] = int(v)
+    cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
+
+    # Build the noise dicts for each swept point
+    noise_dicts = []
+    for swept in swept_list:
+        hot_noise = dict(noise)
+        for k, v in swept.items():
+            if k not in DSEEngine.COLD_PATH_KEYS:
+                hot_noise[k] = v
+        noise_dicts.append(hot_noise)
+
+    # Single cold compilation
+    cached = engine.run_cold(**cfg, noise=noise_dicts[0])
+
+    # Single batched Rust call for all hot-path variations
+    return engine.run_hot_batch(cached, noise_dicts)
 
 
 # ---------------------------------------------------------------------------

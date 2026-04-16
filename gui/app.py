@@ -839,7 +839,7 @@ def run_sweep(
             k0, r0 = active[0]
             xs, results = _engine.sweep_1d(
                 cached, k0, r0[0], r0[1], fixed_noise, cold_config=cold_config,
-                progress_callback=_update_progress,
+                progress_callback=_update_progress, parallel=True,
             )
             sweep_data["xs"] = xs.tolist()
             sweep_data["grid"] = [_result_to_dict(r) for r in results]
@@ -853,7 +853,7 @@ def run_sweep(
                 k1, r1[0], r1[1],
                 fixed_noise,
                 cold_config=cold_config,
-                progress_callback=_update_progress,
+                progress_callback=_update_progress, parallel=True,
             )
             sweep_data["xs"] = xs.tolist()
             sweep_data["ys"] = ys.tolist()
@@ -870,7 +870,7 @@ def run_sweep(
                 k2, r2[0], r2[1],
                 fixed_noise,
                 cold_config=cold_config,
-                progress_callback=_update_progress,
+                progress_callback=_update_progress, parallel=True,
             )
             sweep_data["xs"] = xs.tolist()
             sweep_data["ys"] = ys.tolist()

@@ -111,7 +111,7 @@ SWEEPABLE_METRICS: List[MetricDef] = [
     MetricDef(
         key="num_qubits",
         label="Qubits",
-        slider_min=4, slider_max=32,
+        slider_min=4, slider_max=256,
         slider_default_low=4, slider_default_high=20,
         num_steps=15, log_scale=False, unit="",
         is_cold_path=True,
