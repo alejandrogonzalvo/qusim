@@ -1031,6 +1031,151 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Classical communication network parameters
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classical_comm_time_computation() {
+        // Paper formula: t_classical = ceil(packet_size / link_width + routing_cycles) / freq
+        // packet_size = 2 * ceil(log2(total_qubits)) + 2
+        //
+        // With 64 qubits: packet_size = 2 * 6 + 2 = 14 bits
+        // link_width = 10, routing_cycles = 2, freq = 200 MHz
+        // transmission_cycles = ceil(14 / 10) = 2
+        // total_cycles = 2 + 2 = 4
+        // t_classical = 4 / 200e6 = 20 ns
+        let params = ArchitectureParams {
+            classical_link_width: 10,
+            classical_clock_freq_hz: 200e6,
+            classical_routing_cycles: 2,
+            ..Default::default()
+        };
+        let t = params.classical_comm_time_ns(64);
+        assert!(
+            (t - 20.0).abs() < 1e-6,
+            "expected 20 ns, got {} ns",
+            t
+        );
+    }
+
+    #[test]
+    fn classical_comm_time_single_wire() {
+        // 64 qubits, link_width=1: transmission_cycles = ceil(14/1) = 14
+        // total_cycles = 14 + 2 = 16, freq = 100 MHz
+        // t = 16 / 100e6 = 160 ns
+        let params = ArchitectureParams {
+            classical_link_width: 1,
+            classical_clock_freq_hz: 100e6,
+            classical_routing_cycles: 2,
+            ..Default::default()
+        };
+        let t = params.classical_comm_time_ns(64);
+        assert!(
+            (t - 160.0).abs() < 1e-6,
+            "expected 160 ns, got {} ns",
+            t
+        );
+    }
+
+    #[test]
+    fn classical_comm_time_affects_teleportation_timeline() {
+        // Build a circuit with teleportations and verify that classical comm
+        // parameters increase total_circuit_time compared to zero classical overhead.
+        let (tensor, routing, _num_qubits) = setup_from_test_vector("hqa_test_qft_25_ring");
+
+        // Skip if no teleportations in this test case
+        if routing.total_teleportations == 0 {
+            return;
+        }
+
+        // Baseline: no classical overhead (link_width=0 means disabled)
+        let params_no_classical = ArchitectureParams {
+            classical_link_width: 0,
+            classical_clock_freq_hz: 200e6,
+            classical_routing_cycles: 2,
+            ..Default::default()
+        };
+        let report_no_classical = estimate_fidelity(&tensor, &routing, &params_no_classical, None);
+
+        // With classical overhead: slow network (1 wire, 10 MHz)
+        let params_with_classical = ArchitectureParams {
+            classical_link_width: 1,
+            classical_clock_freq_hz: 10e6,
+            classical_routing_cycles: 2,
+            ..Default::default()
+        };
+        let report_with_classical = estimate_fidelity(&tensor, &routing, &params_with_classical, None);
+
+        assert!(
+            report_with_classical.total_circuit_time > report_no_classical.total_circuit_time,
+            "classical comm overhead should increase total circuit time: {} vs {}",
+            report_with_classical.total_circuit_time,
+            report_no_classical.total_circuit_time
+        );
+    }
+
+    #[test]
+    fn classical_comm_time_degrades_coherence() {
+        // Slower classical network → more idle time → worse coherence
+        let (tensor, routing, _num_qubits) = setup_from_test_vector("hqa_test_qft_25_ring");
+
+        if routing.total_teleportations == 0 {
+            return;
+        }
+
+        let params_fast = ArchitectureParams {
+            classical_link_width: 15,
+            classical_clock_freq_hz: 1e9,
+            classical_routing_cycles: 2,
+            ..Default::default()
+        };
+        let report_fast = estimate_fidelity(&tensor, &routing, &params_fast, None);
+
+        let params_slow = ArchitectureParams {
+            classical_link_width: 1,
+            classical_clock_freq_hz: 10e6,
+            classical_routing_cycles: 10,
+            ..Default::default()
+        };
+        let report_slow = estimate_fidelity(&tensor, &routing, &params_slow, None);
+
+        assert!(
+            report_slow.coherence_fidelity < report_fast.coherence_fidelity,
+            "slow classical network should degrade coherence: {} vs {}",
+            report_slow.coherence_fidelity,
+            report_fast.coherence_fidelity
+        );
+    }
+
+    #[test]
+    fn classical_comm_defaults_backward_compatible() {
+        // Default classical params (link_width=0) should produce identical results
+        // to the pre-existing behavior (no classical overhead).
+        let (tensor, routing, _num_qubits) = setup_from_test_vector("hqa_test_qft_25_all_to_all");
+
+        let default_params = ArchitectureParams::default();
+        let report_default = estimate_fidelity(&tensor, &routing, &default_params, None);
+
+        // Explicitly set classical params to disabled
+        let params_disabled = ArchitectureParams {
+            classical_link_width: 0,
+            ..Default::default()
+        };
+        let report_disabled = estimate_fidelity(&tensor, &routing, &params_disabled, None);
+
+        assert!(
+            (report_default.total_circuit_time - report_disabled.total_circuit_time).abs() < 1e-12,
+            "default should match disabled classical: {} vs {}",
+            report_default.total_circuit_time,
+            report_disabled.total_circuit_time
+        );
+        assert!(
+            (report_default.overall_fidelity - report_disabled.overall_fidelity).abs() < 1e-12,
+            "fidelity should match"
+        );
+    }
+
     #[test]
     fn per_qubit_t1t2_differs_from_uniform() {
         let path = Path::new("dse_pau/test_vectors.json");
