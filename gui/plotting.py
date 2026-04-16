@@ -677,9 +677,17 @@ def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
         return plot_empty("No data for parallel coordinates")
 
     data = np.array(rows)
-    col_names = metric_keys + available_outputs
     num_param_cols = len(metric_keys)
 
+    # Only show swept parameters + the selected output metric (not all outputs).
+    # This keeps the plot readable even with many swept axes.
+    visible_output_keys = [output_key] if output_key in available_outputs else available_outputs[:1]
+    visible_col_indices = list(range(num_param_cols))
+    for ok in visible_output_keys:
+        if ok in available_outputs:
+            visible_col_indices.append(num_param_cols + available_outputs.index(ok))
+
+    col_names = metric_keys + available_outputs
     color_col_idx = None
     if output_key in available_outputs:
         color_col_idx = num_param_cols + available_outputs.index(output_key)
@@ -687,14 +695,19 @@ def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
         color_col_idx = num_param_cols
 
     dimensions = []
-    for i, name in enumerate(col_names):
+    for i in visible_col_indices:
+        name = col_names[i]
         m = METRIC_BY_KEY.get(name)
         label = m.label if m else _OUTPUT_LABELS.get(name, name)
         col = data[:, i]
+        col_range = [float(col.min()), float(col.max())]
+        # Avoid degenerate range
+        if col_range[0] == col_range[1]:
+            col_range[1] = col_range[0] + 1.0
         dimensions.append(dict(
             label=label,
             values=col.tolist(),
-            range=[float(col.min()), float(col.max())],
+            range=col_range,
         ))
 
     color_vals = data[:, color_col_idx].tolist() if color_col_idx is not None else None
@@ -721,14 +734,18 @@ def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
                     outlinewidth=0, thickness=14, len=0.75,
                 ),
             ),
-            labelfont=dict(size=11, color=_TEXT_COLOR),
-            tickfont=dict(size=9, color=_TEXT_MUTED),
-            rangefont=dict(size=9, color=_TEXT_MUTED),
+            unselected=dict(line=dict(color="#E0E0E0", opacity=0.05)),
+            labelfont=dict(size=12, color=_TEXT_COLOR, family="Inter, system-ui, sans-serif"),
+            tickfont=dict(size=10, color=_TEXT_MUTED, family="Inter, system-ui, sans-serif"),
+            rangefont=dict(size=10, color=_ACCENT, family="Inter, system-ui, sans-serif"),
         )
     )
 
+    # Scale left/right margins with axis count to keep labels from clipping
+    n_axes = len(dimensions)
+    lr_margin = max(80, min(140, n_axes * 12))
     fig.update_layout(
-        **{**_LAYOUT_BASE, "margin": dict(l=60, r=30, t=50, b=30)},
+        **{**_LAYOUT_BASE, "margin": dict(l=lr_margin, r=lr_margin, t=50, b=40)},
     )
     return fig
 
