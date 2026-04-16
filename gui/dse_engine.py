@@ -77,80 +77,90 @@ def _build_topology(
 ) -> tuple[CouplingMap, dict[int, int]]:
     """Build full_coupling_map and core_mapping for the given topology.
 
-    Physical qubits are ceil-divided across cores so every logical qubit
-    has a slot even when num_qubits % num_cores != 0.
+    Qubits are distributed across cores so that physical count == logical
+    count exactly.  With 7 qubits and 3 cores the sizes are [3, 2, 2].
     """
     import math
     if num_cores < 1:
         num_cores = 1
     num_cores = min(num_cores, num_qubits)
 
-    qubits_per_core = math.ceil(num_qubits / num_cores)
-    num_physical = qubits_per_core * num_cores
+    base = num_qubits // num_cores
+    remainder = num_qubits % num_cores
+    core_sizes = [base + (1 if c < remainder else 0) for c in range(num_cores)]
 
     cm = CouplingMap()
-    for i in range(num_physical):
+    for i in range(num_qubits):
         cm.add_physical_qubit(i)
 
     core_mapping: dict[int, int] = {}
-
-    for c in range(num_cores):
-        offset = c * qubits_per_core
-        for q in range(qubits_per_core):
+    core_offsets: list[int] = []
+    offset = 0
+    for c, size in enumerate(core_sizes):
+        core_offsets.append(offset)
+        for q in range(size):
             core_mapping[offset + q] = c
 
-        if intracore_topology == "all_to_all":
-            for q in range(qubits_per_core):
-                for r in range(q + 1, qubits_per_core):
-                    cm.add_edge(offset + q, offset + r)
-                    cm.add_edge(offset + r, offset + q)
-        elif intracore_topology == "linear":
-            for q in range(qubits_per_core - 1):
-                cm.add_edge(offset + q, offset + q + 1)
-                cm.add_edge(offset + q + 1, offset + q)
-        elif intracore_topology == "ring":
-            for q in range(qubits_per_core):
-                nxt = (q + 1) % qubits_per_core
-                cm.add_edge(offset + q, offset + nxt)
-                cm.add_edge(offset + nxt, offset + q)
-        elif intracore_topology == "grid":
-            side = math.isqrt(qubits_per_core)
-            if side * side < qubits_per_core:
-                side += 1
-            for q in range(qubits_per_core):
-                row, col = divmod(q, side)
-                if col + 1 < side and q + 1 < qubits_per_core:
-                    cm.add_edge(offset + q, offset + q + 1)
-                    cm.add_edge(offset + q + 1, offset + q)
-                if q + side < qubits_per_core:
-                    cm.add_edge(offset + q, offset + q + side)
-                    cm.add_edge(offset + q + side, offset + q)
+        _add_intracore_edges(cm, offset, size, intracore_topology)
+        offset += size
 
     if num_cores > 1:
         if topology_type == "ring":
             for c in range(num_cores):
                 next_c = (c + 1) % num_cores
-                p1 = c * qubits_per_core
-                p2 = next_c * qubits_per_core
-                cm.add_edge(p1, p2)
-                cm.add_edge(p2, p1)
+                cm.add_edge(core_offsets[c], core_offsets[next_c])
+                cm.add_edge(core_offsets[next_c], core_offsets[c])
 
         elif topology_type == "all_to_all":
             for c1 in range(num_cores):
                 for c2 in range(c1 + 1, num_cores):
-                    p1 = c1 * qubits_per_core + (qubits_per_core - 1)
-                    p2 = c2 * qubits_per_core
+                    p1 = core_offsets[c1] + core_sizes[c1] - 1
+                    p2 = core_offsets[c2]
                     cm.add_edge(p1, p2)
                     cm.add_edge(p2, p1)
 
         elif topology_type == "linear":
             for c in range(num_cores - 1):
-                p1 = c * qubits_per_core + (qubits_per_core - 1)
-                p2 = (c + 1) * qubits_per_core
+                p1 = core_offsets[c] + core_sizes[c] - 1
+                p2 = core_offsets[c + 1]
                 cm.add_edge(p1, p2)
                 cm.add_edge(p2, p1)
 
     return cm, core_mapping
+
+
+def _add_intracore_edges(
+    cm: CouplingMap, offset: int, size: int, topology: str,
+) -> None:
+    import math
+    if size < 2:
+        return
+    if topology == "all_to_all":
+        for q in range(size):
+            for r in range(q + 1, size):
+                cm.add_edge(offset + q, offset + r)
+                cm.add_edge(offset + r, offset + q)
+    elif topology == "linear":
+        for q in range(size - 1):
+            cm.add_edge(offset + q, offset + q + 1)
+            cm.add_edge(offset + q + 1, offset + q)
+    elif topology == "ring":
+        for q in range(size):
+            nxt = (q + 1) % size
+            cm.add_edge(offset + q, offset + nxt)
+            cm.add_edge(offset + nxt, offset + q)
+    elif topology == "grid":
+        side = math.isqrt(size)
+        if side * side < size:
+            side += 1
+        for q in range(size):
+            row, col = divmod(q, side)
+            if col + 1 < side and q + 1 < size:
+                cm.add_edge(offset + q, offset + q + 1)
+                cm.add_edge(offset + q + 1, offset + q)
+            if q + side < size:
+                cm.add_edge(offset + q, offset + q + side)
+                cm.add_edge(offset + q + side, offset + q)
 
 
 # ---------------------------------------------------------------------------
