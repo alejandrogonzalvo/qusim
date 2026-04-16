@@ -39,6 +39,7 @@ from .constants import (
     SWEEP_POINTS_COLD_3D,
     MAX_TOTAL_POINTS_HOT,
     MAX_TOTAL_POINTS_COLD,
+    MAX_COLD_COMPILATIONS,
     MIN_POINTS_PER_AXIS,
 )
 
@@ -483,7 +484,7 @@ class DSEEngine:
         return [SWEEP_POINTS_1D, SWEEP_POINTS_2D, SWEEP_POINTS_3D][ndim - 1]
 
     def _points_per_axis(self, ndim: int, has_cold: bool) -> int:
-        """Compute points per axis for an N-D sweep within the total budget."""
+        """Compute uniform points per axis for an N-D sweep within the total budget."""
         budget = MAX_TOTAL_POINTS_COLD if has_cold else MAX_TOTAL_POINTS_HOT
         # For 1-3D, use legacy values for backward compatibility
         if ndim <= 3:
@@ -494,6 +495,83 @@ class DSEEngine:
         while n ** ndim > budget and n > MIN_POINTS_PER_AXIS:
             n -= 1
         return n
+
+    def _compute_axis_counts(
+        self, sweep_axes: list[tuple[str, float, float]], has_cold: bool,
+        max_cold: int | None = None,
+        max_hot: int | None = None,
+    ) -> list[int]:
+        """Compute per-axis point counts using a split budget model.
+
+        Cold-path axes (num_qubits, num_cores) are capped by ``max_cold``
+        (total cold compilations = product of cold-axis counts).
+        Hot-path axes are capped by ``max_hot`` (total grid points).
+
+        Cold-path axes get their natural integer range, capped so their
+        product stays within the cold compilation budget.  Hot-path axes
+        share the remaining hot budget.
+        """
+        ndim = len(sweep_axes)
+        cold_budget = max_cold if max_cold is not None else MAX_COLD_COMPILATIONS
+        hot_budget = max_hot if max_hot is not None else MAX_TOTAL_POINTS_HOT
+
+        if ndim <= 3:
+            n = self._sweep_points(ndim, has_cold)
+            return [n] * ndim
+
+        # Separate cold vs hot axes
+        cold_indices = []
+        hot_indices = []
+        for i, (key, _, _) in enumerate(sweep_axes):
+            if key in self.COLD_PATH_KEYS:
+                cold_indices.append(i)
+            else:
+                hot_indices.append(i)
+
+        counts: list[int] = [0] * ndim
+
+        # Cold axes: distribute cold compilation budget
+        if cold_indices:
+            n_cold = len(cold_indices)
+            per_cold = max(MIN_POINTS_PER_AXIS, int(cold_budget ** (1.0 / n_cold)))
+            for i in cold_indices:
+                key, low, high = sweep_axes[i]
+                natural = int(high) - int(low) + 1
+                counts[i] = max(MIN_POINTS_PER_AXIS, min(natural, per_cold))
+            # Verify product is within budget, reduce if needed
+            cold_product = 1
+            for i in cold_indices:
+                cold_product *= counts[i]
+            while cold_product > cold_budget:
+                # Reduce the largest cold axis by 1
+                largest = max(cold_indices, key=lambda i: counts[i])
+                counts[largest] = max(MIN_POINTS_PER_AXIS, counts[largest] - 1)
+                cold_product = 1
+                for i in cold_indices:
+                    cold_product *= counts[i]
+                if all(counts[i] == MIN_POINTS_PER_AXIS for i in cold_indices):
+                    break
+
+        # Hot axes: distribute hot budget (divided by cold product)
+        cold_product = 1
+        for i in cold_indices:
+            cold_product *= counts[i]
+
+        if hot_indices:
+            n_hot = len(hot_indices)
+            effective_hot_budget = max(1, hot_budget // max(1, cold_product))
+            per_hot = max(MIN_POINTS_PER_AXIS, int(effective_hot_budget ** (1.0 / n_hot)))
+            # Clamp so total doesn't exceed budget
+            while per_hot ** n_hot * cold_product > hot_budget and per_hot > MIN_POINTS_PER_AXIS:
+                per_hot -= 1
+            for i in hot_indices:
+                counts[i] = per_hot
+        elif not cold_indices:
+            # All axes are neither cold nor hot — shouldn't happen, but fallback
+            n = max(MIN_POINTS_PER_AXIS, int(hot_budget ** (1.0 / ndim)))
+            counts = [n] * ndim
+
+        return counts
 
     def _eval_point(
         self,
@@ -734,21 +812,28 @@ class DSEEngine:
         progress_callback: Callable[[SweepProgress], None] | None = None,
         parallel: bool = False,
         max_workers: int | None = None,
+        max_cold: int | None = None,
+        max_hot: int | None = None,
     ) -> SweepResult:
         """N-dimensional sweep over arbitrary axes.
 
         Parameters
         ----------
         sweep_axes : list of (metric_key, low, high) tuples
+        max_cold : override for cold compilation budget
+        max_hot : override for total hot-path point budget
         """
         import itertools
 
         ndim = len(sweep_axes)
         keys = [k for k, _, _ in sweep_axes]
         has_cold = self._has_cold(*keys)
-        n = self._points_per_axis(ndim, has_cold)
+        axis_counts = self._compute_axis_counts(sweep_axes, has_cold, max_cold, max_hot)
 
-        axes = [self._metric_values(k, lo, hi, n) for k, lo, hi in sweep_axes]
+        axes = [
+            self._metric_values(k, lo, hi, axis_counts[i])
+            for i, (k, lo, hi) in enumerate(sweep_axes)
+        ]
         shape = tuple(len(ax) for ax in axes)
         total = int(np.prod(shape))
 

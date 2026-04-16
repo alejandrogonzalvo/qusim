@@ -734,7 +734,7 @@ def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
                     outlinewidth=0, thickness=14, len=0.75,
                 ),
             ),
-            unselected=dict(line=dict(color="#E0E0E0", opacity=0.05)),
+            unselected=dict(line=dict(color="#F0F0F0", opacity=0.02)),
             labelfont=dict(size=12, color=_TEXT_COLOR, family="Inter, system-ui, sans-serif"),
             tickfont=dict(size=10, color=_TEXT_MUTED, family="Inter, system-ui, sans-serif"),
             rangefont=dict(size=10, color=_ACCENT, family="Inter, system-ui, sans-serif"),
