@@ -431,6 +431,15 @@ pub fn estimate_hardware_fidelity_batch<'py>(
             dynamic_decoupling: get_bool("dynamic_decoupling", false),
             readout_error_per_qubit: None,
             readout_mitigation_factor: get_f64("readout_mitigation_factor", 0.0),
+            classical_link_width: d.get_item("classical_link_width")
+                .ok().flatten()
+                .and_then(|v| v.extract::<u32>().ok())
+                .unwrap_or(0),
+            classical_clock_freq_hz: get_f64("classical_clock_freq_hz", 200e6),
+            classical_routing_cycles: d.get_item("classical_routing_cycles")
+                .ok().flatten()
+                .and_then(|v| v.extract::<u32>().ok())
+                .unwrap_or(2),
         });
     }
 
