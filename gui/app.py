@@ -33,6 +33,7 @@ from gui.components import (
     COLORS,
     _linear_marks,
     _log_marks,
+    _tooltip_cfg,
     make_add_metric_button,
     make_fixed_config_panel,
     make_metric_selector,
@@ -1121,31 +1122,21 @@ for _idx in range(MAX_METRICS):
         Output(f"metric-slider-{_idx}", "step"),
         Output(f"metric-slider-{_idx}", "marks"),
         Output(f"metric-slider-{_idx}", "value"),
+        Output(f"metric-slider-{_idx}", "tooltip"),
         Input(f"metric-dropdown-{_idx}", "value"),
         prevent_initial_call=True,
     )
     def _reconfigure_slider(metric_key, _i=_idx):
+        no = dash.no_update
         if not metric_key:
-            return (
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-            )
+            return (no, no, no, no, no, no)
         m = METRIC_BY_KEY.get(metric_key)
         if m is None:
-            return (
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-            )
+            return (no, no, no, no, no, no)
         marks = (
-            _log_marks(m.slider_min, m.slider_max)
+            _log_marks(m.slider_min, m.slider_max, m.unit)
             if m.log_scale
-            else _linear_marks(m.slider_min, m.slider_max)
+            else _linear_marks(m.slider_min, m.slider_max, unit=m.unit)
         )
         if m.is_cold_path:
             step = 2 if m.key == "num_qubits" else 1
@@ -1157,6 +1148,7 @@ for _idx in range(MAX_METRICS):
             step,
             marks,
             [m.slider_default_low, m.slider_default_high],
+            _tooltip_cfg(m.log_scale, m.unit, always_visible=True),
         )
 
 # Register default metrics for rows 3+ (rows 0-2 already have defaults in make_metric_selector)

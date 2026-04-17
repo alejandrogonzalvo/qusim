@@ -26,69 +26,68 @@ body {
 
 
 /* ═══════════════════════════════════════════════════════════════════
-   SLIDERS  (rc-slider)
+   SLIDERS  (Dash 4.x – Radix UI primitives + dash-slider-* classes)
    ═══════════════════════════════════════════════════════════════════ */
 
-.rc-slider-rail {
+/* Track (rail) */
+.dash-slider-track {
     background: var(--border) !important;
     height: 3px !important;
     border-radius: 2px !important;
 }
 
-.rc-slider-track {
+/* Active range */
+.dash-slider-range {
     background: var(--accent) !important;
     height: 3px !important;
     border-radius: 2px !important;
 }
 
-.rc-slider-handle {
+/* Thumb / handle */
+.dash-slider-container [role="slider"] {
     background: var(--accent) !important;
     border: 2px solid var(--bg) !important;
     width: 14px !important;
     height: 14px !important;
-    margin-top: -6px !important;
     box-shadow: 0 1px 3px rgba(0,0,0,0.2) !important;
     opacity: 1 !important;
+    border-radius: 50% !important;
 }
-.rc-slider-handle:hover,
-.rc-slider-handle:active,
-.rc-slider-handle-dragging {
+.dash-slider-container [role="slider"]:hover,
+.dash-slider-container [role="slider"]:active {
     box-shadow: 0 0 0 4px rgba(43, 43, 43, 0.12) !important;
     border-color: var(--bg) !important;
 }
 
 /* Tooltip */
-.rc-slider-tooltip { z-index: 999 !important; }
-.rc-slider-tooltip-inner {
-    background: var(--accent) !important;
-    border: none !important;
-    color: #FFFFFF !important;
-    border-radius: 4px !important;
-    padding: 2px 8px !important;
-    font-size: 11px !important;
-    font-family: "SF Mono", "JetBrains Mono", "Fira Code", monospace !important;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
-    min-height: auto !important;
-    height: auto !important;
-    line-height: 1.5 !important;
-}
-.rc-slider-tooltip-arrow {
-    display: none !important;
+.dash-slider-tooltip {
+    z-index: 999 !important;
+    white-space: nowrap !important;
+    max-width: none !important;
+    width: max-content !important;
 }
 
-/* Marks */
-.rc-slider-mark-text {
+/* Mark labels */
+[class*="dash-slider-mark"] {
     color: var(--muted) !important;
     font-size: 9px !important;
-}
-.rc-slider-mark-text-active {
-    color: var(--accent2) !important;
+    white-space: nowrap !important;
 }
 
 /* Dots */
-.rc-slider-dot {
+.dash-slider-dot {
     display: none !important;
 }
+
+/* ── Legacy rc-slider selectors (kept for Dash < 4 compat) ────── */
+.rc-slider-rail             { background: var(--border) !important; height: 3px !important; border-radius: 2px !important; }
+.rc-slider-track            { background: var(--accent) !important; height: 3px !important; border-radius: 2px !important; }
+.rc-slider-handle           { background: var(--accent) !important; border: 2px solid var(--bg) !important; width: 14px !important; height: 14px !important; margin-top: -6px !important; box-shadow: 0 1px 3px rgba(0,0,0,0.2) !important; opacity: 1 !important; }
+.rc-slider-tooltip           { z-index: 999 !important; }
+.rc-slider-tooltip-inner     { white-space: nowrap !important; max-width: none !important; }
+.rc-slider-tooltip-arrow     { display: none !important; }
+.rc-slider-mark-text         { color: var(--muted) !important; font-size: 9px !important; white-space: nowrap !important; }
+.rc-slider-dot               { display: none !important; }
 
 
 /* ═══════════════════════════════════════════════════════════════════

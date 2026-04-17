@@ -64,29 +64,94 @@ def _fmt_value(value: float, log_scale: bool) -> str:
     return f"{value:.3f}"
 
 
-def _log_marks(slider_min: float, slider_max: float) -> dict:
-    """Generate integer-exponent marks for a log-scale slider (string keys for orjson)."""
-    marks = {}
-    for exp in range(int(slider_min), int(slider_max) + 1):
-        marks[str(exp)] = {
-            "label": f"10^{exp}",
-            "style": {"color": COLORS["text_muted"], "fontSize": "10px"},
-        }
+def _fmt_log_mark(exp: int, unit: str) -> str:
+    """Compact label for a log-scale mark at the given integer exponent."""
+    v = 10.0**exp
+    if unit == "ns":
+        if exp < 3:
+            return f"{v:g} ns"
+        if exp < 6:
+            return f"{v / 1e3:g} \u00b5s"
+        if exp < 9:
+            return f"{v / 1e6:g} ms"
+        return f"{v / 1e9:g} s"
+    if unit == "Hz":
+        if exp < 3:
+            return f"{v:g} Hz"
+        if exp < 6:
+            return f"{v / 1e3:g} kHz"
+        if exp < 9:
+            return f"{v / 1e6:g} MHz"
+        return f"{v / 1e9:g} GHz"
+    # Unitless (error rates etc.)
+    if exp >= 0:
+        return f"{v:g}"
+    return f"1e{exp}"
+
+
+_MARK_STYLE = {"color": COLORS["text_muted"], "fontSize": "9px"}
+
+
+def _log_marks(slider_min: float, slider_max: float, unit: str = "") -> dict:
+    """Generate integer-exponent marks showing actual values.
+
+    Limits to at most 5 evenly-spaced marks to fit narrow panels.
+    """
+    lo, hi = int(slider_min), int(slider_max)
+    all_exps = list(range(lo, hi + 1))
+    # Thin out if more than 5 marks
+    if len(all_exps) > 5:
+        step = max(1, (hi - lo) // 4)
+        exps = list(range(lo, hi, step)) + [hi]
+    else:
+        exps = all_exps
+    marks: dict = {}
+    for exp in exps:
+        marks[str(exp)] = {"label": _fmt_log_mark(exp, unit), "style": _MARK_STYLE}
     return marks
 
 
-def _linear_marks(slider_min: float, slider_max: float, n: int = 5) -> dict:
+def _linear_marks(slider_min: float, slider_max: float, n: int = 5, unit: str = "") -> dict:
     import numpy as np
 
+    n = min(n, 5)
     vals = np.linspace(slider_min, slider_max, n)
-    marks = {}
+    marks: dict = {}
     for v in vals:
         label = f"{v:.2f}" if v != int(v) else str(int(v))
-        marks[str(round(v, 6))] = {
-            "label": label,
-            "style": {"color": COLORS["text_muted"], "fontSize": "10px"},
-        }
+        marks[str(round(v, 6))] = {"label": label, "style": _MARK_STYLE}
     return marks
+
+
+# ---------------------------------------------------------------------------
+# Tooltip helpers  (uses window.dccFunctions defined in assets/tooltip_transforms.js)
+# ---------------------------------------------------------------------------
+
+_TOOLTIP_TRANSFORM_MAP = {
+    # (log_scale, unit) -> JS function name
+    (True, "ns"): "logNs",
+    (True, "Hz"): "logHz",
+    (True, ""): "logRate",
+    (False, "wires"): "linearWires",
+    (False, "cycles"): "linearCycles",
+    (False, ""): "linearFraction",
+}
+
+
+def _tooltip_transform_name(log_scale: bool, unit: str) -> str:
+    return _TOOLTIP_TRANSFORM_MAP.get((log_scale, unit), "linearFraction")
+
+
+def _tooltip_cfg(log_scale: bool, unit: str, always_visible: bool = False) -> dict:
+    """Build the tooltip dict for a dcc.Slider / dcc.RangeSlider."""
+    cfg: dict = {
+        "placement": "bottom",
+        "transform": _tooltip_transform_name(log_scale, unit),
+        "style": {"whiteSpace": "nowrap"},
+    }
+    if always_visible:
+        cfg["always_visible"] = True
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -114,9 +179,9 @@ def make_metric_selector(index: int) -> html.Div:
     m = METRIC_BY_KEY[default_key]
 
     marks = (
-        _log_marks(m.slider_min, m.slider_max)
+        _log_marks(m.slider_min, m.slider_max, m.unit)
         if m.log_scale
-        else _linear_marks(m.slider_min, m.slider_max)
+        else _linear_marks(m.slider_min, m.slider_max, unit=m.unit)
     )
 
     return html.Div(
@@ -180,7 +245,7 @@ def make_metric_selector(index: int) -> html.Div:
                         step=(m.slider_max - m.slider_min) / 200,
                         value=[m.slider_min, m.slider_max],
                         marks=marks,
-                        tooltip={"placement": "bottom", "always_visible": True},
+                        tooltip=_tooltip_cfg(m.log_scale, m.unit, always_visible=True),
                         updatemode="drag",
                         className="dse-range-slider",
                     ),
@@ -349,7 +414,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                             METRIC_BY_KEY["num_qubits"].slider_min,
                             METRIC_BY_KEY["num_qubits"].slider_max,
                         ),
-                        tooltip={"placement": "bottom"},
+                        tooltip=_tooltip_cfg(False, "", always_visible=False),
                         updatemode="drag",
                         className="dse-slider",
                     ),
@@ -374,7 +439,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                                 int(METRIC_BY_KEY["num_cores"].slider_max) + 1,
                             )
                         },
-                        tooltip={"placement": "bottom"},
+                        tooltip=_tooltip_cfg(False, "", always_visible=False),
                         updatemode="drag",
                         className="dse-slider",
                     ),
@@ -510,9 +575,9 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     noise_controls = []
     for m in SWEEPABLE_METRICS:
         marks = (
-            _log_marks(m.slider_min, m.slider_max)
+            _log_marks(m.slider_min, m.slider_max, m.unit)
             if m.log_scale
-            else _linear_marks(m.slider_min, m.slider_max)
+            else _linear_marks(m.slider_min, m.slider_max, unit=m.unit)
         )
         default_val = NOISE_DEFAULTS.get(m.key)
         if default_val is not None:
@@ -533,7 +598,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                         step=(m.slider_max - m.slider_min) / 200,
                         value=default_slider,
                         marks=marks,
-                        tooltip={"placement": "bottom"},
+                        tooltip=_tooltip_cfg(m.log_scale, m.unit),
                         updatemode="drag",
                         className="dse-slider",
                     ),
