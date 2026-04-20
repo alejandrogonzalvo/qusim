@@ -398,13 +398,25 @@ def plot_3d(
     ))
 
     if thresholds:
-        frange = fmax - fmin
-        band = max(frange * 0.05, 0.01)
+        fs_grid = fs_all.reshape(len(x_values), len(y_values), len(z_values))
         for i, t in enumerate(thresholds):
-            near = np.abs(fs_all - t) <= band
+            above = fs_grid >= t
+            crosses = np.zeros_like(above, dtype=bool)
+            if above.shape[0] > 1:
+                diff = above[1:, :, :] ^ above[:-1, :, :]
+                crosses[1:, :, :] |= diff
+                crosses[:-1, :, :] |= diff
+            if above.shape[1] > 1:
+                diff = above[:, 1:, :] ^ above[:, :-1, :]
+                crosses[:, 1:, :] |= diff
+                crosses[:, :-1, :] |= diff
+            if above.shape[2] > 1:
+                diff = above[:, :, 1:] ^ above[:, :, :-1]
+                crosses[:, :, 1:] |= diff
+                crosses[:, :, :-1] |= diff
+            near = crosses.flatten()
             if not near.any():
-                near = np.zeros(len(fs_all), dtype=bool)
-                near[np.argmin(np.abs(fs_all - t))] = True
+                continue
             color = _colors[i % len(_colors)]
             fig.add_trace(go.Scatter3d(
                 x=xs_all[near].tolist(), y=ys_all[near].tolist(), z=zs_all[near].tolist(),

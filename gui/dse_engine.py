@@ -539,10 +539,6 @@ class DSEEngine:
         cold_budget = max_cold if max_cold is not None else MAX_COLD_COMPILATIONS
         hot_budget = max_hot if max_hot is not None else MAX_TOTAL_POINTS_HOT
 
-        if ndim <= 3:
-            n = self._sweep_points(ndim, has_cold)
-            return [n] * ndim
-
         # Separate cold vs hot axes
         cold_indices = []
         hot_indices = []
@@ -697,9 +693,14 @@ class DSEEngine:
         progress_callback: Callable[[SweepProgress], None] | None = None,
         parallel: bool = False,
         max_workers: int | None = None,
+        max_cold: int | None = None,
+        max_hot: int | None = None,
     ) -> tuple[np.ndarray, list]:
         has_cold = self._has_cold(metric_key)
-        n = self._sweep_points(1, has_cold)
+        counts = self._compute_axis_counts(
+            [(metric_key, low, high)], has_cold, max_cold, max_hot,
+        )
+        n = counts[0]
         xs = self._metric_values(metric_key, low, high, n)
         total = len(xs)
 
@@ -735,11 +736,16 @@ class DSEEngine:
         progress_callback: Callable[[SweepProgress], None] | None = None,
         parallel: bool = False,
         max_workers: int | None = None,
+        max_cold: int | None = None,
+        max_hot: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, list]:
         has_cold = self._has_cold(metric_key1, metric_key2)
-        n = self._sweep_points(2, has_cold)
-        xs = self._metric_values(metric_key1, low1, high1, n)
-        ys = self._metric_values(metric_key2, low2, high2, n)
+        counts = self._compute_axis_counts(
+            [(metric_key1, low1, high1), (metric_key2, low2, high2)],
+            has_cold, max_cold, max_hot,
+        )
+        xs = self._metric_values(metric_key1, low1, high1, counts[0])
+        ys = self._metric_values(metric_key2, low2, high2, counts[1])
         total = len(xs) * len(ys)
 
         if parallel and has_cold and cold_config is not None:
@@ -789,12 +795,21 @@ class DSEEngine:
         progress_callback: Callable[[SweepProgress], None] | None = None,
         parallel: bool = False,
         max_workers: int | None = None,
+        max_cold: int | None = None,
+        max_hot: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
         has_cold = self._has_cold(metric_key1, metric_key2, metric_key3)
-        n = self._sweep_points(3, has_cold)
-        xs = self._metric_values(metric_key1, low1, high1, n)
-        ys = self._metric_values(metric_key2, low2, high2, n)
-        zs = self._metric_values(metric_key3, low3, high3, n)
+        counts = self._compute_axis_counts(
+            [
+                (metric_key1, low1, high1),
+                (metric_key2, low2, high2),
+                (metric_key3, low3, high3),
+            ],
+            has_cold, max_cold, max_hot,
+        )
+        xs = self._metric_values(metric_key1, low1, high1, counts[0])
+        ys = self._metric_values(metric_key2, low2, high2, counts[1])
+        zs = self._metric_values(metric_key3, low3, high3, counts[2])
         total = len(xs) * len(ys) * len(zs)
 
         if parallel and has_cold and cold_config is not None:

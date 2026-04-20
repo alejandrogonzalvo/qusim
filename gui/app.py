@@ -893,6 +893,8 @@ def run_sweep(
                 xs, results = _engine.sweep_1d(
                     cached, k0, r0[0], r0[1], fixed_noise, cold_config=cold_config,
                     progress_callback=_update_progress, parallel=True,
+                    max_cold=int(max_cold) if max_cold else None,
+                    max_hot=int(max_hot) if max_hot else None,
                 )
                 sweep_data["xs"] = xs.tolist()
                 sweep_data["grid"] = [_result_to_dict(r) for r in results]
@@ -906,6 +908,8 @@ def run_sweep(
                     fixed_noise,
                     cold_config=cold_config,
                     progress_callback=_update_progress, parallel=True,
+                    max_cold=int(max_cold) if max_cold else None,
+                    max_hot=int(max_hot) if max_hot else None,
                 )
                 sweep_data["xs"] = xs.tolist()
                 sweep_data["ys"] = ys.tolist()
@@ -922,6 +926,8 @@ def run_sweep(
                     fixed_noise,
                     cold_config=cold_config,
                     progress_callback=_update_progress, parallel=True,
+                    max_cold=int(max_cold) if max_cold else None,
+                    max_hot=int(max_hot) if max_hot else None,
                 )
                 sweep_data["xs"] = xs.tolist()
                 sweep_data["ys"] = ys.tolist()
