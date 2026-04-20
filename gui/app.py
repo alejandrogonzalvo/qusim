@@ -362,6 +362,11 @@ def _center_panel() -> html.Div:
                 ],
             ),
             html.Div(
+                id="error-banner",
+                style={"display": "none"},
+                children=[],
+            ),
+            html.Div(
                 id="plot-container",
                 style={
                     "flex": "1",
@@ -697,8 +702,55 @@ def _slider_to_value(slider_pos: float, log_scale: bool) -> float:
 
 _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METRICS]
 
-_NUM_SWEEP_OUTPUTS = 11
+_NUM_SWEEP_OUTPUTS = 13
 _NO_UPDATE_SWEEP = (dash.no_update,) * _NUM_SWEEP_OUTPUTS
+
+
+_ERROR_BANNER_HIDDEN_STYLE = {"display": "none"}
+
+
+def _error_banner_visible_style() -> dict:
+    return {
+        "display": "flex",
+        "alignItems": "flex-start",
+        "gap": "10px",
+        "background": "#FDECEC",
+        "border": "1px solid #E57373",
+        "color": "#8B1A1A",
+        "borderRadius": "6px",
+        "padding": "10px 12px",
+        "margin": "6px 0",
+        "fontSize": "13px",
+        "lineHeight": "1.4",
+        "fontFamily": "Inter, system-ui, sans-serif",
+    }
+
+
+def _build_error_banner_children(title: str, message: str) -> list:
+    return [
+        html.Span("⚠", style={"fontSize": "16px", "lineHeight": "1.2"}),
+        html.Div(
+            style={"flex": "1"},
+            children=[
+                html.Div(title, style={"fontWeight": "600", "marginBottom": "2px"}),
+                html.Div(message, style={"whiteSpace": "pre-wrap"}),
+            ],
+        ),
+        html.Button(
+            "×",
+            id="error-banner-dismiss",
+            n_clicks=0,
+            style={
+                "background": "transparent",
+                "border": "none",
+                "color": "#8B1A1A",
+                "fontSize": "18px",
+                "lineHeight": "1",
+                "cursor": "pointer",
+                "padding": "0 4px",
+            },
+        ),
+    ]
 
 # Clientside: any simulation input change → increment dirty counter
 _SIM_INPUTS = [
@@ -747,6 +799,8 @@ _METRIC_SLIDER_STATES = [State(f"metric-slider-{i}", "value") for i in range(MAX
     Output("frozen-slider", "min"),
     Output("frozen-slider", "max"),
     Output("frozen-slider-label", "children"),
+    Output("error-banner", "children"),
+    Output("error-banner", "style"),
     Input("sweep-trigger", "data"),
     Input("run-btn", "n_clicks"),
     State("sweep-dirty", "data"),
@@ -850,6 +904,8 @@ def run_sweep(
                 dash.no_update,
                 dash.no_update,
                 dash.no_update,
+                [],
+                _ERROR_BANNER_HIDDEN_STYLE,
             )
 
         cold_config = {
@@ -993,15 +1049,24 @@ def run_sweep(
             frozen_min,
             frozen_max,
             frozen_label,
+            [],
+            _ERROR_BANNER_HIDDEN_STYLE,
         )
 
     except Exception as exc:
         import traceback
         traceback.print_exc()
+        # Distinguish expected, user-actionable failures (RuntimeError raised
+        # by the scheduler — e.g. insufficient RAM) from unexpected crashes.
+        if isinstance(exc, RuntimeError):
+            banner_title = "Sweep cancelled"
+        else:
+            banner_title = "Sweep failed"
+        banner_children = _build_error_banner_children(banner_title, str(exc))
         return (
-            plot_empty(f"Error: {exc}"),
+            plot_empty(banner_title),
             None,
-            f"Error: {exc}",
+            banner_title,
             dash.no_update,
             dash.no_update,
             dirty,
@@ -1010,6 +1075,8 @@ def run_sweep(
             dash.no_update,
             dash.no_update,
             dash.no_update,
+            banner_children,
+            _error_banner_visible_style(),
         )
     finally:
         _sweep_progress = {"running": False}
@@ -1031,6 +1098,24 @@ def _count_points(sweep_data: dict) -> int:
     ys = sweep_data.get("ys", [xs])
     zs = sweep_data.get("zs", [xs])
     return len(xs) * len(ys) * len(zs)
+
+
+# ---------------------------------------------------------------------------
+# Callback: dismiss error banner
+# ---------------------------------------------------------------------------
+
+app.clientside_callback(
+    """function(n_clicks) {
+        if (!n_clicks) return window.dash_clientside.no_update;
+        return [[], {display: "none"}];
+    }""",
+    [
+        Output("error-banner", "children", allow_duplicate=True),
+        Output("error-banner", "style", allow_duplicate=True),
+    ],
+    Input("error-banner-dismiss", "n_clicks"),
+    prevent_initial_call=True,
+)
 
 
 # ---------------------------------------------------------------------------

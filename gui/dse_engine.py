@@ -10,6 +10,25 @@ Two-stage execution model:
 
 import sys
 import os
+
+# Cap per-process thread pools BEFORE importing numpy/qiskit/qusim so their
+# Rayon/OpenMP/BLAS pools initialize at 1 thread.  Otherwise each cold-path
+# worker spawns ~34 threads and 8 parallel workers oversubscribe the CPU
+# (272 threads on 16 cores) until the scheduler stalls and Dash's heartbeat
+# times out — which the UI shows as a crash.  Workers use process-level
+# parallelism already, so there is nothing to lose by disabling library
+# threads here.
+for _var in (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "RAYON_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "BLIS_NUM_THREADS",
+):
+    os.environ.setdefault(_var, "1")
+
 import time
 import multiprocessing
 import concurrent.futures
@@ -18,11 +37,41 @@ from typing import Callable, Optional
 
 _MP_CONTEXT = multiprocessing.get_context("forkserver")
 
-# Each cold-path worker process uses ~500MB-2GB depending on qubit count.
-# Conservative estimate used to cap concurrent workers.
-_ESTIMATED_WORKER_MB = 800
 # Minimum free RAM (MB) to keep available for OS + UI + browser
 _RESERVED_RAM_MB = 1024
+
+# Empirical peak RSS (MB) for one cold compilation vs. num_qubits, measured on
+# QFT (densest common circuit) with the forkserver worker used in production.
+# See tests/test_cores_qubits_oom.py for the measurement.
+_EMPIRICAL_COLD_MB: list[tuple[int, float]] = [
+    (4,   150.0),
+    (40,  160.0),
+    (76,  260.0),
+    (112, 450.0),
+    (148, 820.0),
+    (184, 1600.0),
+    (220, 2100.0),
+    (256, 3800.0),
+]
+
+
+def _estimate_cold_mb(num_qubits: int) -> float:
+    """Peak RSS estimate (MB) for one cold compilation at ``num_qubits``.
+
+    Piecewise-linear interpolation over :data:`_EMPIRICAL_COLD_MB`, with
+    linear extrapolation beyond the measured range.
+    """
+    pts = _EMPIRICAL_COLD_MB
+    if num_qubits <= pts[0][0]:
+        return pts[0][1]
+    if num_qubits >= pts[-1][0]:
+        (x1, y1), (x2, y2) = pts[-2], pts[-1]
+        slope = (y2 - y1) / (x2 - x1)
+        return y2 + slope * (num_qubits - x2)
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+        if x1 <= num_qubits <= x2:
+            return y1 + (y2 - y1) * (num_qubits - x1) / (x2 - x1)
+    return pts[-1][1]
 
 import numpy as np
 import qiskit
@@ -612,19 +661,33 @@ class DSEEngine:
         return self.run_hot(cached, hot_noise)
 
     @staticmethod
-    def _max_workers_by_memory() -> int:
-        """Estimate how many cold-path workers fit in available RAM."""
+    def _mem_budget_mb() -> int:
+        """Memory budget (MB) for concurrent cold compilations.
+
+        Reserves the larger of ``_RESERVED_RAM_MB`` (1 GB floor) or 30% of
+        total RAM so the budget scales with the host. Keeping 30% free
+        prevents the swap-thrashing deadlock that can freeze the whole OS
+        when multiple 3+ GB workers run alongside the browser, desktop,
+        and a growing page cache.
+        """
         try:
+            avail_mb = 0
+            total_mb = 0
             with open("/proc/meminfo") as f:
                 for line in f:
                     if line.startswith("MemAvailable:"):
                         avail_mb = int(line.split()[1]) // 1024
-                        usable = max(0, avail_mb - _RESERVED_RAM_MB)
-                        return max(1, usable // _ESTIMATED_WORKER_MB)
+                    elif line.startswith("MemTotal:"):
+                        total_mb = int(line.split()[1]) // 1024
+                    if avail_mb and total_mb:
+                        break
+            if avail_mb and total_mb:
+                reserved = max(_RESERVED_RAM_MB, total_mb * 30 // 100)
+                return max(1, avail_mb - reserved)
         except OSError:
             pass
-        # Fallback: conservative 2 workers when /proc/meminfo unavailable
-        return 2
+        # Fallback: a conservative ~1.6 GB when /proc is unavailable
+        return 2 * 800
 
     def _parallel_cold_sweep(
         self,
@@ -635,15 +698,14 @@ class DSEEngine:
         progress_callback: Callable[[SweepProgress], None] | None,
         max_workers: int | None,
     ) -> dict[tuple, dict]:
-        """Run cold-path sweep points in parallel, grouped by cold-path values.
+        """Run cold-path sweep points with qubit-aware parallel scheduling.
 
-        Each group shares the same cold-path config and is submitted as a single
-        batch to a process pool.  Within a batch the first _eval_point triggers
-        cold compilation; subsequent calls hit the engine's cache.
-
-        Returns a mapping of index_key -> result_dict.
+        Each unique cold config (one (num_qubits, num_cores) combo) becomes one
+        group. The scheduler submits groups to a process pool so that the sum
+        of their estimated peak RSS stays under the memory budget — small
+        groups parallelize aggressively, large-qubit groups serialize. A single
+        oversized group is always allowed to run alone to avoid deadlock.
         """
-        # Group by cold-path values so each batch compiles only once
         groups: dict[tuple, list[tuple[tuple, dict]]] = {}
         for idx_key, swept in indexed_points:
             cold_vals = tuple(sorted(
@@ -651,34 +713,89 @@ class DSEEngine:
             ))
             groups.setdefault(cold_vals, []).append((idx_key, swept))
 
-        # Cap by CPU, memory, and group count — pick the smallest
+        fallback_nq = int(cold_config.get("num_qubits", 16))
+
+        def _group_nq(cv: tuple) -> int:
+            for k, v in cv:
+                if k == "num_qubits":
+                    return int(v)
+            return fallback_nq
+
+        group_cost: dict[tuple, float] = {
+            cv: _estimate_cold_mb(_group_nq(cv)) for cv in groups
+        }
+
         cpu_cap = max(1, (os.cpu_count() or 2) // 2)
-        mem_cap = self._max_workers_by_memory()
-        n_workers = max_workers if max_workers else min(cpu_cap, mem_cap, len(groups))
+        slot_cap = max_workers if max_workers else cpu_cap
+        mem_budget = self._mem_budget_mb()
+
+        # Guard: if even the cheapest group's estimate exceeds the budget by a
+        # wide margin, the run will OOM the worker.  Fail early with a
+        # message the user can act on instead of a BrokenProcessPool crash.
+        if group_cost:
+            min_cost = min(group_cost.values())
+            if min_cost > mem_budget * 1.5:
+                largest_nq = max(_group_nq(cv) for cv in groups)
+                raise RuntimeError(
+                    f"Not enough RAM for this sweep: smallest cold-compile "
+                    f"needs ~{min_cost:.0f} MB, budget is {mem_budget} MB "
+                    f"(largest qubits = {largest_nq}). Reduce max qubits, "
+                    f"close other apps, or lower Max cold compilations."
+                )
+
+        # Schedule largest-first so cheap groups can tuck into the remaining budget.
+        pending = sorted(groups, key=lambda cv: -group_cost[cv])
+        active: dict = {}  # future -> (cold_vals, cost_mb)
         results: dict[tuple, dict] = {}
         completed = 0
 
+        # Recycle workers after a handful of cold compilations to flush
+        # qiskit/BLAS caches that otherwise grow across reused processes
+        # and drift real RSS above the per-job estimate.
         with concurrent.futures.ProcessPoolExecutor(
-            max_workers=n_workers, mp_context=_MP_CONTEXT,
+            max_workers=slot_cap, mp_context=_MP_CONTEXT,
+            max_tasks_per_child=4,
         ) as pool:
-            future_map = {}
-            for cold_vals, group in groups.items():
-                swept_list = [s for _, s in group]
-                future = pool.submit(_eval_cold_batch, cold_config, noise, swept_list)
-                future_map[future] = group
 
-            for future in concurrent.futures.as_completed(future_map):
-                group = future_map[future]
-                batch_results = future.result()
-                for (idx_key, swept), result in zip(group, batch_results):
-                    results[idx_key] = result
-                    completed += 1
-                    if progress_callback is not None:
-                        progress_callback(SweepProgress(
-                            completed=completed,
-                            total=total,
-                            current_params={k: float(v) for k, v in swept.items()},
-                        ))
+            def _submit_fitting() -> None:
+                used = sum(c for _, c in active.values())
+                kept: list[tuple] = []
+                for cv in pending:
+                    cost = group_cost[cv]
+                    if len(active) >= slot_cap:
+                        kept.append(cv)
+                        continue
+                    # Always allow one job when the pool is idle, even if its
+                    # estimate exceeds the budget (otherwise we'd deadlock on
+                    # a single oversized group).
+                    mem_ok = not active or used + cost <= mem_budget
+                    if mem_ok:
+                        swept_list = [s for _, s in groups[cv]]
+                        fut = pool.submit(_eval_cold_batch, cold_config, noise, swept_list)
+                        active[fut] = (cv, cost)
+                        used += cost
+                    else:
+                        kept.append(cv)
+                pending[:] = kept
+
+            _submit_fitting()
+            while active:
+                done, _still = concurrent.futures.wait(
+                    list(active), return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for fut in done:
+                    cv, _cost = active.pop(fut)
+                    batch_results = fut.result()
+                    for (idx_key, swept), result in zip(groups[cv], batch_results):
+                        results[idx_key] = result
+                        completed += 1
+                        if progress_callback is not None:
+                            progress_callback(SweepProgress(
+                                completed=completed,
+                                total=total,
+                                current_params={k: float(v) for k, v in swept.items()},
+                            ))
+                _submit_fitting()
 
         return results
 
