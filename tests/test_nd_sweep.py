@@ -233,6 +233,52 @@ class TestGridPointBudget:
         assert counts[1] > MIN_PTS
         assert counts[2] > MIN_PTS
 
+    def test_raises_when_min_points_exceed_hot_budget(self, engine):
+        """High-D with tight max_hot must raise instead of silently blowing past it.
+
+        9 hot axes + 2 cold axes (cores 1-8, qubits 4-256) at max_cold=512 force
+        3^9 * 176 = 3,464,208 points — 35x over max_hot=100,000. Should raise.
+        """
+        axes = [
+            ("num_cores", 1, 8),
+            ("num_qubits", 4, 256),
+            ("t1", 4, 6),
+            ("t2", 4, 6),
+            ("single_gate_error", -5, -3),
+            ("two_gate_error", -4, -2),
+            ("teleportation_error_per_hop", -3, -1),
+            ("single_gate_time", 1, 3),
+            ("teleportation_time_per_hop", 1, 5),
+            ("readout_mitigation_factor", 0, 1),
+            ("two_gate_time", 1, 4),
+        ]
+        with pytest.raises(RuntimeError, match="Hot budget too tight"):
+            engine._compute_axis_counts(
+                axes, has_cold=True, max_cold=512, max_hot=100_000,
+            )
+
+    def test_generous_hot_budget_does_not_raise(self, engine):
+        """Same sweep with a big-enough hot budget should succeed."""
+        axes = [
+            ("num_cores", 1, 8),
+            ("num_qubits", 4, 256),
+            ("t1", 4, 6),
+            ("t2", 4, 6),
+            ("single_gate_error", -5, -3),
+            ("two_gate_error", -4, -2),
+            ("teleportation_error_per_hop", -3, -1),
+            ("single_gate_time", 1, 3),
+            ("teleportation_time_per_hop", 1, 5),
+            ("readout_mitigation_factor", 0, 1),
+            ("two_gate_time", 1, 4),
+        ]
+        # Big enough hot budget: 3^9 * 176 ≈ 3.46M, round up.
+        counts = engine._compute_axis_counts(
+            axes, has_cold=True, max_cold=512, max_hot=4_000_000,
+        )
+        assert len(counts) == len(axes)
+        assert all(c >= 3 for c in counts)
+
 
 # ---------------------------------------------------------------------------
 # sweep_nd: backward compatibility with 1D/2D/3D

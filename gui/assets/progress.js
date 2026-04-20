@@ -48,6 +48,8 @@
         var completed = data.completed || 0;
         var total = data.total || 0;
         var params = data.current_params || {};
+        var coldDone = data.cold_completed || 0;
+        var coldTotal = data.cold_total || 0;
 
         // Build parameter columns HTML
         var paramKeys = Object.keys(params);
@@ -68,6 +70,18 @@
                     "</div>";
             }
             paramHtml += "</div>";
+        }
+
+        // Cold-compilation counter (only shown when the sweep has cold groups).
+        var coldHtml = "";
+        if (coldTotal > 0) {
+            coldHtml =
+                '<div style="text-align:center;margin-top:10px;font-size:11px;color:#888">' +
+                'Cold compilations: ' +
+                '<span style="font-weight:600;color:#2B2B2B;font-family:\'SF Mono\',\'JetBrains Mono\',monospace">' +
+                coldDone + ' / ' + coldTotal +
+                '</span>' +
+                '</div>';
         }
 
         overlay.style.display = "flex";
@@ -103,6 +117,8 @@
             "</div>" +
             // Parameters
             paramHtml +
+            // Cold compilation counter
+            coldHtml +
             "</div>";
     }
 

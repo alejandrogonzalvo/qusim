@@ -335,6 +335,11 @@ def plot_3d(
     m2 = METRIC_BY_KEY.get(metric_key2)
     m3 = METRIC_BY_KEY.get(metric_key3)
 
+    # Downsample heavy grids so the browser doesn't stall rendering 50k+ markers.
+    x_values, y_values, z_values, grid, _strides = _downsample_grid_3d(
+        np.asarray(x_values), np.asarray(y_values), np.asarray(z_values), grid,
+    )
+
     xs_all, ys_all, zs_all, fs_all = [], [], [], []
 
     for i, x_val in enumerate(x_values):
@@ -462,6 +467,62 @@ def plot_3d(
 
 _MIN_GRID_FOR_ISOSURFACE = 3 * 3 * 3
 
+# Maximum 3D grid points handed to Plotly. Beyond this the browser stalls
+# on JSON parse + WebGL mesh build. The downsampler strides the longest
+# axis first so short axes keep full resolution.
+_MAX_BROWSER_3D_POINTS = 20_000
+
+
+def _downsample_strides_3d(nx: int, ny: int, nz: int, cap: int) -> tuple[int, int, int]:
+    """Pick per-axis strides so ceil(nx/sx)*ceil(ny/sy)*ceil(nz/sz) <= cap.
+
+    Strides the current longest (after-stride) axis until under budget, so
+    small axes keep full resolution.
+    """
+    s = [1, 1, 1]
+    lens = [nx, ny, nz]
+
+    def remaining(i: int) -> int:
+        return (lens[i] + s[i] - 1) // s[i]
+
+    def total() -> int:
+        return remaining(0) * remaining(1) * remaining(2)
+
+    while total() > cap:
+        longest = max(range(3), key=remaining)
+        if remaining(longest) <= 1:
+            break
+        s[longest] += 1
+    return s[0], s[1], s[2]
+
+
+def _downsample_grid_3d(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    z_values: np.ndarray,
+    grid: list,
+    cap: int = _MAX_BROWSER_3D_POINTS,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list, tuple[int, int, int]]:
+    """Return strided axes + grid when total points exceed ``cap``.
+
+    The returned strides are (1, 1, 1) when no downsampling was needed.
+    """
+    nx, ny, nz = len(x_values), len(y_values), len(z_values)
+    if nx * ny * nz <= cap:
+        return x_values, y_values, z_values, grid, (1, 1, 1)
+    sx, sy, sz = _downsample_strides_3d(nx, ny, nz, cap)
+    xs_d = x_values[::sx]
+    ys_d = y_values[::sy]
+    zs_d = z_values[::sz]
+    grid_d = [
+        [
+            [grid[i][j][k] for k in range(0, nz, sz)]
+            for j in range(0, ny, sy)
+        ]
+        for i in range(0, nx, sx)
+    ]
+    return xs_d, ys_d, zs_d, grid_d, (sx, sy, sz)
+
 
 def _flatten_3d_grid(
     x_values: np.ndarray,
@@ -525,6 +586,12 @@ def plot_3d_isosurface(
         return plot_3d(x_values, y_values, z_values, grid,
                        metric_key1, metric_key2, metric_key3, output_key,
                        thresholds=thresholds, threshold_colors=threshold_colors)
+
+    # Downsample when total > cap so Plotly's marching-cubes + WebGL stays
+    # on the main thread for a reasonable time.
+    x_values, y_values, z_values, grid, _strides = _downsample_grid_3d(
+        np.asarray(x_values), np.asarray(y_values), np.asarray(z_values), grid,
+    )
 
     xs, ys, zs, fs, x_title, y_title, z_title = _flatten_3d_grid(
         x_values, y_values, z_values, grid,

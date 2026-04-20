@@ -130,6 +130,60 @@ _engine = DSEEngine()
 sweep_lock = threading.Lock()
 MAX_METRICS = 11  # All sweepable metrics can be swept simultaneously
 
+# ---------------------------------------------------------------------------
+# Server-side sweep cache
+#
+# The browser store (``sweep-result-store``) used to carry the full grid
+# (~12 MB for a 50k-point 3D sweep). Every downstream callback re-parsed that
+# blob on the browser main thread. Instead we keep the full grid server-side
+# and only send the browser a small token + axes metadata; callbacks that
+# need the grid fetch it back via ``_get_sweep``.
+# ---------------------------------------------------------------------------
+
+from collections import OrderedDict
+
+_SWEEP_CACHE: "OrderedDict[str, dict]" = OrderedDict()
+_SWEEP_CACHE_MAX = 3
+_sweep_token_counter = 0
+_sweep_cache_lock = threading.Lock()
+
+
+def _store_sweep(data: dict) -> str:
+    """Stash a full sweep_data dict server-side, return a short token."""
+    global _sweep_token_counter
+    with _sweep_cache_lock:
+        _sweep_token_counter += 1
+        token = f"sweep-{_sweep_token_counter}"
+        _SWEEP_CACHE[token] = data
+        while len(_SWEEP_CACHE) > _SWEEP_CACHE_MAX:
+            _SWEEP_CACHE.popitem(last=False)
+    return token
+
+
+def _get_sweep(browser_store: dict | None) -> dict | None:
+    """Look up the full sweep_data for a browser-side slim record."""
+    if not browser_store:
+        return None
+    token = browser_store.get("token") if isinstance(browser_store, dict) else None
+    if not token:
+        return None
+    with _sweep_cache_lock:
+        return _SWEEP_CACHE.get(token)
+
+
+def _slim_sweep_for_browser(data: dict) -> dict:
+    """Strip the grid, keep axes + metric_keys + token for browser state.
+
+    The axes are small (few hundred floats at most) and several callbacks
+    read them to render UI knobs (frozen slider, shape hints) so we keep
+    them inline.
+    """
+    slim: dict = {"token": _store_sweep(data), "metric_keys": data.get("metric_keys", [])}
+    for k in ("xs", "ys", "zs", "axes", "shape"):
+        if k in data:
+            slim[k] = data[k]
+    return slim
+
 # Shared progress state — written by sweep callback, read by Flask route.
 # Simple dict is safe under the GIL for atomic reads/writes.
 _sweep_progress: dict = {"running": False}
@@ -147,6 +201,8 @@ def _update_progress(p: SweepProgress) -> None:
             METRIC_BY_KEY[k].label if k in METRIC_BY_KEY else k: v
             for k, v in p.current_params.items()
         },
+        "cold_completed": p.cold_completed,
+        "cold_total": p.cold_total,
     }
 
 
@@ -671,6 +727,68 @@ def toggle_noise_rows(*args):
 
 
 # ---------------------------------------------------------------------------
+# Callback: live budget warning
+#
+# Re-runs `_compute_axis_counts` whenever the user changes budgets or axes
+# so they see the budget error BEFORE clicking Run.
+# ---------------------------------------------------------------------------
+
+_BUDGET_WARNING_STYLE = {
+    "background": "#FDECEC",
+    "border": "1px solid #E57373",
+    "color": "#8B1A1A",
+    "borderRadius": "6px",
+    "padding": "8px 10px",
+    "marginTop": "-4px",
+    "marginBottom": "10px",
+    "fontSize": "12px",
+    "lineHeight": "1.4",
+}
+
+
+@app.callback(
+    Output("sweep-budget-warning", "children"),
+    Output("sweep-budget-warning", "style"),
+    Input("cfg-max-cold", "value"),
+    Input("cfg-max-hot", "value"),
+    Input("num-metrics-store", "data"),
+    *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
+    *[Input(f"metric-slider-{i}", "value") for i in range(MAX_METRICS)],
+    prevent_initial_call=False,
+)
+def update_budget_warning(max_cold, max_hot, num_metrics, *dynamic_args):
+    dropdown_vals = dynamic_args[:MAX_METRICS]
+    slider_vals = dynamic_args[MAX_METRICS:]
+    n = int(num_metrics or 1)
+
+    active: list[tuple[str, float, float]] = []
+    seen: set = set()
+    for i in range(n):
+        k = dropdown_vals[i]
+        r = slider_vals[i]
+        if k and r and k not in seen:
+            seen.add(k)
+            active.append((k, float(r[0]), float(r[1])))
+
+    if not active:
+        return [], {"display": "none"}
+
+    has_cold = any(k in _engine.COLD_PATH_KEYS for k, _, _ in active)
+    try:
+        _engine._compute_axis_counts(
+            active, has_cold,
+            max_cold=int(max_cold) if max_cold else None,
+            max_hot=int(max_hot) if max_hot else None,
+        )
+    except RuntimeError as exc:
+        return (
+            [html.Span("⚠ ", style={"fontWeight": "700"}), str(exc)],
+            _BUDGET_WARNING_STYLE,
+        )
+    return [], {"display": "none"}
+
+
+# ---------------------------------------------------------------------------
 # Helper: convert result dict/object to plain JSON-safe dict
 # ---------------------------------------------------------------------------
 
@@ -1037,9 +1155,12 @@ def run_sweep(
             thresholds=thresh,
             threshold_colors=thresh_colors or None,
         )
+        # Send only a small token + axes metadata to the browser; the full
+        # grid lives in ``_SWEEP_CACHE`` and is fetched by downstream callbacks.
+        slim_store = _slim_sweep_for_browser(sweep_data)
         return (
             fig,
-            sweep_data,
+            slim_store,
             status,
             view,
             make_view_tab_bar(len(active), view),
@@ -1147,13 +1268,14 @@ def replot_on_output_change(
     tc2,
     tc3,
     tc4,
-    sweep_data,
+    sweep_store,
     view_type,
     num_thresholds,
 ):
-    if sweep_data is None:
+    full = _get_sweep(sweep_store)
+    if full is None:
         return dash.no_update
-    num_metrics = len(sweep_data.get("metric_keys", []))
+    num_metrics = len(full.get("metric_keys", []))
     n_t = int(num_thresholds or 3)
     all_t = [t0, t1, t2, t3, t4][:n_t]
     all_c = [tc0, tc1, tc2, tc3, tc4][:n_t]
@@ -1164,7 +1286,7 @@ def replot_on_output_change(
         thresh = thresh_vals or None
     return build_figure(
         num_metrics,
-        sweep_data,
+        full,
         output_key or "overall_fidelity",
         view_type=view_type,
         thresholds=thresh,
@@ -1298,7 +1420,7 @@ def _filter_dropdown_options(*args):
 )
 def on_view_tab_click(
     n_clicks_list,
-    sweep_data,
+    sweep_store,
     num_metrics,
     output_key,
     threshold_enable,
@@ -1319,10 +1441,11 @@ def on_view_tab_click(
 
     view_type = ctx.triggered_id["index"]
 
-    if sweep_data is None:
+    full = _get_sweep(sweep_store)
+    if full is None:
         return dash.no_update, view_type, make_view_tab_bar(num_metrics or 1, view_type)
 
-    actual_metrics = len(sweep_data.get("metric_keys", []))
+    actual_metrics = len(full.get("metric_keys", []))
     n_t = int(num_thresholds or 3)
     all_t = [t0, t1, t2, t3, t4][:n_t]
     all_c = [tc0, tc1, tc2, tc3, tc4][:n_t]
@@ -1333,7 +1456,7 @@ def on_view_tab_click(
         thresh = thresh_vals or None
     fig = build_figure(
         actual_metrics,
-        sweep_data,
+        full,
         output_key or "overall_fidelity",
         view_type=view_type,
         thresholds=thresh,
@@ -1353,10 +1476,13 @@ def on_view_tab_click(
     State("sweep-result-store", "data"),
     prevent_initial_call=True,
 )
-def export_csv(n_clicks, sweep_data):
-    if not n_clicks or sweep_data is None:
+def export_csv(n_clicks, sweep_store):
+    if not n_clicks:
         return dash.no_update
-    csv_str = sweep_to_csv(sweep_data)
+    full = _get_sweep(sweep_store)
+    if full is None:
+        return dash.no_update
+    csv_str = sweep_to_csv(full)
     return dict(content=csv_str, filename="dse_sweep.csv", type="text/csv")
 
 

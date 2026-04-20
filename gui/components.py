@@ -567,6 +567,11 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                     "outline": "none",
                 },
             ),
+            html.Div(
+                id="sweep-budget-warning",
+                style={"display": "none"},
+                children=[],
+            ),
         ],
         style={"paddingTop": "8px"},
     )

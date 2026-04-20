@@ -279,6 +279,8 @@ class SweepProgress:
     completed: int
     total: int
     current_params: dict[str, float] = field(default_factory=dict)
+    cold_completed: int = 0
+    cold_total: int = 0
 
     @property
     def percentage(self) -> float:
@@ -628,6 +630,20 @@ class DSEEngine:
 
         if hot_indices:
             n_hot = len(hot_indices)
+            # Per-axis floor × cold_product is the minimum achievable grid.
+            # If even that exceeds the hot budget the sweep will silently blow
+            # past max_hot (3^N grows fast past N≈8). Fail loudly so the user
+            # can raise max_hot or drop axes.
+            min_total = (MIN_POINTS_PER_AXIS ** n_hot) * cold_product
+            if min_total > hot_budget:
+                raise RuntimeError(
+                    f"Hot budget too tight for this sweep: "
+                    f"{n_hot} hot axes at {MIN_POINTS_PER_AXIS} points each × "
+                    f"{cold_product} cold combinations = {min_total:,} points, "
+                    f"but max_hot={hot_budget:,}. "
+                    f"Raise Max hot evaluations to at least {min_total:,}, "
+                    f"reduce dimensions, or lower Max cold compilations."
+                )
             effective_hot_budget = max(1, hot_budget // max(1, cold_product))
             per_hot = max(MIN_POINTS_PER_AXIS, int(effective_hot_budget ** (1.0 / n_hot)))
             # Clamp so total doesn't exceed budget
@@ -748,6 +764,8 @@ class DSEEngine:
         active: dict = {}  # future -> (cold_vals, cost_mb)
         results: dict[tuple, dict] = {}
         completed = 0
+        cold_total = len(groups)
+        cold_completed = 0
 
         # Recycle workers after a handful of cold compilations to flush
         # qiskit/BLAS caches that otherwise grow across reused processes
@@ -786,6 +804,7 @@ class DSEEngine:
                 for fut in done:
                     cv, _cost = active.pop(fut)
                     batch_results = fut.result()
+                    cold_completed += 1
                     for (idx_key, swept), result in zip(groups[cv], batch_results):
                         results[idx_key] = result
                         completed += 1
@@ -794,6 +813,8 @@ class DSEEngine:
                                 completed=completed,
                                 total=total,
                                 current_params={k: float(v) for k, v in swept.items()},
+                                cold_completed=cold_completed,
+                                cold_total=cold_total,
                             ))
                 _submit_fitting()
 
