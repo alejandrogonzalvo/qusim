@@ -3,6 +3,7 @@ pub mod hqa;
 pub mod noise;
 pub mod python_api;
 pub mod routing;
+pub mod telesabre;
 
 #[cfg(test)]
 mod tests {

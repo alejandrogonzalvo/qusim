@@ -26,5 +26,8 @@ harness = false
 name = "noise_benchmark"
 harness = false
 
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

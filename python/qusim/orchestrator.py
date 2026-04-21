@@ -4,7 +4,7 @@ from qiskit.circuit import Instruction
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.dagcircuit import DAGCircuit, DAGOpNode
 from qiskit.transpiler import PassManager, CouplingMap, Layout
-from qiskit.transpiler.passes import SabreSwap, SetLayout
+from qiskit.transpiler.passes import SabreSwap, SetLayout, FullAncillaAllocation, EnlargeWithAncilla, ApplyLayout
 from typing import List
 import numpy as np
 import copy
@@ -232,9 +232,13 @@ class MultiCoreOrchestrator:
             return circ
 
         layout = Layout(self.global_layout_dict)
+        topo = self.core_topologies[core_idx]
         pm = PassManager([
             SetLayout(layout),
-            SabreSwap(coupling_map=self.core_topologies[core_idx], heuristic='basic', seed=42)
+            FullAncillaAllocation(topo),
+            EnlargeWithAncilla(),
+            ApplyLayout(),
+            SabreSwap(coupling_map=topo, heuristic='basic', seed=42),
         ])
 
         try:
@@ -287,7 +291,10 @@ class MultiCoreOrchestrator:
     def _get_sabre_swap_if_present(self, global_circuit: QuantumCircuit, inst, current_layer: int) -> List[int] | None:
         op = inst.operation
         if op.name == 'swap' and not (hasattr(op, 'label') and op.label and 'L' in op.label):
-            q1 = global_circuit.find_bit(inst.qubits[0]).index
-            q2 = global_circuit.find_bit(inst.qubits[1]).index
+            # After ApplyLayout the circuit is physical: qubit indices are physical qubit indices.
+            # global_circuit.find_bit() cannot resolve them (different register), so read the
+            # index directly from the Qubit object instead.
+            q1 = inst.qubits[0]._index if hasattr(inst.qubits[0], '_index') else inst.qubits[0].index
+            q2 = inst.qubits[1]._index if hasattr(inst.qubits[1], '_index') else inst.qubits[1].index
             return [current_layer, q1, q2]
         return None
