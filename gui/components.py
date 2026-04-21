@@ -7,18 +7,14 @@ from dash import dcc, html
 
 from .constants import (
     ANALYSIS_TABS,
-    CIRCUIT_TYPES,
+    CATEGORICAL_METRICS,
     DEFAULT_SWEEP_AXES,
-    INTRACORE_TOPOLOGY_TYPES,
     MAX_COLD_COMPILATIONS,
     MAX_TOTAL_POINTS_HOT,
     METRIC_BY_KEY,
     NOISE_DEFAULTS,
     OUTPUT_METRICS,
-    PLACEMENT_OPTIONS,
-    ROUTING_ALGORITHM_OPTIONS,
     SWEEPABLE_METRICS,
-    TOPOLOGY_TYPES,
     VIEW_TAB_DEFAULTS,
     VIEW_TABS,
 )
@@ -177,8 +173,8 @@ def _tooltip_cfg(log_scale: bool, unit: str, always_visible: bool = False) -> di
 
 def make_metric_selector(index: int) -> html.Div:
     """
-    One sweep metric row: dropdown (choose which param) + range slider.
-    ``index`` is 0-based, supports up to len(SWEEPABLE_METRICS) rows.
+    One sweep metric row: dropdown (choose which param) + range slider (numeric)
+    or checklist (categorical).  ``index`` is 0-based.
     """
     if index < len(DEFAULT_SWEEP_AXES):
         default_key = DEFAULT_SWEEP_AXES[index]
@@ -199,6 +195,8 @@ def make_metric_selector(index: int) -> html.Div:
         if m.log_scale
         else _linear_marks(m.slider_min, m.slider_max, unit=m.unit)
     )
+
+    all_options = [{"label": nm.label, "value": nm.key} for nm in SWEEPABLE_METRICS]
 
     return html.Div(
         id=f"metric-row-{index}",
@@ -245,12 +243,13 @@ def make_metric_selector(index: int) -> html.Div:
             ),
             dcc.Dropdown(
                 id=f"metric-dropdown-{index}",
-                options=[{"label": m.label, "value": m.key} for m in SWEEPABLE_METRICS],
+                options=all_options,
                 value=default_key,
                 clearable=False,
                 style={"marginBottom": "10px"},
                 className="dse-dropdown",
             ),
+            # Numeric slider (shown for numeric metrics)
             html.Div(
                 id=f"metric-slider-container-{index}",
                 children=[
@@ -307,6 +306,80 @@ def make_add_metric_button() -> html.Div:
             },
         ),
         id="add-metric-btn-wrapper",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Categorical section (left sidebar)
+# ---------------------------------------------------------------------------
+
+
+def make_categorical_section() -> html.Div:
+    """Build the 'Categorical' section for the left sidebar.
+
+    Each categorical parameter gets a dropdown + a 'Cmp' compare checkbox.
+    """
+    rows = []
+    for cat in CATEGORICAL_METRICS:
+        rows.append(
+            html.Div(
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "6px",
+                    "marginBottom": "8px",
+                },
+                children=[
+                    html.Div(
+                        cat.label,
+                        style={
+                            "fontSize": "11px",
+                            "color": COLORS["text"],
+                            "minWidth": "70px",
+                            "flexShrink": "0",
+                        },
+                    ),
+                    dcc.Dropdown(
+                        id=f"cat-{cat.key}",
+                        options=cat.options,
+                        value=cat.options[0]["value"],
+                        clearable=False,
+                        className="dse-dropdown",
+                        style={"flex": "1", "minWidth": "0"},
+                    ),
+                    dcc.Checklist(
+                        id=f"cat-compare-{cat.key}",
+                        options=[{"label": "Cmp", "value": "on"}],
+                        value=[],
+                        style={
+                            "fontSize": "10px",
+                            "color": COLORS["text_muted"],
+                            "flexShrink": "0",
+                        },
+                        inputStyle={"marginRight": "2px"},
+                    ),
+                ],
+            )
+        )
+
+    return html.Div(
+        children=[
+            html.Div(
+                "Categorical",
+                style={
+                    "fontSize": "11px",
+                    "fontWeight": "700",
+                    "textTransform": "uppercase",
+                    "letterSpacing": "0.08em",
+                    "color": COLORS["accent"],
+                    "marginBottom": "8px",
+                    "paddingBottom": "6px",
+                    "borderBottom": f"1px solid {COLORS['border']}",
+                    "marginTop": "12px",
+                },
+            ),
+            *rows,
+        ],
     )
 
 
@@ -406,15 +479,6 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     # --- Circuit/Topology tab content ---
     circuit_content = html.Div(
         [
-            _label("Circuit type"),
-            dcc.Dropdown(
-                id="cfg-circuit-type",
-                options=CIRCUIT_TYPES,
-                value="qft",
-                clearable=False,
-                className="dse-dropdown",
-                style={"marginBottom": "10px"},
-            ),
             html.Div(
                 id="cfg-row-num-qubits",
                 style={"display": "none"} if "num_qubits" in swept_keys else {},
@@ -461,42 +525,6 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                     ),
                     html.Div(style={"height": "10px"}),
                 ],
-            ),
-            _label("Inter-core topology"),
-            dcc.Dropdown(
-                id="cfg-topology",
-                options=TOPOLOGY_TYPES,
-                value="ring",
-                clearable=False,
-                className="dse-dropdown",
-                style={"marginBottom": "10px"},
-            ),
-            _label("Intra-core connectivity"),
-            dcc.Dropdown(
-                id="cfg-intracore-topology",
-                options=INTRACORE_TOPOLOGY_TYPES,
-                value="all_to_all",
-                clearable=False,
-                className="dse-dropdown",
-                style={"marginBottom": "10px"},
-            ),
-            _label("Initial placement"),
-            dcc.Dropdown(
-                id="cfg-placement",
-                options=PLACEMENT_OPTIONS,
-                value="random",
-                clearable=False,
-                className="dse-dropdown",
-                style={"marginBottom": "10px"},
-            ),
-            _label("Routing algorithm"),
-            dcc.Dropdown(
-                id="cfg-routing-algorithm",
-                options=ROUTING_ALGORITHM_OPTIONS,
-                value="hqa_sabre",
-                clearable=False,
-                className="dse-dropdown",
-                style={"marginBottom": "10px"},
             ),
             _label("Seed"),
             dcc.Input(
