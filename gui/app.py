@@ -41,6 +41,7 @@ from gui.components import (
 )
 from gui.constants import (
     ANALYSIS_TABS,
+    MAX_SWEEP_AXES,
     METRIC_BY_KEY,
     NOISE_DEFAULTS,
     OUTPUT_METRICS,
@@ -128,7 +129,7 @@ server = app.server
 
 _engine = DSEEngine()
 sweep_lock = threading.Lock()
-MAX_METRICS = 11  # All sweepable metrics can be swept simultaneously
+MAX_METRICS = MAX_SWEEP_AXES  # Alias for the centralised cap
 
 # ---------------------------------------------------------------------------
 # Server-side sweep cache

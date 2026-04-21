@@ -157,6 +157,11 @@ SWEEPABLE_METRICS: List[MetricDef] = [
 
 METRIC_BY_KEY = {m.key: m for m in SWEEPABLE_METRICS}
 
+# Maximum number of axes that can be swept simultaneously.
+# Derived from the registry so adding/removing entries in SWEEPABLE_METRICS
+# automatically updates every consumer (slider rows, callbacks, etc.).
+MAX_SWEEP_AXES = len(SWEEPABLE_METRICS)
+
 DEFAULT_SWEEP_AXES = ["t1", "t2", "two_gate_time"]
 
 # Default scalar noise values shown in the right panel
