@@ -459,11 +459,167 @@ pub fn estimate_hardware_fidelity_batch<'py>(
     Ok(out)
 }
 
+#[pyfunction]
+#[pyo3(signature = (
+    circuit_path,
+    device_path,
+    config_path,
+    single_gate_error = 1e-4,
+    two_gate_error = 1e-3,
+    teleportation_error_per_hop = 1e-2,
+    single_gate_time = 20.0,
+    two_gate_time = 100.0,
+    teleportation_time_per_hop = 1000.0,
+    t1 = 100_000.0,
+    t2 = 50_000.0,
+    single_gate_error_per_qubit = None,
+    two_gate_error_per_pair = None,
+    t1_per_qubit = None,
+    t2_per_qubit = None,
+    gate_error_per_type = None,
+    gate_time_per_type = None,
+    dynamic_decoupling = false,
+    readout_error_per_qubit = None,
+    readout_mitigation_factor = 0.0,
+    classical_link_width = 0,
+    classical_clock_freq_hz = 200e6,
+    classical_routing_cycles = 2
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn telesabre_map_and_estimate<'py>(
+    py: Python<'py>,
+    circuit_path: &str,
+    device_path: &str,
+    config_path: &str,
+    single_gate_error: f64,
+    two_gate_error: f64,
+    teleportation_error_per_hop: f64,
+    single_gate_time: f64,
+    two_gate_time: f64,
+    teleportation_time_per_hop: f64,
+    t1: f64,
+    t2: f64,
+    single_gate_error_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    two_gate_error_per_pair: Option<&Bound<'py, PyDict>>,
+    t1_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    t2_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    gate_error_per_type: Option<&Bound<'py, PyArray1<f64>>>,
+    gate_time_per_type: Option<&Bound<'py, PyArray1<f64>>>,
+    dynamic_decoupling: bool,
+    readout_error_per_qubit: Option<&Bound<'py, PyArray1<f64>>>,
+    readout_mitigation_factor: f64,
+    classical_link_width: u32,
+    classical_clock_freq_hz: f64,
+    classical_routing_cycles: u32,
+) -> PyResult<Bound<'py, PyDict>> {
+    use crate::telesabre::{reconstruct, TeleSabre};
+    use ndarray::Array2;
+
+    // 1. Run TeleSABRE
+    let mut ts = TeleSabre::new(config_path, device_path, circuit_path);
+    let result = ts.run();
+
+    let num_vqubits = result.initial_virt_to_core.len();
+    let total_ts_gates = ((result.num_teledata + result.num_telegate + result.num_swaps) as usize).max(1);
+    let num_layers = total_ts_gates;
+
+    // 2. Reconstruct placements and sparse_swaps from the event log
+    let placements = reconstruct::reconstruct_placements(
+        &result.initial_virt_to_core,
+        &result.teleport_events,
+        total_ts_gates,
+        num_layers,
+    );
+    let sparse_swaps_vec = reconstruct::build_sparse_swaps(
+        &result.swap_events,
+        total_ts_gates,
+        num_layers,
+    );
+
+    // 3. Build empty interaction tensor (circuit structure not available at this level)
+    let edge_list: Vec<[f64; 5]> = vec![];
+    let tensor = crate::circuit::InteractionTensor::from_sparse(&edge_list, num_layers, num_vqubits);
+
+    // 4. Build distance matrix (zero — TeleSABRE handles inter-core routing internally)
+    let max_core = result.initial_virt_to_core.iter().max().copied().unwrap_or(0) as usize + 1;
+    let dist_mat = Array2::<i32>::zeros((max_core, max_core));
+
+    let routing = crate::routing::extract_inter_core_communications(
+        &placements,
+        dist_mat.view(),
+    );
+
+    // 5. Build hardware params and estimate fidelity
+    let params = build_params(
+        single_gate_error, two_gate_error, teleportation_error_per_hop,
+        single_gate_time, two_gate_time, teleportation_time_per_hop,
+        t1, t2,
+        single_gate_error_per_qubit, two_gate_error_per_pair,
+        t1_per_qubit, t2_per_qubit,
+        gate_error_per_type, gate_time_per_type,
+        dynamic_decoupling,
+        readout_error_per_qubit,
+        readout_mitigation_factor,
+        classical_link_width,
+        classical_clock_freq_hz,
+        classical_routing_cycles,
+    )?;
+
+    let sparse_swaps_arr = if sparse_swaps_vec.is_empty() {
+        Array2::<i32>::zeros((0, 3))
+    } else {
+        let flat: Vec<i32> = sparse_swaps_vec.iter().flat_map(|r| r.iter().copied()).collect();
+        Array2::from_shape_vec((sparse_swaps_vec.len(), 3), flat).unwrap()
+    };
+
+    let fidelity = crate::noise::estimate_fidelity(
+        &tensor,
+        &routing,
+        &params,
+        Some(sparse_swaps_arr.view()),
+    );
+
+    // 6. Build output dict
+    let dict = PyDict::new_bound(py);
+    dict.set_item("execution_success", result.success)?;
+    dict.set_item("total_teleportations", result.num_teledata)?;
+    dict.set_item("total_telegate", result.num_telegate)?;
+    dict.set_item("total_swaps", result.num_swaps)?;
+
+    dict.set_item("algorithmic_fidelity", fidelity.algorithmic_fidelity)?;
+    dict.set_item("routing_fidelity", fidelity.routing_fidelity)?;
+    dict.set_item("coherence_fidelity", fidelity.coherence_fidelity)?;
+    dict.set_item("overall_fidelity", fidelity.overall_fidelity)?;
+    dict.set_item("total_circuit_time_ns", fidelity.total_circuit_time)?;
+
+    let algo_grid = Array2::from_shape_vec(
+        (num_layers, num_vqubits),
+        fidelity.algorithmic_fidelity_grid,
+    ).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    dict.set_item("algorithmic_fidelity_grid", algo_grid.into_pyarray_bound(py))?;
+
+    let route_grid = Array2::from_shape_vec(
+        (num_layers, num_vqubits),
+        fidelity.routing_fidelity_grid,
+    ).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    dict.set_item("routing_fidelity_grid", route_grid.into_pyarray_bound(py))?;
+
+    let coh_grid = Array2::from_shape_vec(
+        (num_layers, num_vqubits),
+        fidelity.coherence_fidelity_grid,
+    ).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    dict.set_item("coherence_fidelity_grid", coh_grid.into_pyarray_bound(py))?;
+
+    Ok(dict)
+>>>>>>> 641ad4e (feat: add telesabre_map_and_estimate pyfunction)
+}
+
 /// The core native module compiled by Maturin
 #[pymodule]
 fn rust_core<'py>(_py: Python<'py>, m: &Bound<'py, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(map_and_estimate, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_hardware_fidelity, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_hardware_fidelity_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(telesabre_map_and_estimate, m)?)?;
     Ok(())
 }
