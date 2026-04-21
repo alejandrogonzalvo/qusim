@@ -661,8 +661,44 @@ def plot_3d_isosurface(
 _OUTPUT_KEYS = ["overall_fidelity", "algorithmic_fidelity", "routing_fidelity",
                 "coherence_fidelity", "total_circuit_time_ns", "total_epr_pairs"]
 
+# Maximum rows passed to per-point plot traces (parallel coords, Pareto
+# dominated cloud, slice scatter). Beyond this, we random-sample — both
+# because Plotly/WebGL struggle past a few hundred k markers and because
+# `col.tolist()` on a 100 M-point column builds a ~3 GB Python list.
+_MAX_PLOT_POINTS = 200_000
 
-def _flatten_sweep_to_table(sweep_data: dict) -> tuple[list[str], list[str], list[list[float]]]:
+
+def _downsample_rows(data: np.ndarray, cap: int = _MAX_PLOT_POINTS) -> np.ndarray:
+    """Return ``data`` unchanged if it fits, otherwise a random-sampled view."""
+    if data.shape[0] <= cap:
+        return data
+    rng = np.random.default_rng(0)
+    idx = rng.choice(data.shape[0], size=cap, replace=False)
+    idx.sort()  # preserves axis ordering where possible
+    return data[idx]
+
+
+def _add_sample_annotation(fig: go.Figure, shown: int, total: int) -> None:
+    """Overlay a 'showing X of Y' note on the figure when downsampling was applied."""
+    if shown >= total:
+        return
+    fig.add_annotation(
+        text=f"Showing {shown:,} of {total:,} points (random sample)",
+        xref="paper", yref="paper",
+        x=1.0, y=1.02,
+        xanchor="right", yanchor="bottom",
+        showarrow=False,
+        font=dict(size=10, color=_TEXT_MUTED, family="Inter, system-ui, sans-serif"),
+    )
+
+
+def _flatten_sweep_to_table(sweep_data: dict) -> tuple[list[str], list[str], np.ndarray]:
+    """Flatten a sweep's results into a ``(total_points, ndim + n_outputs)`` matrix.
+
+    Returns ``(metric_keys, available_outputs, data)``. ``data`` is always a
+    numpy float64 array — callers should treat it as such and avoid
+    re-wrapping with ``np.array(...)`` (which would copy).
+    """
     metric_keys = sweep_data["metric_keys"]
     grid = sweep_data["grid"]
     ndim = len(metric_keys)
@@ -674,21 +710,64 @@ def _flatten_sweep_to_table(sweep_data: dict) -> tuple[list[str], list[str], lis
     # Resolve axis values for all dimensions
     axes = _resolve_axes(sweep_data, ndim)
 
-    rows: list[list[float]] = []
+    # Structured numpy grid (N >= 4 production path) → vectorised flatten.
+    # Builds the output matrix directly without allocating per-cell dicts.
+    if isinstance(grid, np.ndarray) and grid.dtype.names:
+        data = _flatten_structured(grid, axes, ndim, available_outputs)
+        return metric_keys, available_outputs, data
 
+    rows: list[list[float]] = []
     if ndim <= 3:
-        # Legacy nested-list format
         _flatten_nested(grid, axes, ndim, available_outputs, rows)
     else:
-        # N >= 4: flat grid list + shape metadata
         shape = tuple(sweep_data.get("shape", [len(ax) for ax in axes]))
         _flatten_nd(grid, axes, shape, ndim, available_outputs, rows)
 
-    return metric_keys, available_outputs, rows
+    if len(rows) == 0:
+        return metric_keys, available_outputs, np.empty(
+            (0, ndim + len(available_outputs)), dtype=np.float64,
+        )
+    return metric_keys, available_outputs, np.asarray(rows, dtype=np.float64)
+
+
+def _flatten_structured(
+    grid: np.ndarray,
+    axes: list,
+    ndim: int,
+    outputs: list[str],
+) -> np.ndarray:
+    """Build the flattened (total, ndim + n_outputs) matrix from a structured grid.
+
+    Vectorised over numpy — no Python loop, no intermediate dict objects.
+    Peak extra memory is the output matrix itself (~N × 16 × 8 B) plus one
+    transient param column at a time (~N × 8 B).
+    """
+    shape = grid.shape
+    total = int(np.prod(shape))
+    n_out = len(outputs)
+    data = np.empty((total, ndim + n_out), dtype=np.float64)
+
+    for d in range(ndim):
+        ax = np.asarray(axes[d], dtype=np.float64)
+        reshape = [1] * ndim
+        reshape[d] = shape[d]
+        data[:, d] = np.broadcast_to(ax.reshape(reshape), shape).ravel()
+
+    for i, k in enumerate(outputs):
+        data[:, ndim + i] = grid[k].ravel().astype(np.float64, copy=False)
+
+    return data
 
 
 def _find_sample(grid, ndim: int) -> dict | None:
-    """Extract one sample result dict from the grid."""
+    """Extract one sample result dict from the grid.
+
+    Supports both the legacy list-of-dicts form and the structured numpy
+    array form; callers only use the returned mapping to discover which
+    output keys are available.
+    """
+    if isinstance(grid, np.ndarray) and grid.dtype.names:
+        return {name: 0.0 for name in grid.dtype.names}
     if not grid:
         return None
     item = grid[0]
@@ -752,10 +831,11 @@ def _flatten_nd(
 def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
-    if not rows:
+    if len(rows) == 0:
         return plot_empty("No data for parallel coordinates")
 
-    data = np.array(rows)
+    full_rows = rows.shape[0]
+    data = _downsample_rows(rows)  # Parcoords + col.tolist() OOMs past ~1M
     num_param_cols = len(metric_keys)
 
     # Only show swept parameters + the selected output metric (not all outputs).
@@ -826,6 +906,7 @@ def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
     fig.update_layout(
         **{**_LAYOUT_BASE, "margin": dict(l=lr_margin, r=lr_margin, t=50, b=40)},
     )
+    _add_sample_annotation(fig, data.shape[0], full_rows)
     return fig
 
 
@@ -836,10 +917,11 @@ def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
 def plot_slice(sweep_data: dict, output_key: str) -> go.Figure:
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
-    if not rows:
+    if len(rows) == 0:
         return plot_empty("No data for slice plot")
 
-    data = np.array(rows)
+    full_rows = rows.shape[0]
+    data = _downsample_rows(rows)  # slice filters + scatter per axis
     num_params = len(metric_keys)
     out_col = num_params + available_outputs.index(output_key) if output_key in available_outputs else num_params
 
@@ -903,6 +985,7 @@ def plot_slice(sweep_data: dict, output_key: str) -> go.Figure:
     if is_fidelity:
         fig.update_yaxes(title_text=_OUTPUT_LABELS.get(output_key, output_key), row=1, col=1)
 
+    _add_sample_annotation(fig, data.shape[0], full_rows)
     return fig
 
 
@@ -913,10 +996,10 @@ def plot_slice(sweep_data: dict, output_key: str) -> go.Figure:
 def plot_importance(sweep_data: dict, output_key: str) -> go.Figure:
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
-    if not rows:
+    if len(rows) == 0:
         return plot_empty("No data for importance plot")
 
-    data = np.array(rows)
+    data = rows  # already an ndarray from _flatten_sweep_to_table
     num_params = len(metric_keys)
     out_col = num_params + available_outputs.index(output_key) if output_key in available_outputs else num_params
 
@@ -970,10 +1053,10 @@ def plot_pareto(sweep_data: dict, output_key: str, thresholds: list[float] | Non
                 threshold_colors: list[str] | None = None) -> go.Figure:
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
-    if not rows:
+    if len(rows) == 0:
         return plot_empty("No data for Pareto plot")
 
-    data = np.array(rows)
+    data = rows  # already an ndarray from _flatten_sweep_to_table
     num_params = len(metric_keys)
 
     fid_col = num_params + available_outputs.index("overall_fidelity") if "overall_fidelity" in available_outputs else None
@@ -1019,11 +1102,20 @@ def plot_pareto(sweep_data: dict, output_key: str, thresholds: list[float] | Non
 
     dominated_mask = ~is_pareto
     # Scattergl for the (typically very large) dominated cloud — WebGL
-    # scales to 100k markers; plain Scatter (SVG) freezes the browser past
-    # a few thousand.
+    # scales to ~100 k markers; plain Scatter (SVG) freezes the browser
+    # past a few thousand. The Pareto front itself is computed on the full
+    # grid above; we only sample the cloud display.
+    dom_x = epr[dominated_mask]
+    dom_y = fidelity[dominated_mask]
+    dom_full = dom_x.size
+    if dom_x.size > _MAX_PLOT_POINTS:
+        rng = np.random.default_rng(0)
+        sample = rng.choice(dom_x.size, size=_MAX_PLOT_POINTS, replace=False)
+        dom_x = dom_x[sample]
+        dom_y = dom_y[sample]
     fig.add_trace(
         go.Scattergl(
-            x=epr[dominated_mask], y=fidelity[dominated_mask],
+            x=dom_x, y=dom_y,
             mode="markers",
             marker=dict(size=5, color="#CCCCCC", opacity=0.5),
             name="Dominated",
@@ -1070,6 +1162,8 @@ def plot_pareto(sweep_data: dict, output_key: str, thresholds: list[float] | Non
                 line=dict(color=_colors[i % len(_colors)], width=1.5, dash="dash"),
             )
 
+    # Front is exact; only the dominated cloud is sampled for display.
+    _add_sample_annotation(fig, dom_x.size, dom_full)
     return fig
 
 
@@ -1099,10 +1193,10 @@ def _spearman_corr(x: np.ndarray, y: np.ndarray) -> float:
 def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
-    if not rows:
+    if len(rows) == 0:
         return plot_empty("No data for correlation matrix")
 
-    data = np.array(rows)
+    data = rows  # already an ndarray from _flatten_sweep_to_table
     col_names = metric_keys + available_outputs
     labels = []
     for name in col_names:

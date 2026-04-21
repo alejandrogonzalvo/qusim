@@ -36,9 +36,20 @@ _SCALAR_KEYS = {
 }
 
 
-def _assert_results_close(a: dict, b: dict, tol: float = 1e-10):
-    """Compare scalar metric keys shared between two result dicts."""
-    common = _SCALAR_KEYS & set(a.keys()) & set(b.keys())
+def _cell_keys(cell) -> set:
+    """Return the scalar field names of a sweep-grid cell (dict or numpy.void)."""
+    if isinstance(cell, np.void):
+        return set(cell.dtype.names)
+    return set(cell.keys())
+
+
+def _assert_results_close(a, b, tol: float = 1e-10):
+    """Compare scalar metric keys shared between two result cells.
+
+    Accepts dicts or ``numpy.void`` rows — the sweep grid returns the
+    latter since the structured-array migration.
+    """
+    common = _SCALAR_KEYS & _cell_keys(a) & _cell_keys(b)
     assert len(common) > 0, "No common scalar keys to compare"
     for key in common:
         va, vb = a[key], b[key]
@@ -280,6 +291,62 @@ class TestGridPointBudget:
         assert all(c >= 3 for c in counts)
 
 
+class TestMemoryCappedMaxHot:
+    """`_memory_capped_max_hot` clamps user `max_hot` to what RAM can hold.
+
+    Sweep results are held as a numpy object grid of Python dicts. At
+    ~kB-per-cell, a 100M-point grid exceeds RAM on common hardware and
+    OOM-kills the process. The cap converts an unusable-but-requested
+    budget into a bounded, reportable number so the "hot budget too tight"
+    error surfaces instead of a kernel OOM.
+    """
+
+    def test_cap_leaves_small_budgets_untouched(self, engine):
+        effective, requested = engine._memory_capped_max_hot(10_000)
+        assert effective == 10_000
+        assert requested == 10_000
+
+    def test_cap_clamps_oversized_budget(self, engine, monkeypatch):
+        from gui import dse_engine
+
+        monkeypatch.setattr(dse_engine, "_max_hot_points_for_memory", lambda: 500_000)
+        effective, requested = engine._memory_capped_max_hot(100_000_000)
+        assert requested == 100_000_000
+        assert effective == 500_000
+
+    def test_cap_uses_default_when_none(self, engine, monkeypatch):
+        from gui import dse_engine
+
+        monkeypatch.setattr(dse_engine, "_max_hot_points_for_memory", lambda: 500_000)
+        effective, requested = engine._memory_capped_max_hot(None)
+        # Default MAX_TOTAL_POINTS_HOT is 50k, below the 500k cap → untouched.
+        assert requested == MAX_TOTAL_POINTS_HOT
+        assert effective == MAX_TOTAL_POINTS_HOT
+
+    def test_sweep_nd_reports_memory_cap_in_error(self, engine, cold_config, fixed_noise, monkeypatch):
+        """When RAM caps hot_budget below the sweep's min_total, the error
+        must cite the memory cap so the user understands why their
+        configured max_hot didn't apply."""
+        from gui import dse_engine
+
+        monkeypatch.setattr(dse_engine, "_max_hot_points_for_memory", lambda: 10_000)
+
+        with pytest.raises(RuntimeError, match="Memory cap"):
+            engine.sweep_nd(
+                cached=None,
+                sweep_axes=[
+                    ("t1", 4, 6), ("t2", 4, 6),
+                    ("single_gate_error", -5, -3), ("two_gate_error", -4, -2),
+                    ("single_gate_time", 1, 3), ("two_gate_time", 1, 3),
+                    ("teleportation_error_per_hop", -3, -1),
+                    ("teleportation_time_per_hop", 1, 5),
+                    ("readout_mitigation_factor", 0, 1),
+                ],
+                fixed_noise=fixed_noise,
+                max_hot=100_000_000,
+            )
+
+
 # ---------------------------------------------------------------------------
 # sweep_nd: backward compatibility with 1D/2D/3D
 # ---------------------------------------------------------------------------
@@ -375,7 +442,7 @@ class TestSweepNdHigherDimensions:
         assert result.total_points == np.prod([len(ax) for ax in result.axes])
         # Every point should have a valid fidelity
         for idx in np.ndindex(result.shape):
-            assert "overall_fidelity" in result.grid[idx]
+            assert "overall_fidelity" in _cell_keys(result.grid[idx])
             assert 0.0 <= result.grid[idx]["overall_fidelity"] <= 1.0
 
     def test_5d_hot_sweep(self, engine, cold_config, fixed_noise):
@@ -396,7 +463,7 @@ class TestSweepNdHigherDimensions:
         assert result.ndim == 5
         assert result.total_points <= MAX_TOTAL_POINTS_HOT
         for idx in np.ndindex(result.shape):
-            assert "overall_fidelity" in result.grid[idx]
+            assert "overall_fidelity" in _cell_keys(result.grid[idx])
 
     def test_4d_with_cold_axis(self, engine, cold_config, fixed_noise):
         """4D sweep with num_cores as one cold axis."""
@@ -423,7 +490,7 @@ class TestSweepNdHigherDimensions:
         from gui.constants import MAX_COLD_COMPILATIONS
         assert len(result.axes[0]) <= MAX_COLD_COMPILATIONS
         for idx in np.ndindex(result.shape):
-            assert "overall_fidelity" in result.grid[idx]
+            assert "overall_fidelity" in _cell_keys(result.grid[idx])
 
     def test_progress_callback_nd(self, engine, cold_config, fixed_noise):
         """Progress callback fires for every point in N-D sweep."""

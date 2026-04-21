@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 from gui.components import (
     COLORS,
+    FEEDBACK_COLORS,
     _linear_marks,
     _log_marks,
     _tooltip_cfg,
@@ -734,17 +735,25 @@ def toggle_noise_rows(*args):
 # so they see the budget error BEFORE clicking Run.
 # ---------------------------------------------------------------------------
 
-_BUDGET_WARNING_STYLE = {
-    "background": "#FDECEC",
-    "border": "1px solid #E57373",
-    "color": "#8B1A1A",
-    "borderRadius": "6px",
-    "padding": "8px 10px",
-    "marginTop": "-4px",
-    "marginBottom": "10px",
-    "fontSize": "12px",
-    "lineHeight": "1.4",
-}
+def _feedback_style(kind: str) -> dict:
+    """Inline banner style driven by the shared FEEDBACK_COLORS palette."""
+    palette = FEEDBACK_COLORS[kind]
+    return {
+        "background": palette["bg"],
+        "border": f"1px solid {palette['border']}",
+        "color": palette["text"],
+        "borderRadius": "6px",
+        "padding": "8px 10px",
+        "marginTop": "-4px",
+        "marginBottom": "10px",
+        "fontSize": "12px",
+        "lineHeight": "1.4",
+    }
+
+
+_BUDGET_WARNING_STYLE = _feedback_style("error")
+# Softer amber style for an advisory (memory-cap) that doesn't block the run.
+_BUDGET_INFO_STYLE = _feedback_style("warning")
 
 
 @app.callback(
@@ -775,16 +784,38 @@ def update_budget_warning(max_cold, max_hot, num_metrics, *dynamic_args):
         return [], {"display": "none"}
 
     has_cold = any(k in _engine.COLD_PATH_KEYS for k, _, _ in active)
+    max_hot_int = int(max_hot) if max_hot else None
+    effective_max_hot, requested_max_hot = _engine._memory_capped_max_hot(max_hot_int)
+    mem_capped = effective_max_hot < requested_max_hot
+
     try:
         _engine._compute_axis_counts(
             active, has_cold,
             max_cold=int(max_cold) if max_cold else None,
-            max_hot=int(max_hot) if max_hot else None,
+            max_hot=effective_max_hot,
         )
     except RuntimeError as exc:
+        msg = str(exc)
+        if mem_capped:
+            msg = (
+                f"{msg} Memory cap: hot budget reduced from requested "
+                f"{requested_max_hot:,} to {effective_max_hot:,} to fit in "
+                f"available RAM."
+            )
         return (
-            [html.Span("⚠ ", style={"fontWeight": "700"}), str(exc)],
+            [html.Span("⚠ ", style={"fontWeight": "700"}), msg],
             _BUDGET_WARNING_STYLE,
+        )
+
+    if mem_capped:
+        return (
+            [
+                html.Span("ℹ ", style={"fontWeight": "700"}),
+                f"Max hot evaluations capped to {effective_max_hot:,} "
+                f"(from {requested_max_hot:,}) to fit in available RAM. "
+                f"Close other apps or reduce the value to silence this.",
+            ],
+            _BUDGET_INFO_STYLE,
         )
     return [], {"display": "none"}
 
@@ -829,13 +860,14 @@ _ERROR_BANNER_HIDDEN_STYLE = {"display": "none"}
 
 
 def _error_banner_visible_style() -> dict:
+    palette = FEEDBACK_COLORS["error"]
     return {
         "display": "flex",
         "alignItems": "flex-start",
         "gap": "10px",
-        "background": "#FDECEC",
-        "border": "1px solid #E57373",
-        "color": "#8B1A1A",
+        "background": palette["bg"],
+        "border": f"1px solid {palette['border']}",
+        "color": palette["text"],
         "borderRadius": "6px",
         "padding": "10px 12px",
         "margin": "6px 0",
@@ -862,7 +894,7 @@ def _build_error_banner_children(title: str, message: str) -> list:
             style={
                 "background": "transparent",
                 "border": "none",
-                "color": "#8B1A1A",
+                "color": FEEDBACK_COLORS["error"]["text"],
                 "fontSize": "18px",
                 "lineHeight": "1",
                 "cursor": "pointer",

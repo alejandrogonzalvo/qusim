@@ -36,6 +36,21 @@ COLORS = {
     "text_muted": "#888888",
 }
 
+# Banner / inline feedback palettes. Each entry carries its own bg / border /
+# text triple so consumers don't have to recombine the pieces ad-hoc.
+FEEDBACK_COLORS = {
+    "error": {
+        "bg": "#FDECEC",
+        "border": "#E57373",
+        "text": "#8B1A1A",
+    },
+    "warning": {
+        "bg": "#FFF7E6",
+        "border": "#F0B955",
+        "text": "#8A5A00",
+    },
+}
+
 CARD_STYLE = {
     "background": COLORS["surface"],
     "border": f"1px solid {COLORS['border']}",

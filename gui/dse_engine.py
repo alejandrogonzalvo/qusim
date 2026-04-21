@@ -33,7 +33,7 @@ import time
 import multiprocessing
 import concurrent.futures
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 _MP_CONTEXT = multiprocessing.get_context("forkserver")
 
@@ -53,6 +53,44 @@ _EMPIRICAL_COLD_MB: list[tuple[int, float]] = [
     (220, 2100.0),
     (256, 3800.0),
 ]
+
+
+# Peak memory per hot-path grid cell. The sweep grid is a structured numpy
+# array of ``_RESULT_DTYPE``: 7 × float64 = 56 B per cell, flat in memory
+# (no per-cell Python overhead). 128 B keeps a ~2x safety margin for the
+# transient noise-dict / chunk buffers the sweep holds alongside the grid.
+_BYTES_PER_HOT_POINT = 128
+
+# Reserved headroom for OS + browser + UI when computing the hot-path
+# ceiling. Larger than ``_RESERVED_RAM_MB`` (cold path) because the main
+# process — not a short-lived worker — is the one that has to hold the
+# full result grid for the lifetime of the plot.
+_RESERVED_RAM_MB_HOT = 3072
+
+
+def _max_hot_points_for_memory() -> int:
+    """Maximum hot-path grid size that fits in currently available RAM.
+
+    Sweep results live in a numpy object grid of Python dicts until the
+    plot is rendered. Exceeding ``MemAvailable`` gets the process
+    OOM-killed by the kernel, which surfaces in the UI as a "crash".
+    Returning a conservative ceiling lets :meth:`DSEEngine.sweep_nd` clamp
+    a user-requested ``max_hot`` below the danger zone — the sweep then
+    either fits, or fails loudly with the usual "hot budget too tight"
+    guard. Either way, the process stays alive.
+    """
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    avail_mb = int(line.split()[1]) // 1024
+                    break
+            else:
+                return 1_000_000
+    except OSError:
+        return 1_000_000
+    budget_bytes = max(0, avail_mb - _RESERVED_RAM_MB_HOT) * 1024 * 1024
+    return max(10_000, budget_bytes // _BYTES_PER_HOT_POINT)
 
 
 def _estimate_cold_mb(num_qubits: int) -> float:
@@ -254,6 +292,47 @@ def _merge_noise(overrides: dict) -> dict:
     return {**NOISE_DEFAULTS, **overrides}
 
 
+# Scalar result fields kept in the N-D sweep grid. The per-qubit ``*_grid``
+# ndarrays produced by the Rust hot path are read only for single-point
+# inspection (benchmarks, per-qubit heatmap), never from the sweep grid, so
+# carrying them into every cell is pure dead weight — at 64 qubits each cell
+# would otherwise cost ~96 KB instead of a few hundred bytes.
+_RESULT_SCALAR_KEYS: tuple[str, ...] = (
+    "overall_fidelity",
+    "algorithmic_fidelity",
+    "routing_fidelity",
+    "coherence_fidelity",
+    "readout_fidelity",
+    "total_circuit_time_ns",
+    "total_epr_pairs",
+)
+
+# Structured dtype for the sweep grid. One float64 field per scalar output
+# replaces the Python-dict cell, cutting per-cell cost from ~280 B (dict
+# overhead dominates) to 7 × 8 B = 56 B + an 8 B numpy slot ≈ 64 B.
+_RESULT_DTYPE = np.dtype([(k, np.float64) for k in _RESULT_SCALAR_KEYS])
+
+
+def _strip_for_grid(result: dict) -> dict:
+    """Return a new dict containing only the scalar fields stored per cell."""
+    return {k: result[k] for k in _RESULT_SCALAR_KEYS if k in result}
+
+
+def _result_to_row(result: dict) -> tuple:
+    """Pack a stripped result dict into the tuple order of ``_RESULT_DTYPE``."""
+    return tuple(result.get(k, 0.0) for k in _RESULT_SCALAR_KEYS)
+
+
+def _row_to_dict(row) -> dict:
+    """Unpack a structured-array cell (numpy.void) into a plain dict.
+
+    Leaves plain dicts untouched so legacy 1–3 D sweep paths keep working.
+    """
+    if isinstance(row, np.void):
+        return {k: float(row[k]) for k in row.dtype.names}
+    return row
+
+
 def _make_gate_arrays(gate_names: list, noise: dict) -> tuple[np.ndarray, np.ndarray]:
     """Build gate_error_arr and gate_time_arr from gate_names and scalar noise params."""
     VIRTUAL = {"rz", "id", "delay", "barrier", "measure"}
@@ -295,17 +374,19 @@ class SweepProgress:
 
 @dataclass
 class SweepResult:
-    """N-dimensional sweep result with numpy object grid.
+    """N-dimensional sweep result with a compact structured-array grid.
 
     Attributes:
         metric_keys: Names of the swept parameters.
         axes: One array of sample values per swept parameter.
-        grid: numpy object array of shape (len(axes[0]), ..., len(axes[N-1])),
-              each element is a result dict.
+        grid: numpy structured array of shape (len(axes[0]), ..., len(axes[N-1]))
+              with dtype ``_RESULT_DTYPE``. Each cell is a ``numpy.void`` row
+              holding the scalar result fields. ``to_sweep_data`` converts
+              cells back to plain dicts for the browser payload.
     """
     metric_keys: list[str]
     axes: list[np.ndarray]
-    grid: np.ndarray  # dtype=object, shape matches axis lengths
+    grid: np.ndarray  # dtype=_RESULT_DTYPE, shape matches axis lengths
 
     @property
     def ndim(self) -> int:
@@ -335,24 +416,36 @@ class SweepResult:
         if n >= 3:
             sd["zs"] = self.axes[2].tolist()
 
+        # Convert structured rows back to plain dicts at the browser
+        # boundary; plotting/interpolation consume the dict form.
+        cell = _row_to_dict
+
         if n == 1:
-            sd["grid"] = [self.grid[i] for i in range(len(self.axes[0]))]
+            sd["grid"] = [cell(self.grid[i]) for i in range(len(self.axes[0]))]
         elif n == 2:
             sd["grid"] = [
-                [self.grid[i, j] for j in range(len(self.axes[1]))]
+                [cell(self.grid[i, j]) for j in range(len(self.axes[1]))]
                 for i in range(len(self.axes[0]))
             ]
         elif n == 3:
             sd["grid"] = [
-                [[self.grid[i, j, k] for k in range(len(self.axes[2]))]
+                [[cell(self.grid[i, j, k]) for k in range(len(self.axes[2]))]
                  for j in range(len(self.axes[1]))]
                 for i in range(len(self.axes[0]))
             ]
         else:
-            # N >= 4: flat list + shape metadata + axes
+            # N >= 4: keep the structured grid in place. Flattening to a
+            # list of 85M+ dicts used to allocate ~24 GB transiently and
+            # OOM-killed the process right before plotting. The plotting
+            # and CSV paths vectorise over the structured array directly.
             sd["axes"] = [ax.tolist() for ax in self.axes]
             sd["shape"] = self.shape
-            sd["grid"] = [self.grid[idx] for idx in np.ndindex(self.shape)]
+            if self.grid.dtype.names:
+                sd["grid"] = self.grid
+            else:
+                # Legacy object-dtype grids (test fixtures) still need the
+                # flat dict-list form; callers rely on ``for r in grid``.
+                sd["grid"] = [cell(v) for v in self.grid.ravel()]
 
         return sd
 
@@ -532,7 +625,10 @@ class DSEEngine:
             )
             for r in chunk_results:
                 r["total_epr_pairs"] = cached.total_epr_pairs
-            all_results.extend(chunk_results)
+            # Strip per-qubit ``*_grid`` ndarrays before they cross the
+            # process-pool pickle boundary or enter the sweep grid. The
+            # sweep UI never reads them back.
+            all_results.extend(_strip_for_grid(r) for r in chunk_results)
 
         return all_results
 
@@ -540,6 +636,17 @@ class DSEEngine:
 
     COLD_PATH_KEYS = frozenset({"num_qubits", "num_cores"})
     INTEGER_KEYS = frozenset({"num_qubits", "num_cores", "classical_link_width", "classical_routing_cycles"})
+
+    def _memory_capped_max_hot(self, max_hot: int | None) -> tuple[int, int]:
+        """Clamp a requested ``max_hot`` to what current RAM can hold.
+
+        Returns ``(effective, requested)`` so callers can report when the
+        cap kicked in. ``requested`` mirrors the user's configured value
+        (or the registry default when ``None``); ``effective`` is the
+        value the sweep should actually respect.
+        """
+        requested = max_hot if max_hot is not None else MAX_TOTAL_POINTS_HOT
+        return min(requested, _max_hot_points_for_memory()), requested
 
     def _metric_values(self, metric_key: str, low: float, high: float, n: int) -> np.ndarray:
         m = METRIC_BY_KEY[metric_key]
@@ -664,7 +771,12 @@ class DSEEngine:
         noise: dict,
         swept: dict[str, float],
     ) -> dict:
-        """Evaluate a single design point, re-running cold path if needed."""
+        """Evaluate a single design point, re-running cold path if needed.
+
+        Returns the scalar-only result dict destined for the sweep grid; the
+        per-qubit ``*_grid`` ndarrays are dropped here (see
+        ``_strip_for_grid``).
+        """
         cfg = dict(cold_config)
         hot_noise = dict(noise)
         for k, v in swept.items():
@@ -674,7 +786,7 @@ class DSEEngine:
                 hot_noise[k] = v
         cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
         cached = self.run_cold(**cfg, noise=hot_noise)
-        return self.run_hot(cached, hot_noise)
+        return _strip_for_grid(self.run_hot(cached, hot_noise))
 
     @staticmethod
     def _mem_budget_mb() -> int:
@@ -709,7 +821,7 @@ class DSEEngine:
         self,
         cold_config: dict,
         noise: dict,
-        indexed_points: list[tuple[tuple, dict]],
+        indexed_points: Iterable[tuple[tuple, dict]],
         total: int,
         progress_callback: Callable[[SweepProgress], None] | None,
         max_workers: int | None,
@@ -855,7 +967,7 @@ class DSEEngine:
                 results.append(self._eval_point(cold_config, fixed_noise, {metric_key: v}))
             else:
                 noise = {**fixed_noise, metric_key: v}
-                results.append(self.run_hot(cached, noise))
+                results.append(_strip_for_grid(self.run_hot(cached, noise)))
             if progress_callback is not None:
                 progress_callback(SweepProgress(
                     completed=i + 1,
@@ -908,7 +1020,7 @@ class DSEEngine:
                     row.append(self._eval_point(cold_config, fixed_noise, swept))
                 else:
                     noise = {**fixed_noise, **swept}
-                    row.append(self.run_hot(cached, noise))
+                    row.append(_strip_for_grid(self.run_hot(cached, noise)))
                 count += 1
                 if progress_callback is not None:
                     progress_callback(SweepProgress(
@@ -978,7 +1090,7 @@ class DSEEngine:
                         row_list.append(self._eval_point(cold_config, fixed_noise, swept))
                     else:
                         noise = {**fixed_noise, **swept}
-                        row_list.append(self.run_hot(cached, noise))
+                        row_list.append(_strip_for_grid(self.run_hot(cached, noise)))
                     count += 1
                     if progress_callback is not None:
                         progress_callback(SweepProgress(
@@ -1016,12 +1128,28 @@ class DSEEngine:
         max_cold : override for cold compilation budget
         max_hot : override for total hot-path point budget
         """
-        import itertools
+        from itertools import islice
 
         ndim = len(sweep_axes)
         keys = [k for k, _, _ in sweep_axes]
         has_cold = self._has_cold(*keys)
-        axis_counts = self._compute_axis_counts(sweep_axes, has_cold, max_cold, max_hot)
+
+        # Clamp user-requested max_hot to what RAM can hold before computing
+        # per-axis counts. Without this, an oversized budget silently
+        # produces a grid the kernel OOM-kills mid-sweep.
+        effective_max_hot, requested_max_hot = self._memory_capped_max_hot(max_hot)
+        try:
+            axis_counts = self._compute_axis_counts(
+                sweep_axes, has_cold, max_cold, effective_max_hot,
+            )
+        except RuntimeError as e:
+            if effective_max_hot < requested_max_hot:
+                raise RuntimeError(
+                    f"{e} Memory cap: hot budget reduced from requested "
+                    f"{requested_max_hot:,} to {effective_max_hot:,} to fit in "
+                    f"available RAM."
+                ) from e
+            raise
 
         axes = [
             self._metric_values(k, lo, hi, axis_counts[i])
@@ -1030,23 +1158,29 @@ class DSEEngine:
         shape = tuple(len(ax) for ax in axes)
         total = int(np.prod(shape))
 
-        grid = np.empty(shape, dtype=object)
+        grid = np.empty(shape, dtype=_RESULT_DTYPE)
 
         if parallel and has_cold and cold_config is not None:
-            indexed = []
-            for idx in np.ndindex(shape):
-                swept = {keys[d]: float(axes[d][idx[d]]) for d in range(ndim)}
-                indexed.append((idx, swept))
+            # Stream (idx, swept) as a generator so the scheduler's group
+            # dict is the only O(total) allocation; the temporary list of
+            # tuples that used to live alongside it is gone.
+            def _indexed_iter():
+                for idx in np.ndindex(shape):
+                    yield idx, {keys[d]: float(axes[d][idx[d]]) for d in range(ndim)}
+
             rmap = self._parallel_cold_sweep(
-                cold_config, fixed_noise, indexed, total, progress_callback, max_workers,
+                cold_config, fixed_noise, _indexed_iter(), total,
+                progress_callback, max_workers,
             )
             for idx in np.ndindex(shape):
-                grid[idx] = rmap[idx]
+                grid[idx] = _result_to_row(rmap[idx])
         elif has_cold and cold_config is not None:
             count = 0
             for idx in np.ndindex(shape):
                 swept = {keys[d]: float(axes[d][idx[d]]) for d in range(ndim)}
-                grid[idx] = self._eval_point(cold_config, fixed_noise, swept)
+                grid[idx] = _result_to_row(
+                    self._eval_point(cold_config, fixed_noise, swept)
+                )
                 count += 1
                 if progress_callback is not None:
                     progress_callback(SweepProgress(
@@ -1055,11 +1189,16 @@ class DSEEngine:
                         current_params={k: float(v) for k, v in swept.items()},
                     ))
         else:
-            # Pure hot-path: chunk to bound memory
-            indices = list(np.ndindex(shape))
+            # Pure hot-path: stream indices in chunks. Materialising the
+            # full list(np.ndindex(shape)) allocates ~40 B × total tuples
+            # (~1.2 GB per 30 M-point sweep) on top of the result grid and
+            # is enough to push the process to OOM on its own.
+            index_iter = iter(np.ndindex(shape))
             completed = 0
-            for chunk_start in range(0, len(indices), self._HOT_BATCH_CHUNK):
-                chunk_indices = indices[chunk_start : chunk_start + self._HOT_BATCH_CHUNK]
+            while True:
+                chunk_indices = list(islice(index_iter, self._HOT_BATCH_CHUNK))
+                if not chunk_indices:
+                    break
                 noise_dicts = []
                 for idx in chunk_indices:
                     noise = dict(fixed_noise)
@@ -1069,7 +1208,7 @@ class DSEEngine:
 
                 chunk_results = self.run_hot_batch(cached, noise_dicts)
                 for i, idx in enumerate(chunk_indices):
-                    grid[idx] = chunk_results[i]
+                    grid[idx] = _result_to_row(chunk_results[i])
                     completed += 1
                     if progress_callback is not None:
                         progress_callback(SweepProgress(
