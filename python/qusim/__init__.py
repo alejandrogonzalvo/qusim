@@ -453,3 +453,90 @@ def map_circuit(
         routing_fidelity_grid=fidelity_dict["routing_fidelity_grid"],
         coherence_fidelity_grid=fidelity_dict["coherence_fidelity_grid"],
     )
+
+
+def telesabre_map_circuit(
+    circuit_path: Union[str, "Path"],
+    device_json_path: Union[str, "Path"],
+    config_json_path: Union[str, "Path"],
+    # Hardware defaults — same as map_circuit
+    single_gate_error: float = 1e-4,
+    two_gate_error: float = 1e-3,
+    teleportation_error_per_hop: float = 1e-2,
+    single_gate_time: float = 20.0,
+    two_gate_time: float = 100.0,
+    teleportation_time_per_hop: float = 1000.0,
+    t1: float = 100_000.0,
+    t2: float = 50_000.0,
+    single_gate_error_per_qubit: Optional[np.ndarray] = None,
+    two_gate_error_per_pair: Optional[dict] = None,
+    t1_per_qubit: Optional[np.ndarray] = None,
+    t2_per_qubit: Optional[np.ndarray] = None,
+    gate_error_per_type: Optional[dict] = None,
+    gate_time_per_type: Optional[dict] = None,
+    dynamic_decoupling: bool = False,
+    readout_error_per_qubit: Optional[np.ndarray] = None,
+    readout_mitigation_factor: float = 0.0,
+) -> "QusimResult":
+    """
+    Route a quantum circuit using TeleSABRE and estimate hardware fidelity.
+
+    Unlike ``map_circuit``, this function accepts file paths because TeleSABRE
+    reads QASM and device JSON directly.  The returned ``QusimResult`` has the
+    same fidelity fields as ``map_circuit``.
+
+    Note: ``algorithmic_fidelity`` is always 1.0 because the circuit DAG is
+    not available after QASM parsing by the C library.  ``overall_fidelity``
+    reflects routing and coherence decay only.
+
+    Args:
+        circuit_path: Path to a QASM file.
+        device_json_path: Path to the device topology JSON (TeleSABRE format).
+        config_json_path: Path to the TeleSABRE config JSON.
+        (remaining args): same hardware parameters as ``map_circuit``.
+    """
+    from qusim.rust_core import telesabre_map_and_estimate
+
+    raw = telesabre_map_and_estimate(
+        circuit_path=str(circuit_path),
+        device_path=str(device_json_path),
+        config_path=str(config_json_path),
+        single_gate_error=single_gate_error,
+        two_gate_error=two_gate_error,
+        teleportation_error_per_hop=teleportation_error_per_hop,
+        single_gate_time=single_gate_time,
+        two_gate_time=two_gate_time,
+        teleportation_time_per_hop=teleportation_time_per_hop,
+        t1=t1,
+        t2=t2,
+        single_gate_error_per_qubit=single_gate_error_per_qubit,
+        two_gate_error_per_pair=two_gate_error_per_pair,
+        t1_per_qubit=t1_per_qubit,
+        t2_per_qubit=t2_per_qubit,
+        gate_error_per_type=np.array([], dtype=np.float64) if gate_error_per_type is None else np.array(list(gate_error_per_type.values()), dtype=np.float64),
+        gate_time_per_type=np.array([], dtype=np.float64) if gate_time_per_type is None else np.array(list(gate_time_per_type.values()), dtype=np.float64),
+        dynamic_decoupling=dynamic_decoupling,
+        readout_error_per_qubit=readout_error_per_qubit,
+        readout_mitigation_factor=readout_mitigation_factor,
+    )
+
+    num_layers = raw["algorithmic_fidelity_grid"].shape[0]
+    num_qubits = raw["algorithmic_fidelity_grid"].shape[1]
+
+    return QusimResult(
+        execution_success=raw["execution_success"],
+        placements=np.zeros((num_layers + 1, num_qubits), dtype=np.int32),
+        total_teleportations=raw["total_teleportations"],
+        total_swaps=raw["total_swaps"],
+        total_epr_pairs=0,
+        total_network_distance=0,
+        teleportations_per_slice=[],
+        algorithmic_fidelity=raw["algorithmic_fidelity"],
+        routing_fidelity=raw["routing_fidelity"],
+        coherence_fidelity=raw["coherence_fidelity"],
+        overall_fidelity=raw["overall_fidelity"],
+        total_circuit_time_ns=raw["total_circuit_time_ns"],
+        algorithmic_fidelity_grid=raw["algorithmic_fidelity_grid"],
+        routing_fidelity_grid=raw["routing_fidelity_grid"],
+        coherence_fidelity_grid=raw["coherence_fidelity_grid"],
+    )
