@@ -32,8 +32,14 @@ pub fn reconstruct_placements(
         }
     }
 
-    // Apply teleport events: new core takes effect at layer+1
-    for &(vqubit, _from_core, to_core, gate_idx) in teleport_events {
+    // Apply teleport events sorted by gate_idx: new core takes effect at layer+1.
+    // Sorting is required so that multiple events on the same qubit are applied
+    // in chronological order; reverse ordering would cause later writes to be
+    // overwritten by earlier ones, silently producing wrong placements.
+    let mut sorted_events = teleport_events.to_vec();
+    sorted_events.sort_unstable_by_key(|&(_, _, _, gate_idx)| gate_idx);
+    for &(vqubit, _from_core, to_core, gate_idx) in &sorted_events {
+        debug_assert!(gate_idx >= 0, "gate_idx must be non-negative, got {gate_idx}");
         let layer = gate_idx_to_layer(gate_idx as usize, total_ts_gates, num_layers);
         let q = vqubit as usize;
         if q < num_qubits {
@@ -57,18 +63,22 @@ pub fn build_sparse_swaps(
     swap_events
         .iter()
         .map(|&(vq1, vq2, gate_idx)| {
-            let layer = gate_idx_to_layer(gate_idx as usize, total_ts_gates, num_layers) as i32;
-            [layer, vq1, vq2]
+            debug_assert!(gate_idx >= 0, "gate_idx must be non-negative, got {gate_idx}");
+            let layer = gate_idx_to_layer(gate_idx as usize, total_ts_gates, num_layers);
+            debug_assert!(layer <= i32::MAX as usize, "layer {layer} overflows i32");
+            [layer as i32, vq1, vq2]
         })
         .collect()
 }
 
-/// Map a TeleSABRE gate index to a DAG layer via linear interpolation.
+/// Map a TeleSABRE gate index to a DAG layer via linear interpolation,
+/// clamped to `[0, num_layers]`.
 fn gate_idx_to_layer(gate_idx: usize, total_ts_gates: usize, num_layers: usize) -> usize {
     if total_ts_gates == 0 || num_layers == 0 {
         return 0;
     }
-    ((gate_idx as f64 / total_ts_gates as f64) * num_layers as f64).round() as usize
+    let layer = ((gate_idx as f64 / total_ts_gates as f64) * num_layers as f64).round() as usize;
+    layer.min(num_layers)
 }
 
 #[cfg(test)]
