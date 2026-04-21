@@ -1,4 +1,5 @@
 mod ffi;
+pub mod reconstruct;
 
 use std::ffi::CString;
 
