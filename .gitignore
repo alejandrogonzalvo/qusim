@@ -6,6 +6,3 @@ __pycache__/
 !tests/fixtures/**/*.json
 *.json.gz
 /*.png
-
-# Allow test fixtures even though *.json is ignored above
-!tests/fixtures/**/*.json

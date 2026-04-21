@@ -483,14 +483,21 @@ class DSEEngine:
         seed: int,
         noise: Optional[dict] = None,
         intracore_topology: str = "all_to_all",
+        routing_algorithm: str = "hqa_sabre",
     ) -> CachedMapping:
         """
-        Full circuit transpilation + HQA mapping. Returns a CachedMapping that
+        Full circuit transpilation + mapping. Returns a CachedMapping that
         can be reused for many hot-path fidelity evaluations.
         """
-        config_key = (circuit_type, num_qubits, num_cores, topology_type, intracore_topology, placement_policy, seed)
+        config_key = (circuit_type, num_qubits, num_cores, topology_type, intracore_topology, placement_policy, seed, routing_algorithm)
         if self._cache is not None and self._cache.config_key == config_key:
             return self._cache
+
+        if routing_algorithm == "telesabre":
+            return self._run_cold_telesabre(
+                circuit_type, num_qubits, num_cores, topology_type,
+                intracore_topology, seed, noise, config_key,
+            )
 
         t0 = time.time()
 
@@ -565,6 +572,109 @@ class DSEEngine:
             total_swaps=result.total_swaps,
             total_teleportations=result.total_teleportations,
             total_network_distance=result.total_network_distance,
+            config_key=config_key,
+            cold_time_s=cold_time,
+        )
+        return self._cache
+
+    # -- TeleSABRE cold path -------------------------------------------------
+
+    def _run_cold_telesabre(
+        self,
+        circuit_type: str,
+        num_qubits: int,
+        num_cores: int,
+        topology_type: str,
+        intracore_topology: str,
+        seed: int,
+        noise: Optional[dict],
+        config_key: tuple,
+    ) -> CachedMapping:
+        """Cold path using TeleSABRE routing. Writes QASM + device JSON to
+        temp files, calls telesabre_map_and_estimate, and caches the resulting
+        placements/sparse_swaps for hot-path re-evaluation."""
+        import json
+        import tempfile
+        import os
+        from qiskit import qasm2
+        from qusim.rust_core import telesabre_map_and_estimate
+
+        t0 = time.time()
+        merged = _merge_noise(noise or {})
+
+        circ = _build_circuit(circuit_type, num_qubits, seed)
+        transp = _transpile_circuit(circ, seed)
+
+        # Write QASM to temp file
+        qasm_str = qasm2.dumps(transp)
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".qasm", delete=False
+        ) as f:
+            f.write(qasm_str)
+            qasm_path = f.name
+
+        # Build and write TeleSABRE device JSON
+        device_json = _build_telesabre_device_json(
+            num_qubits, num_cores, topology_type, intracore_topology
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as f:
+            json.dump(device_json, f)
+            device_path = f.name
+
+        # Use the bundled default config
+        config_path = os.path.join(
+            os.path.dirname(__file__), "..",
+            "tests", "fixtures", "telesabre", "configs", "default.json",
+        )
+
+        try:
+            raw = telesabre_map_and_estimate(
+                circuit_path=qasm_path,
+                device_path=device_path,
+                config_path=os.path.abspath(config_path),
+                single_gate_error=merged["single_gate_error"],
+                two_gate_error=merged["two_gate_error"],
+                teleportation_error_per_hop=merged["teleportation_error_per_hop"],
+                single_gate_time=merged["single_gate_time"],
+                two_gate_time=merged["two_gate_time"],
+                teleportation_time_per_hop=merged["teleportation_time_per_hop"],
+                t1=merged["t1"],
+                t2=merged["t2"],
+                dynamic_decoupling=bool(merged.get("dynamic_decoupling", False)),
+                readout_mitigation_factor=merged["readout_mitigation_factor"],
+                classical_link_width=int(merged["classical_link_width"]),
+                classical_clock_freq_hz=merged["classical_clock_freq_hz"],
+                classical_routing_cycles=int(merged["classical_routing_cycles"]),
+            )
+        finally:
+            os.unlink(qasm_path)
+            os.unlink(device_path)
+
+        placements = raw["placements"]
+        sparse_swaps = raw["sparse_swaps"]
+
+        # Build a zero-distance matrix — TeleSABRE handles inter-core routing
+        # internally; the hot path uses this only for coherence accumulation.
+        dist_mat = np.zeros((num_cores, num_cores), dtype=np.int32)
+
+        # Empty interaction tensor (no DAG available from QASM-only C library)
+        gs_sparse = np.empty((0, 5), dtype=np.float64)
+        gate_names: list = []
+        gate_error_arr = np.array([], dtype=np.float64)
+        gate_time_arr = np.array([], dtype=np.float64)
+
+        cold_time = time.time() - t0
+        self._cache = CachedMapping(
+            gs_sparse=gs_sparse,
+            placements=placements,
+            distance_matrix=dist_mat,
+            sparse_swaps=sparse_swaps,
+            gate_error_arr=gate_error_arr,
+            gate_time_arr=gate_time_arr,
+            gate_names=gate_names,
+            total_epr_pairs=0,
             config_key=config_key,
             cold_time_s=cold_time,
         )
@@ -1306,3 +1416,92 @@ def _compute_distance_matrix(
                     dist_mat[i, j] = dist_mat[i, k] + dist_mat[k, j]
 
     return dist_mat
+
+
+def _build_telesabre_device_json(
+    num_qubits: int,
+    num_cores: int,
+    topology_type: str,
+    intracore_topology: str,
+) -> dict:
+    """Build a TeleSABRE-format device JSON dict from DSE topology parameters.
+
+    Qubits are numbered globally; core c owns qubits [offsets[c], offsets[c+1]).
+    """
+    import math
+    num_cores = max(1, min(num_cores, num_qubits))
+    base = num_qubits // num_cores
+    remainder = num_qubits % num_cores
+    core_sizes = [base + (1 if c < remainder else 0) for c in range(num_cores)]
+
+    offsets = []
+    offset = 0
+    for size in core_sizes:
+        offsets.append(offset)
+        offset += size
+
+    # Intra-core edges
+    intra_edges = []
+    for c, (off, size) in enumerate(zip(offsets, core_sizes)):
+        if size < 2:
+            continue
+        if intracore_topology == "all_to_all":
+            for q in range(size):
+                for r in range(q + 1, size):
+                    intra_edges.append([off + q, off + r])
+        elif intracore_topology == "ring":
+            for q in range(size):
+                intra_edges.append([off + q, off + (q + 1) % size])
+        elif intracore_topology == "grid":
+            side = math.isqrt(size)
+            if side * side < size:
+                side += 1
+            for q in range(size):
+                row, col = divmod(q, side)
+                if col + 1 < side and q + 1 < size:
+                    intra_edges.append([off + q, off + q + 1])
+                if q + side < size:
+                    intra_edges.append([off + q, off + q + side])
+        else:  # linear (default)
+            for q in range(size - 1):
+                intra_edges.append([off + q, off + q + 1])
+
+    # Inter-core edges (connect last qubit of core A to first qubit of core B)
+    inter_edges = []
+    if num_cores > 1:
+        if topology_type == "ring":
+            for c in range(num_cores):
+                nxt = (c + 1) % num_cores
+                p1 = offsets[c] + core_sizes[c] - 1
+                p2 = offsets[nxt]
+                inter_edges.append([p1, p2])
+        elif topology_type == "all_to_all":
+            for c1 in range(num_cores):
+                for c2 in range(c1 + 1, num_cores):
+                    p1 = offsets[c1] + core_sizes[c1] - 1
+                    p2 = offsets[c2]
+                    inter_edges.append([p1, p2])
+        else:  # linear
+            for c in range(num_cores - 1):
+                p1 = offsets[c] + core_sizes[c] - 1
+                p2 = offsets[c + 1]
+                inter_edges.append([p1, p2])
+
+    # Simple grid node positions
+    side = math.isqrt(num_qubits)
+    if side * side < num_qubits:
+        side += 1
+    node_positions = [
+        [float(q % side), -float(q // side)] for q in range(num_qubits)
+    ]
+
+    return {
+        "device": {
+            "name": f"dse_{num_qubits}q_{num_cores}c_{topology_type}",
+            "num_cores": num_cores,
+            "num_qubits": num_qubits,
+            "intra_core_edges": intra_edges,
+            "inter_core_edges": inter_edges,
+            "node_positions": node_positions,
+        }
+    }

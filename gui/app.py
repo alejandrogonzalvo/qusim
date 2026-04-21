@@ -919,6 +919,7 @@ _SIM_INPUTS = [
     Input("cfg-topology", "value"),
     Input("cfg-intracore-topology", "value"),
     Input("cfg-placement", "value"),
+    Input("cfg-routing-algorithm", "value"),
     Input("cfg-seed", "value"),
     Input("cfg-dynamic-decoupling", "value"),
     Input("cfg-max-cold", "value"),
@@ -968,6 +969,7 @@ _METRIC_SLIDER_STATES = [State(f"metric-slider-{i}", "value") for i in range(MAX
     State("cfg-topology", "value"),
     State("cfg-intracore-topology", "value"),
     State("cfg-placement", "value"),
+    State("cfg-routing-algorithm", "value"),
     State("cfg-seed", "value"),
     State("cfg-dynamic-decoupling", "value"),
     State("cfg-max-cold", "value"),
@@ -1004,6 +1006,7 @@ def run_sweep(
     topology = all_args[idx]; idx += 1
     intracore_topology = all_args[idx]; idx += 1
     placement = all_args[idx]; idx += 1
+    routing_algorithm = all_args[idx]; idx += 1
     seed = all_args[idx]; idx += 1
     dynamic_decoupling = all_args[idx]; idx += 1
     max_cold = all_args[idx]; idx += 1
@@ -1070,6 +1073,7 @@ def run_sweep(
             "placement_policy": placement or "random",
             "seed": int(seed or 42),
             "intracore_topology": intracore_topology or "all_to_all",
+            "routing_algorithm": routing_algorithm or "hqa_sabre",
         }
 
         cached = _engine.run_cold(**cold_config, noise=fixed_noise)

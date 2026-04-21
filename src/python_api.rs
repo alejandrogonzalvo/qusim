@@ -600,6 +600,10 @@ pub fn telesabre_map_and_estimate<'py>(
     dict.set_item("total_circuit_time_ns", fidelity.total_circuit_time)?;
     dict.set_item("readout_fidelity", fidelity.readout_fidelity)?;
 
+    // Expose routing data so callers can cache it for hot-path re-estimation
+    dict.set_item("placements", placements.into_pyarray_bound(py))?;
+    dict.set_item("sparse_swaps", sparse_swaps_arr.into_pyarray_bound(py))?;
+
     // Use map_err→PyValueError so grid shape mismatches surface as Python
     // exceptions rather than a process abort (preferred over .expect()).
     let algo_grid = Array2::from_shape_vec(

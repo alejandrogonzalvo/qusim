@@ -537,7 +537,7 @@ def telesabre_map_circuit(
 
     return QusimResult(
         execution_success=raw["execution_success"],
-        placements=np.zeros((num_layers + 1, num_qubits), dtype=np.int32),
+        placements=raw["placements"],
         total_teleportations=raw["total_teleportations"],
         total_swaps=raw["total_swaps"],
         total_epr_pairs=0,

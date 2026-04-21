@@ -202,6 +202,12 @@ INTRACORE_TOPOLOGY_TYPES = [
     {"label": "Grid", "value": "grid"},
 ]
 
+# Routing algorithm options
+ROUTING_ALGORITHM_OPTIONS = [
+    {"label": "HQA + Sabre", "value": "hqa_sabre"},
+    {"label": "TeleSABRE", "value": "telesabre"},
+]
+
 # HQA initial placement policies
 PLACEMENT_OPTIONS = [
     {"label": "Random", "value": "random"},
