@@ -459,6 +459,13 @@ pub fn estimate_hardware_fidelity_batch<'py>(
     Ok(out)
 }
 
+/// Route a circuit via TeleSABRE and estimate hardware fidelity.
+///
+/// **Note on `algorithmic_fidelity`:** Because the QASM circuit is parsed by
+/// the C library (circuit DAG not available on the Rust side), the interaction
+/// tensor is built with an empty edge list.  As a result `algorithmic_fidelity`
+/// is always 1.0 and the per-qubit grids reflect routing and coherence decay
+/// only.  `overall_fidelity = routing_fidelity × coherence_fidelity`.
 #[pyfunction]
 #[pyo3(signature = (
     circuit_path,
@@ -591,7 +598,10 @@ pub fn telesabre_map_and_estimate<'py>(
     dict.set_item("coherence_fidelity", fidelity.coherence_fidelity)?;
     dict.set_item("overall_fidelity", fidelity.overall_fidelity)?;
     dict.set_item("total_circuit_time_ns", fidelity.total_circuit_time)?;
+    dict.set_item("readout_fidelity", fidelity.readout_fidelity)?;
 
+    // Use map_err→PyValueError so grid shape mismatches surface as Python
+    // exceptions rather than a process abort (preferred over .expect()).
     let algo_grid = Array2::from_shape_vec(
         (num_layers, num_vqubits),
         fidelity.algorithmic_fidelity_grid,
@@ -611,7 +621,6 @@ pub fn telesabre_map_and_estimate<'py>(
     dict.set_item("coherence_fidelity_grid", coh_grid.into_pyarray_bound(py))?;
 
     Ok(dict)
->>>>>>> 641ad4e (feat: add telesabre_map_and_estimate pyfunction)
 }
 
 /// The core native module compiled by Maturin
