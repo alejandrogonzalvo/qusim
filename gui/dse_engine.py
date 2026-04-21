@@ -652,18 +652,28 @@ class DSEEngine:
             os.unlink(qasm_path)
             os.unlink(device_path)
 
-        placements = raw["placements"]
-        sparse_swaps = raw["sparse_swaps"]
+        # Use the Qiskit circuit's gs_sparse so the hot path has the correct
+        # num_layers (circuit DAG depth) and gate structure for algorithmic /
+        # coherence fidelity.  TeleSABRE's placements/swaps are remapped from
+        # their internal gate-step space to the DAG-layer space so both grids
+        # have a consistent row count.
+        from qusim import _qiskit_circ_to_sparse_list
+        gs_sparse, gate_names = _qiskit_circ_to_sparse_list(transp)
+        gate_error_arr, gate_time_arr = _make_gate_arrays(gate_names, merged)
 
-        # Build a zero-distance matrix — TeleSABRE handles inter-core routing
-        # internally; the hot path uses this only for coherence accumulation.
-        dist_mat = np.zeros((num_cores, num_cores), dtype=np.int32)
+        dag_layers = (
+            int(gs_sparse[:, 0].max()) + 1 if len(gs_sparse) > 0 else 1
+        )
 
-        # Empty interaction tensor (no DAG available from QASM-only C library)
-        gs_sparse = np.empty((0, 5), dtype=np.float64)
-        gate_names: list = []
-        gate_error_arr = np.array([], dtype=np.float64)
-        gate_time_arr = np.array([], dtype=np.float64)
+        placements = _remap_to_dag_layers(raw["placements"], dag_layers)
+        sparse_swaps = _remap_swaps_to_dag_layers(raw["sparse_swaps"], dag_layers)
+
+        # Real inter-core distances so routing fidelity is non-trivial
+        full_coupling_map, core_mapping = _build_topology(
+            num_qubits, num_cores, topology_type, intracore_topology=intracore_topology
+        )
+        num_cores_actual = max(core_mapping.values()) + 1 if core_mapping else 1
+        dist_mat = _compute_distance_matrix(full_coupling_map, core_mapping, num_cores_actual)
 
         cold_time = time.time() - t0
         self._cache = CachedMapping(
@@ -1418,6 +1428,35 @@ def _compute_distance_matrix(
     return dist_mat
 
 
+def _remap_to_dag_layers(placements: np.ndarray, dag_layers: int) -> np.ndarray:
+    """Remap TeleSABRE placements from ts-gate-step space to DAG-layer space.
+
+    TeleSABRE's placements have shape (ts_layers+1, num_qubits) where
+    ts_layers = num_teledata + num_telegate + num_swaps.  The hot path needs
+    (dag_layers+1, num_qubits) to match the Qiskit gs_sparse layer count.
+    """
+    ts_layers = placements.shape[0] - 1
+    num_qubits = placements.shape[1]
+    out = np.zeros((dag_layers + 1, num_qubits), dtype=np.int32)
+    for l in range(dag_layers + 1):
+        ts_l = round(l * ts_layers / dag_layers) if dag_layers > 0 else 0
+        out[l] = placements[min(ts_l, ts_layers)]
+    return out
+
+
+def _remap_swaps_to_dag_layers(sparse_swaps: np.ndarray, dag_layers: int) -> np.ndarray:
+    """Remap TeleSABRE sparse_swaps layer indices to DAG-layer space."""
+    if len(sparse_swaps) == 0:
+        return sparse_swaps
+    ts_layers = int(sparse_swaps[:, 0].max()) + 1 if len(sparse_swaps) > 0 else 1
+    out = sparse_swaps.copy()
+    for i in range(len(out)):
+        ts_l = int(out[i, 0])
+        dag_l = round(ts_l * dag_layers / ts_layers) if ts_layers > 0 else 0
+        out[i, 0] = min(dag_l, dag_layers - 1)
+    return out
+
+
 def _build_telesabre_device_json(
     num_qubits: int,
     num_cores: int,
@@ -1426,23 +1465,40 @@ def _build_telesabre_device_json(
 ) -> dict:
     """Build a TeleSABRE-format device JSON dict from DSE topology parameters.
 
-    Qubits are numbered globally; core c owns qubits [offsets[c], offsets[c+1]).
+    Two invariants that the TeleSABRE C library requires:
+
+    1. Uniform core sizes: ``device_from_json`` computes core ownership as
+       ``phys_to_core[i] = i / core_capacity`` where ``core_capacity =
+       total_qubits / num_cores`` (integer division). Non-uniform sizes
+       cause the last qubit to map to an out-of-bounds core index,
+       corrupting the heap → double-free segfault.  Fix: always use
+       ``ceil(num_qubits / num_cores) + SLACK_PER_CORE`` qubits per core.
+
+    2. Free teleportation slots: the round-robin initial layout fills every
+       physical qubit when ``total_qubits == num_qubits``.  With no free
+       qubits, all nearest-free-qubit heaps are empty → Dijkstra node
+       weights equal TS_INF → integer overflow → heap corruption → crash.
+       Fix: ``SLACK_PER_CORE = 3`` guarantees at least 3 free slots per
+       core after initial layout for mediator/target teleportation.
     """
     import math
     num_cores = max(1, min(num_cores, num_qubits))
-    base = num_qubits // num_cores
-    remainder = num_qubits % num_cores
-    core_sizes = [base + (1 if c < remainder else 0) for c in range(num_cores)]
-
-    offsets = []
-    offset = 0
-    for size in core_sizes:
-        offsets.append(offset)
-        offset += size
+    # TeleSABRE's routing requires free physical qubits in each core as
+    # teleportation mediators and landing slots.  Without slack, round-robin
+    # initial layout fills every slot and routing deadlocks with a heap
+    # corruption crash (Dijkstra gets TS_INF node weights, integer arithmetic
+    # overflows, and glibc detects a double-free).  Add at least 3 spare
+    # qubits per core so each core always has free slots after initial layout.
+    SLACK_PER_CORE = 3
+    qubits_per_core = math.ceil(num_qubits / num_cores) + SLACK_PER_CORE
+    total_qubits = qubits_per_core * num_cores
+    offsets = [c * qubits_per_core for c in range(num_cores)]
 
     # Intra-core edges
     intra_edges = []
-    for c, (off, size) in enumerate(zip(offsets, core_sizes)):
+    for c in range(num_cores):
+        off = offsets[c]
+        size = qubits_per_core
         if size < 2:
             continue
         if intracore_topology == "all_to_all":
@@ -1472,34 +1528,34 @@ def _build_telesabre_device_json(
         if topology_type == "ring":
             for c in range(num_cores):
                 nxt = (c + 1) % num_cores
-                p1 = offsets[c] + core_sizes[c] - 1
+                p1 = offsets[c] + qubits_per_core - 1
                 p2 = offsets[nxt]
                 inter_edges.append([p1, p2])
         elif topology_type == "all_to_all":
             for c1 in range(num_cores):
                 for c2 in range(c1 + 1, num_cores):
-                    p1 = offsets[c1] + core_sizes[c1] - 1
+                    p1 = offsets[c1] + qubits_per_core - 1
                     p2 = offsets[c2]
                     inter_edges.append([p1, p2])
         else:  # linear
             for c in range(num_cores - 1):
-                p1 = offsets[c] + core_sizes[c] - 1
+                p1 = offsets[c] + qubits_per_core - 1
                 p2 = offsets[c + 1]
                 inter_edges.append([p1, p2])
 
     # Simple grid node positions
-    side = math.isqrt(num_qubits)
-    if side * side < num_qubits:
+    side = math.isqrt(total_qubits)
+    if side * side < total_qubits:
         side += 1
     node_positions = [
-        [float(q % side), -float(q // side)] for q in range(num_qubits)
+        [float(q % side), -float(q // side)] for q in range(total_qubits)
     ]
 
     return {
         "device": {
-            "name": f"dse_{num_qubits}q_{num_cores}c_{topology_type}",
+            "name": f"dse_{total_qubits}q_{num_cores}c_{topology_type}",
             "num_cores": num_cores,
-            "num_qubits": num_qubits,
+            "num_qubits": total_qubits,
             "intra_core_edges": intra_edges,
             "inter_core_edges": inter_edges,
             "node_positions": node_positions,
