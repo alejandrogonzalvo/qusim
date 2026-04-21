@@ -7,7 +7,7 @@ from qusim.orchestrator import MultiCoreOrchestrator
 
 # Import the compiled Rust extension
 try:
-    from qusim.rust_core import map_and_estimate, estimate_hardware_fidelity, estimate_hardware_fidelity_batch
+    from qusim.rust_core import map_and_estimate, estimate_hardware_fidelity, estimate_hardware_fidelity_batch, telesabre_map_and_estimate
 except ImportError:
     import warnings
     warnings.warn("qusim.rust_core not found. Ensure you have built the maturin extension.")
@@ -477,6 +477,9 @@ def telesabre_map_circuit(
     dynamic_decoupling: bool = False,
     readout_error_per_qubit: Optional[np.ndarray] = None,
     readout_mitigation_factor: float = 0.0,
+    classical_link_width: int = 0,
+    classical_clock_freq_hz: float = 200e6,
+    classical_routing_cycles: int = 2,
 ) -> "QusimResult":
     """
     Route a quantum circuit using TeleSABRE and estimate hardware fidelity.
@@ -485,9 +488,15 @@ def telesabre_map_circuit(
     reads QASM and device JSON directly.  The returned ``QusimResult`` has the
     same fidelity fields as ``map_circuit``.
 
-    Note: ``algorithmic_fidelity`` is always 1.0 because the circuit DAG is
-    not available after QASM parsing by the C library.  ``overall_fidelity``
-    reflects routing and coherence decay only.
+    Notes:
+        - ``algorithmic_fidelity`` is always 1.0 because the circuit DAG is
+          not available after QASM parsing by the C library.
+          ``overall_fidelity`` reflects routing and coherence decay only.
+        - ``placements`` is a zeros placeholder; TeleSABRE's internal
+          placements are not exposed through this API.
+        - ``gate_error_per_type`` and ``gate_time_per_type`` are accepted for
+          interface compatibility but have no effect; the interaction tensor
+          is empty because the circuit DAG is unavailable.
 
     Args:
         circuit_path: Path to a QASM file.
@@ -495,8 +504,6 @@ def telesabre_map_circuit(
         config_json_path: Path to the TeleSABRE config JSON.
         (remaining args): same hardware parameters as ``map_circuit``.
     """
-    from qusim.rust_core import telesabre_map_and_estimate
-
     raw = telesabre_map_and_estimate(
         circuit_path=str(circuit_path),
         device_path=str(device_json_path),
@@ -513,11 +520,16 @@ def telesabre_map_circuit(
         two_gate_error_per_pair=two_gate_error_per_pair,
         t1_per_qubit=t1_per_qubit,
         t2_per_qubit=t2_per_qubit,
-        gate_error_per_type=np.array([], dtype=np.float64) if gate_error_per_type is None else np.array(list(gate_error_per_type.values()), dtype=np.float64),
-        gate_time_per_type=np.array([], dtype=np.float64) if gate_time_per_type is None else np.array(list(gate_time_per_type.values()), dtype=np.float64),
+        # gate_error/time_per_type: always pass empty arrays; the interaction
+        # tensor is empty (no circuit DAG), so per-type overrides have no effect.
+        gate_error_per_type=np.array([], dtype=np.float64),
+        gate_time_per_type=np.array([], dtype=np.float64),
         dynamic_decoupling=dynamic_decoupling,
         readout_error_per_qubit=readout_error_per_qubit,
         readout_mitigation_factor=readout_mitigation_factor,
+        classical_link_width=classical_link_width,
+        classical_clock_freq_hz=classical_clock_freq_hz,
+        classical_routing_cycles=classical_routing_cycles,
     )
 
     num_layers = raw["algorithmic_fidelity_grid"].shape[0]
