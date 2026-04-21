@@ -10,6 +10,20 @@ from typing import List
 
 
 @dataclass
+class CatMetricDef:
+    key: str
+    label: str
+    options: list  # list of {"label": ..., "value": ...} dicts
+    is_cold_path: bool
+    description: str
+    cold_config_key: str = ""  # key name in cold_config; defaults to self.key
+
+    def __post_init__(self):
+        if not self.cold_config_key:
+            self.cold_config_key = self.key
+
+
+@dataclass
 class MetricDef:
     key: str
     label: str
@@ -213,6 +227,50 @@ PLACEMENT_OPTIONS = [
     {"label": "Random", "value": "random"},
     {"label": "Spectral Clustering", "value": "spectral"},
 ]
+
+# Categorical (qualitative) parameters that can be placed on sweep axes.
+# All are cold-path: changing any requires a new compilation.
+# Defined after the option lists they reference.
+CATEGORICAL_METRICS: List[CatMetricDef] = [
+    CatMetricDef(
+        key="circuit_type",
+        label="Circuit Type",
+        options=CIRCUIT_TYPES,
+        is_cold_path=True,
+        description="Quantum circuit benchmark (QFT, GHZ, Random)",
+    ),
+    CatMetricDef(
+        key="topology_type",
+        label="Inter-core Topology",
+        options=TOPOLOGY_TYPES,
+        is_cold_path=True,
+        description="Inter-core connectivity (ring / all-to-all / linear)",
+    ),
+    CatMetricDef(
+        key="intracore_topology",
+        label="Intra-core Topology",
+        options=INTRACORE_TOPOLOGY_TYPES,
+        is_cold_path=True,
+        description="On-chip qubit connectivity within each core",
+    ),
+    CatMetricDef(
+        key="routing_algorithm",
+        label="Routing Algorithm",
+        options=ROUTING_ALGORITHM_OPTIONS,
+        is_cold_path=True,
+        description="Routing algorithm (HQA+Sabre / TeleSABRE)",
+    ),
+    CatMetricDef(
+        key="placement",
+        label="Placement",
+        options=PLACEMENT_OPTIONS,
+        is_cold_path=True,
+        description="Initial qubit placement policy (random / spectral)",
+        cold_config_key="placement_policy",
+    ),
+]
+
+CAT_METRIC_BY_KEY: dict = {m.key: m for m in CATEGORICAL_METRICS}
 
 # Output metrics that can be shown on the Y-axis
 OUTPUT_METRICS = [
