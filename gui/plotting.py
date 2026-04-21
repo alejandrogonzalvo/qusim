@@ -985,20 +985,44 @@ def plot_pareto(sweep_data: dict, output_key: str, thresholds: list[float] | Non
     fidelity = data[:, fid_col]
     epr = data[:, epr_col]
 
+    # Vectorised Pareto front: sort by EPR asc, then for each epr-tie group
+    # mark a point as dominated iff
+    #   fid <= max_fid_from_strictly_lower_epr   (strict-epr dominator) OR
+    #   fid <  max_fid_within_same_epr_group     (same-epr strictly-higher dominator)
+    # O(N log N) numpy, drops multi-second 50k-point runs to ~ms.
     is_pareto = np.ones(len(data), dtype=bool)
-    for i in range(len(data)):
-        for j in range(len(data)):
-            if i == j:
-                continue
-            if fidelity[j] >= fidelity[i] and epr[j] <= epr[i] and (fidelity[j] > fidelity[i] or epr[j] < epr[i]):
-                is_pareto[i] = False
-                break
+    if len(data) > 0:
+        order = np.argsort(epr, kind="stable")
+        s_epr = epr[order]
+        s_fid = fidelity[order]
+
+        change = np.concatenate(([True], s_epr[1:] != s_epr[:-1]))
+        group_id = np.cumsum(change) - 1
+        n_groups = int(group_id[-1]) + 1
+
+        group_max = np.full(n_groups, -np.inf)
+        np.maximum.at(group_max, group_id, s_fid)
+
+        if n_groups >= 2:
+            prev_max_strict = np.concatenate(
+                ([-np.inf], np.maximum.accumulate(group_max[:-1]))
+            )
+        else:
+            prev_max_strict = np.array([-np.inf])
+
+        s_prev = prev_max_strict[group_id]
+        s_group_max = group_max[group_id]
+        dominated_sorted = (s_fid <= s_prev) | (s_fid < s_group_max)
+        is_pareto[order[dominated_sorted]] = False
 
     fig = go.Figure()
 
     dominated_mask = ~is_pareto
+    # Scattergl for the (typically very large) dominated cloud — WebGL
+    # scales to 100k markers; plain Scatter (SVG) freezes the browser past
+    # a few thousand.
     fig.add_trace(
-        go.Scatter(
+        go.Scattergl(
             x=epr[dominated_mask], y=fidelity[dominated_mask],
             mode="markers",
             marker=dict(size=5, color="#CCCCCC", opacity=0.5),
