@@ -118,7 +118,7 @@ def run_benchmark():
             "fidelity": ts_result.overall_fidelity,
         }
         print(f"  TeleSABRE → swaps={ts_results[name]['swaps']}, "
-              f"teleportations={ts_results[name]['teledata']}, "
+              f"teleportations={ts_results[name]['teleportations']}, "
               f"fidelity={ts_results[name]['fidelity']:.4f}")
 
         print(f"[{name}] Running HQA+Sabre …", flush=True)
