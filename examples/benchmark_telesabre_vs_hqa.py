@@ -114,7 +114,7 @@ def run_benchmark():
         )
         ts_results[name] = {
             "swaps":    ts_result.total_swaps,
-            "teledata": ts_result.total_teleportations,
+            "teleportations": ts_result.total_teleportations,
             "fidelity": ts_result.overall_fidelity,
         }
         print(f"  TeleSABRE → swaps={ts_results[name]['swaps']}, "
@@ -140,7 +140,7 @@ def plot_benchmark(ts_results: dict, hqa_results: dict, out_file: str = "example
     w = 0.35  # bar width
 
     ts_swaps   = [ts_results[c]["swaps"]                              for c in circuit_names]
-    ts_comms   = [ts_results[c]["teledata"]                              for c in circuit_names]
+    ts_comms   = [ts_results[c]["teleportations"]                              for c in circuit_names]
     ts_fid     = [ts_results[c]["fidelity"]                           for c in circuit_names]
     hqa_swaps  = [hqa_results[c]["swaps"]                             for c in circuit_names]
     hqa_comms  = [hqa_results[c]["teleportations"]                    for c in circuit_names]
