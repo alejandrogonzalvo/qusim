@@ -833,6 +833,32 @@ def update_budget_warning(max_cold, max_hot, num_metrics, *dynamic_args):
     return [], {"display": "none"}
 
 
+@app.callback(
+    Output("sweep-workers-warning", "children"),
+    Output("sweep-workers-warning", "style"),
+    Input("cfg-max-workers", "value"),
+    prevent_initial_call=False,
+)
+def update_workers_warning(max_workers):
+    try:
+        n = int(max_workers) if max_workers else 1
+    except (TypeError, ValueError):
+        n = 1
+    if n <= 1:
+        return [], {"display": "none"}
+    return (
+        [
+            html.Span("⚠ ", style={"fontWeight": "700"}),
+            f"{n} parallel workers will each hold an independent copy of "
+            "the routed circuit in RAM. Dense logical circuits on "
+            "constrained topologies (e.g. grid, ring) can allocate tens of "
+            "GB per worker and exhaust system memory. Start at 1 and raise "
+            "only when you know your circuit's memory footprint.",
+        ],
+        _BUDGET_INFO_STYLE,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helper: convert result dict/object to plain JSON-safe dict
 # ---------------------------------------------------------------------------
@@ -938,6 +964,7 @@ _SIM_INPUTS = [
     Input("cfg-dynamic-decoupling", "value"),
     Input("cfg-max-cold", "value"),
     Input("cfg-max-hot", "value"),
+    Input("cfg-max-workers", "value"),
     *[Input(f"noise-{m.key}", "value") for m in SWEEPABLE_METRICS],
 ]
 
@@ -990,6 +1017,7 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     State("cfg-dynamic-decoupling", "value"),
     State("cfg-max-cold", "value"),
     State("cfg-max-hot", "value"),
+    State("cfg-max-workers", "value"),
     State("cfg-output-metric", "value"),
     State("cfg-threshold-enable", "value"),
     *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
@@ -1028,6 +1056,7 @@ def run_sweep(
     dynamic_decoupling = all_args[idx]; idx += 1
     max_cold = all_args[idx]; idx += 1
     max_hot = all_args[idx]; idx += 1
+    max_workers = all_args[idx]; idx += 1
     output_key = all_args[idx]; idx += 1
     threshold_enable = all_args[idx]; idx += 1
     t_vals = all_args[idx:idx + 5]; idx += 5
@@ -1107,8 +1136,21 @@ def run_sweep(
         sweep_axes = [(k, r[0], r[1]) for k, r in active_numeric]
 
         if not active_categorical:
-            # Pure numeric sweep — single cold compilation.
-            cached = _engine.run_cold(**cold_config, noise=fixed_noise)
+            # Pure numeric sweep.  Skip the main-thread ``run_cold`` when the
+            # inner sweep takes the parallel cold path (which recompiles
+            # inside workers anyway); otherwise we hide one cold compile
+            # behind the "Compiling circuit…" spinner before the progress
+            # callback ever fires.
+            _inner_has_cold = _engine._has_cold(
+                *[ax[0] for ax in sweep_axes]
+            )
+            # Flip phase to "sweeping" immediately so the loading bar shows
+            # rather than the spinner.
+            _update_progress(SweepProgress(completed=0, total=0))
+            cached = (
+                None if _inner_has_cold
+                else _engine.run_cold(**cold_config, noise=fixed_noise)
+            )
             cold_elapsed = time.time() - t_start
             result = _engine.sweep_nd(
                 cached=cached,
@@ -1117,6 +1159,7 @@ def run_sweep(
                 cold_config=cold_config,
                 progress_callback=_update_progress,
                 parallel=True,
+                max_workers=int(max_workers) if max_workers else None,
                 max_cold=int(max_cold) if max_cold else None,
                 max_hot=int(max_hot) if max_hot else None,
             )
@@ -1130,49 +1173,55 @@ def run_sweep(
             cat_combos = list(_product(*cat_val_lists))
             n_combos = len(cat_combos)
 
-            # Unified progress: track completed points across all facets
-            # so the loading bar advances monotonically instead of resetting.
-            facet_progress = {"completed_offset": 0, "total": 0, "cold_done": 0}
+            # Compute per-facet grid and cold-group counts analytically so
+            # the first facet's cold compilations show up in the loading bar
+            # instead of being hidden behind a silent "Compiling circuit…"
+            # dry run.
+            _inner_has_cold = _engine._has_cold(*[ax[0] for ax in sweep_axes])
+            _eff_hot, _ = _engine._memory_capped_max_hot(
+                int(max_hot) if max_hot else None,
+            )
+            _axis_counts = _engine._compute_axis_counts(
+                sweep_axes, _inner_has_cold,
+                int(max_cold) if max_cold else None,
+                _eff_hot,
+            )
+            per_facet_pts = int(np.prod(_axis_counts)) if _axis_counts else 1
+            _cold_axis_counts = [
+                _axis_counts[i] for i, ax in enumerate(sweep_axes)
+                if ax[0] in _engine.COLD_PATH_KEYS
+            ]
+            groups_per_facet = (
+                int(np.prod(_cold_axis_counts)) if _cold_axis_counts else 1
+            )
+            total_points = per_facet_pts * n_combos
+            total_cold = max(1, groups_per_facet * n_combos)
+
+            # Unified progress: track completed points and cold groups
+            # across all facets so the loading bar advances monotonically.
+            facet_progress = {"completed_offset": 0, "cold_done_offset": 0}
 
             def _faceted_progress(p: SweepProgress) -> None:
                 _update_progress(SweepProgress(
                     completed=facet_progress["completed_offset"] + p.completed,
-                    total=facet_progress["total"],
+                    total=total_points,
                     current_params=p.current_params,
-                    cold_completed=facet_progress["cold_done"] + p.cold_completed,
-                    cold_total=n_combos + p.cold_total,
+                    cold_completed=facet_progress["cold_done_offset"] + p.cold_completed,
+                    cold_total=total_cold,
                 ))
 
-            # Dry-run axis computation to get per-facet point count for total.
-            _dry_fc = {**cold_config}
-            for cat_key, cat_value in zip(cat_keys, cat_combos[0]):
-                _dry_fc[CAT_METRIC_BY_KEY[cat_key].cold_config_key] = cat_value
-            _dry_cached = _engine.run_cold(**_dry_fc, noise=fixed_noise)
-            _dry_res = _engine.sweep_nd(
-                cached=_dry_cached,
-                sweep_axes=sweep_axes,
-                fixed_noise=fixed_noise,
-                cold_config=_dry_fc,
-                max_cold=int(max_cold) if max_cold else None,
-                max_hot=int(max_hot) if max_hot else None,
-            )
-            per_facet_pts = _dry_res.grid.size
-            facet_progress["total"] = per_facet_pts * n_combos
-            facet_progress["cold_done"] = 1  # first combo already compiled
-            facet_progress["completed_offset"] = per_facet_pts  # first facet done
+            # Flip the phase to "sweeping" before any cold work so the UI
+            # shows the real progress bar (0/N cold) instead of the
+            # indefinite "Compiling circuit…" spinner.
+            _update_progress(SweepProgress(
+                completed=0,
+                total=total_points,
+                cold_completed=0,
+                cold_total=total_cold,
+            ))
 
             facet_results = []
-            sd = _dry_res.to_sweep_data()
-            first_label = {}
-            for cat_key, cat_value in zip(cat_keys, cat_combos[0]):
-                cat_def = CAT_METRIC_BY_KEY[cat_key]
-                first_label[cat_key] = next(
-                    (o["label"] for o in cat_def.options if o["value"] == cat_value),
-                    cat_value,
-                )
-            facet_results.append({"label": first_label, **sd})
-
-            for combo in cat_combos[1:]:
+            for combo in cat_combos:
                 fc = {**cold_config}
                 label_dict = {}
                 for cat_key, cat_value in zip(cat_keys, combo):
@@ -1182,16 +1231,13 @@ def run_sweep(
                         (o["label"] for o in cat_def.options if o["value"] == cat_value),
                         cat_value,
                     )
-                _sweep_progress = {**_sweep_progress, "phase": "compiling"}
-                cached = _engine.run_cold(**fc, noise=fixed_noise)
-                facet_progress["cold_done"] += 1
-                # Report cold compilation progress.
-                _update_progress(SweepProgress(
-                    completed=facet_progress["completed_offset"],
-                    total=facet_progress["total"],
-                    cold_completed=facet_progress["cold_done"],
-                    cold_total=n_combos,
-                ))
+                # ``_parallel_cold_sweep`` recompiles inside workers, so
+                # only compile on the main thread when the inner sweep
+                # will take the pure hot-path (no cold axes).
+                cached = (
+                    None if _inner_has_cold
+                    else _engine.run_cold(**fc, noise=fixed_noise)
+                )
                 res = _engine.sweep_nd(
                     cached=cached,
                     sweep_axes=sweep_axes,
@@ -1199,12 +1245,14 @@ def run_sweep(
                     cold_config=fc,
                     progress_callback=_faceted_progress,
                     parallel=True,
+                    max_workers=int(max_workers) if max_workers else None,
                     max_cold=int(max_cold) if max_cold else None,
                     max_hot=int(max_hot) if max_hot else None,
                 )
                 sd = res.to_sweep_data()
                 facet_results.append({"label": label_dict, **sd})
                 facet_progress["completed_offset"] += res.grid.size
+                facet_progress["cold_done_offset"] += groups_per_facet
 
             # For a single categorical combo, unwrap to plain sweep_data.
             if len(facet_results) == 1:

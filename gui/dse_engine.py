@@ -686,6 +686,9 @@ class DSEEngine:
             gate_time_arr=gate_time_arr,
             gate_names=gate_names,
             total_epr_pairs=0,
+            total_swaps=raw["total_swaps"],
+            total_teleportations=raw["total_teleportations"],
+            total_network_distance=0,
             config_key=config_key,
             cold_time_s=cold_time,
         )
@@ -1009,6 +1012,15 @@ class DSEEngine:
         slot_cap = max_workers if max_workers else cpu_cap
         mem_budget = self._mem_budget_mb()
 
+        # Per-worker address-space cap (RLIMIT_AS). With arbitrary
+        # user-supplied circuits, the cost estimate can be severely wrong
+        # (e.g. dense random circuits on grid topology allocate 10x the
+        # QFT-calibrated estimate).  Capping each worker to its fair share
+        # of the budget ensures a runaway allocation raises MemoryError
+        # inside the worker — surfacing as a "Sweep failed" banner — rather
+        # than OOM-killing the whole system.
+        rss_cap_bytes = (mem_budget * 1024 * 1024) // max(1, slot_cap)
+
         # Guard: if even the cheapest group's estimate exceeds the budget by a
         # wide margin, the run will OOM the worker.  Fail early with a
         # message the user can act on instead of a BrokenProcessPool crash.
@@ -1053,7 +1065,10 @@ class DSEEngine:
                     mem_ok = not active or used + cost <= mem_budget
                     if mem_ok:
                         swept_list = [s for _, s in groups[cv]]
-                        fut = pool.submit(_eval_cold_batch, cold_config, noise, swept_list)
+                        fut = pool.submit(
+                            _eval_cold_batch,
+                            cold_config, noise, swept_list, rss_cap_bytes,
+                        )
                         active[fut] = (cv, cost)
                         used += cost
                     else:
@@ -1262,7 +1277,7 @@ class DSEEngine:
 
     def sweep_nd(
         self,
-        cached: CachedMapping,
+        cached: CachedMapping | None,
         sweep_axes: list[tuple[str, float, float]],
         fixed_noise: dict,
         cold_config: dict | None = None,
@@ -1392,12 +1407,33 @@ class DSEEngine:
 # Process-pool worker (must be module-level for pickling)
 # ---------------------------------------------------------------------------
 
-def _eval_cold_batch(cold_config: dict, noise: dict, swept_list: list[dict]) -> list[dict]:
+def _eval_cold_batch(
+    cold_config: dict,
+    noise: dict,
+    swept_list: list[dict],
+    rss_cap_bytes: int | None = None,
+) -> list[dict]:
     """Evaluate a batch of design points sharing the same cold-path config.
 
     Compiles the circuit once (cold path), then evaluates all noise
     variations in a single batched Rust call (no per-point Python↔Rust overhead).
+
+    ``rss_cap_bytes`` caps the worker's address space via RLIMIT_AS so a
+    runaway allocation from a pathologically large circuit raises
+    MemoryError inside this process instead of thrashing the whole system.
     """
+    if rss_cap_bytes and rss_cap_bytes > 0:
+        try:
+            import resource
+            resource.setrlimit(
+                resource.RLIMIT_AS, (int(rss_cap_bytes), int(rss_cap_bytes)),
+            )
+        except (ImportError, ValueError, OSError):
+            # RLIMIT_AS unavailable (non-Linux) or kernel refused — fall
+            # back to unbounded execution; the scheduler's mem_ok check
+            # still provides some protection.
+            pass
+
     engine = DSEEngine()
 
     # Apply cold-path overrides from the first swept dict (all share the same cold keys)

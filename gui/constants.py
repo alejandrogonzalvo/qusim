@@ -300,7 +300,15 @@ SWEEP_POINTS_COLD_3D = 5
 #     (num_qubits, num_cores) combination.
 #   Hot evaluations:   near-free when batched via Rust, safe to run many.
 MAX_COLD_COMPILATIONS = 64       # cap on unique cold-path configs
-MAX_TOTAL_POINTS_HOT = 500      # cap on total grid points (hot eval is cheap)
+MAX_TOTAL_POINTS_HOT = 5_000    # cap on total grid points (hot eval is cheap)
+
+# Default number of parallel cold-compile workers. Kept at 1 because each
+# worker holds an independent copy of the routed circuit in RAM; dense
+# logical circuits on constrained topologies (e.g. random-256 on grid)
+# can allocate tens of GB per worker, and a few running in parallel can
+# exhaust system RAM on the host. Users can raise this from the UI once
+# they know their circuit's memory footprint.
+MAX_WORKERS_DEFAULT = 1
 
 # Legacy alias kept for backward compat in _points_per_axis
 MAX_TOTAL_POINTS_COLD = MAX_COLD_COMPILATIONS

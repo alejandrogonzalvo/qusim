@@ -2,6 +2,8 @@
 Reusable Dash UI component factories for the DSE GUI.
 """
 
+import os
+
 import dash_bootstrap_components as dbc
 from dash import dcc, html
 
@@ -14,6 +16,7 @@ from .constants import (
     INTRACORE_TOPOLOGY_TYPES,
     MAX_COLD_COMPILATIONS,
     MAX_TOTAL_POINTS_HOT,
+    MAX_WORKERS_DEFAULT,
     METRIC_BY_KEY,
     NOISE_DEFAULTS,
     OUTPUT_METRICS,
@@ -24,6 +27,11 @@ from .constants import (
     VIEW_TAB_DEFAULTS,
     VIEW_TABS,
 )
+
+# Cap parallel cold-compile workers at half the CPU count so library thread
+# pools (Rayon/OpenMP) — capped at 1 thread per worker elsewhere — still
+# leave the main process and OS responsive even if a user cranks this up.
+_WORKER_CAP = max(1, (os.cpu_count() or 2) // 2)
 
 # ---------------------------------------------------------------------------
 # Colour palette (dark theme)
@@ -643,6 +651,38 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                     "marginBottom": "10px",
                     "outline": "none",
                 },
+            ),
+            _label(
+                "Max workers",
+                "Parallel cold compilations. Each worker holds its own "
+                "copy of the routed circuit in RAM.",
+            ),
+            dcc.Input(
+                id="cfg-max-workers",
+                type="number",
+                value=MAX_WORKERS_DEFAULT,
+                min=1,
+                max=_WORKER_CAP,
+                step=1,
+                debounce=True,
+                className="dse-input",
+                style={
+                    "width": "100%",
+                    "background": COLORS["surface2"],
+                    "border": f"1px solid {COLORS['border']}",
+                    "color": COLORS["text"],
+                    "borderRadius": "6px",
+                    "padding": "6px 10px",
+                    "fontSize": "13px",
+                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                    "marginBottom": "10px",
+                    "outline": "none",
+                },
+            ),
+            html.Div(
+                id="sweep-workers-warning",
+                style={"display": "none"},
+                children=[],
             ),
             html.Div(
                 id="sweep-budget-warning",
