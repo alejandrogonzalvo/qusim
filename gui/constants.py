@@ -216,6 +216,9 @@ OUTPUT_METRICS = [
     {"label": "Coherence Fidelity", "value": "coherence_fidelity"},
     {"label": "Circuit Time (ns)", "value": "total_circuit_time_ns"},
     {"label": "Total EPR Pairs", "value": "total_epr_pairs"},
+    {"label": "Intra-core Swaps", "value": "total_swaps"},
+    {"label": "Inter-core Swaps", "value": "total_teleportations"},
+    {"label": "Network Distance", "value": "total_network_distance"},
 ]
 
 # Number of sweep points per dimension (legacy, kept for backward compat)

@@ -839,6 +839,9 @@ def _result_to_dict(r: Any) -> dict:
         "coherence_fidelity": float(r.coherence_fidelity),
         "total_circuit_time_ns": float(r.total_circuit_time_ns),
         "total_epr_pairs": float(getattr(r, "total_epr_pairs", 0)),
+        "total_swaps": float(getattr(r, "total_swaps", 0)),
+        "total_teleportations": float(getattr(r, "total_teleportations", 0)),
+        "total_network_distance": float(getattr(r, "total_network_distance", 0)),
     }
 
 

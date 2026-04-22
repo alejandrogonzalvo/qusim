@@ -278,6 +278,9 @@ class CachedMapping:
     gate_time_arr: np.ndarray
     gate_names: list
     total_epr_pairs: int
+    total_swaps: int
+    total_teleportations: int
+    total_network_distance: int
     # Key used to detect when re-mapping is required
     config_key: tuple
     cold_time_s: float = 0.0
@@ -305,6 +308,9 @@ _RESULT_SCALAR_KEYS: tuple[str, ...] = (
     "readout_fidelity",
     "total_circuit_time_ns",
     "total_epr_pairs",
+    "total_swaps",
+    "total_teleportations",
+    "total_network_distance",
 )
 
 # Structured dtype for the sweep grid. One float64 field per scalar output
@@ -556,6 +562,9 @@ class DSEEngine:
             gate_time_arr=gate_time_arr,
             gate_names=gate_names,
             total_epr_pairs=result.total_epr_pairs,
+            total_swaps=result.total_swaps,
+            total_teleportations=result.total_teleportations,
+            total_network_distance=result.total_network_distance,
             config_key=config_key,
             cold_time_s=cold_time,
         )
@@ -593,6 +602,9 @@ class DSEEngine:
             classical_routing_cycles=int(merged["classical_routing_cycles"]),
         )
         result["total_epr_pairs"] = cached.total_epr_pairs
+        result["total_swaps"] = cached.total_swaps
+        result["total_teleportations"] = cached.total_teleportations
+        result["total_network_distance"] = cached.total_network_distance
         return result
 
     # Max noise configs per Rust batch call to bound peak memory
@@ -625,6 +637,9 @@ class DSEEngine:
             )
             for r in chunk_results:
                 r["total_epr_pairs"] = cached.total_epr_pairs
+                r["total_swaps"] = cached.total_swaps
+                r["total_teleportations"] = cached.total_teleportations
+                r["total_network_distance"] = cached.total_network_distance
             # Strip per-qubit ``*_grid`` ndarrays before they cross the
             # process-pool pickle boundary or enter the sweep grid. The
             # sweep UI never reads them back.

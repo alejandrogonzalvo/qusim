@@ -203,6 +203,9 @@ def _make_fake_cached():
         gate_time_arr=np.array([20.0]),
         gate_names=["cx"],
         total_epr_pairs=0,
+        total_swaps=0,
+        total_teleportations=0,
+        total_network_distance=0,
         config_key=("qft", 4, 1, "ring", "random", 42, "all_to_all"),
         cold_time_s=0.01,
     )

@@ -30,6 +30,9 @@ class QusimResult:
     total_teleportations: int
     """Number of inter-core teleportations executed during the routing process."""
 
+    total_swaps: int
+    """Number of intra-core SWAP gates inserted by the SABRE router."""
+
     total_epr_pairs: int
     """Total EPR pairs consumed to accommodate teleportation. Equivalent to teleportations executed scaled by distance distance."""
 
@@ -435,6 +438,7 @@ def map_circuit(
         execution_success=raw_dict.get("execution_success", False),
         placements=placements,
         total_teleportations=raw_dict["total_teleportations"],
+        total_swaps=sparse_swaps_arr.shape[0],
         total_epr_pairs=raw_dict["total_epr_pairs"],
         total_network_distance=raw_dict["total_network_distance"],
         teleportations_per_slice=raw_dict["teleportations_per_slice"],
