@@ -196,6 +196,14 @@ def _slim_sweep_for_browser(data: dict) -> dict:
 _sweep_progress: dict = {"running": False}
 
 
+def _progress_label(k: str) -> str:
+    if k in METRIC_BY_KEY:
+        return METRIC_BY_KEY[k].label
+    if k in CAT_METRIC_BY_KEY:
+        return CAT_METRIC_BY_KEY[k].label
+    return k
+
+
 def _update_progress(p: SweepProgress) -> None:
     """Progress callback passed into sweep methods."""
     global _sweep_progress
@@ -205,8 +213,7 @@ def _update_progress(p: SweepProgress) -> None:
         "total": p.total,
         "percentage": p.percentage,
         "current_params": {
-            METRIC_BY_KEY[k].label if k in METRIC_BY_KEY else k: v
-            for k, v in p.current_params.items()
+            _progress_label(k): v for k, v in p.current_params.items()
         },
         "cold_completed": p.cold_completed,
         "cold_total": p.cold_total,
@@ -1228,23 +1235,39 @@ def run_sweep(
 
             # Unified progress: track completed points and cold groups
             # across all facets so the loading bar advances monotonically.
+            # ``current_facet_labels`` is refreshed per categorical combo and
+            # merged into the inner progress's ``current_params`` so the
+            # overlay shows the active qualitative variable (e.g. the
+            # circuit type) alongside the numeric axes.
             facet_progress = {"completed_offset": 0, "cold_done_offset": 0}
+            current_facet_labels: dict[str, str] = {}
 
             def _faceted_progress(p: SweepProgress) -> None:
+                merged_params = {**current_facet_labels, **p.current_params}
                 _update_progress(SweepProgress(
                     completed=facet_progress["completed_offset"] + p.completed,
                     total=total_points,
-                    current_params=p.current_params,
+                    current_params=merged_params,
                     cold_completed=facet_progress["cold_done_offset"] + p.cold_completed,
                     cold_total=total_cold,
                 ))
 
             # Flip the phase to "sweeping" before any cold work so the UI
             # shows the real progress bar (0/N cold) instead of the
-            # indefinite "Compiling circuit…" spinner.
+            # indefinite "Compiling circuit…" spinner. Seed with the first
+            # facet's labels so the overlay isn't blank while compiling.
+            first_labels: dict[str, str] = {}
+            if cat_combos:
+                for cat_key, cat_value in zip(cat_keys, cat_combos[0]):
+                    cat_def = CAT_METRIC_BY_KEY[cat_key]
+                    first_labels[cat_key] = next(
+                        (o["label"] for o in cat_def.options if o["value"] == cat_value),
+                        cat_value,
+                    )
             _update_progress(SweepProgress(
                 completed=0,
                 total=total_points,
+                current_params=first_labels,
                 cold_completed=0,
                 cold_total=total_cold,
             ))
@@ -1260,6 +1283,8 @@ def run_sweep(
                         (o["label"] for o in cat_def.options if o["value"] == cat_value),
                         cat_value,
                     )
+                current_facet_labels.clear()
+                current_facet_labels.update(label_dict)
                 # ``_parallel_cold_sweep`` recompiles inside workers, so
                 # only compile on the main thread when the inner sweep
                 # will take the pure hot-path (no cold axes).

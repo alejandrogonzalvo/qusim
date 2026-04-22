@@ -364,7 +364,7 @@ class SweepProgress:
     """Snapshot of sweep progress, emitted on every iteration."""
     completed: int
     total: int
-    current_params: dict[str, float] = field(default_factory=dict)
+    current_params: dict[str, float | str] = field(default_factory=dict)
     cold_completed: int = 0
     cold_total: int = 0
 

@@ -94,6 +94,7 @@
                 '<div style="width:100%;height:6px;background:#E5E5E5;border-radius:3px;overflow:hidden">' +
                 '<div style="width:30%;height:100%;background:#2B2B2B;border-radius:3px;animation:sweep-pulse 1.2s ease-in-out infinite"></div>' +
                 '</div>' +
+                paramHtml +
                 coldHtml +
                 '</div>';
         } else {
