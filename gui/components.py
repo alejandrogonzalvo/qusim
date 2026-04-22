@@ -590,105 +590,6 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                     "marginBottom": "12px",
                 },
             ),
-            _section_header(
-                "Sweep Budget",
-                tooltip=(
-                    "Controls how many design points are evaluated. "
-                    "Cold compilations are expensive and only "
-                    "needed per unique structural (e.g. Qubits/Cores) combination. "
-                    "Hot evaluations are near-free (batched in Rust) and cover "
-                    "all noise parameter combinations. "
-                ),
-            ),
-            _label(
-                "Max cold compilations",
-                "Caps unique (qubits, cores) combos. Each takes ~1-10s.",
-            ),
-            dcc.Input(
-                id="cfg-max-cold",
-                type="number",
-                value=MAX_COLD_COMPILATIONS,
-                min=1,
-                max=1024,
-                step=1,
-                debounce=True,
-                className="dse-input",
-                style={
-                    "width": "100%",
-                    "background": COLORS["surface2"],
-                    "border": f"1px solid {COLORS['border']}",
-                    "color": COLORS["text"],
-                    "borderRadius": "6px",
-                    "padding": "6px 10px",
-                    "fontSize": "13px",
-                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
-                    "marginBottom": "10px",
-                    "outline": "none",
-                },
-            ),
-            _label(
-                "Max hot evaluations",
-                "Total grid points. Hot path is batched in Rust (~free).",
-            ),
-            dcc.Input(
-                id="cfg-max-hot",
-                type="number",
-                value=MAX_TOTAL_POINTS_HOT,
-                min=100,
-                max=100_000_000,
-                step=100,
-                debounce=True,
-                className="dse-input",
-                style={
-                    "width": "100%",
-                    "background": COLORS["surface2"],
-                    "border": f"1px solid {COLORS['border']}",
-                    "color": COLORS["text"],
-                    "borderRadius": "6px",
-                    "padding": "6px 10px",
-                    "fontSize": "13px",
-                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
-                    "marginBottom": "10px",
-                    "outline": "none",
-                },
-            ),
-            _label(
-                "Max workers",
-                "Parallel cold compilations. Each worker holds its own "
-                "copy of the routed circuit in RAM.",
-            ),
-            dcc.Input(
-                id="cfg-max-workers",
-                type="number",
-                value=MAX_WORKERS_DEFAULT,
-                min=1,
-                max=_WORKER_CAP,
-                step=1,
-                debounce=True,
-                className="dse-input",
-                style={
-                    "width": "100%",
-                    "background": COLORS["surface2"],
-                    "border": f"1px solid {COLORS['border']}",
-                    "color": COLORS["text"],
-                    "borderRadius": "6px",
-                    "padding": "6px 10px",
-                    "fontSize": "13px",
-                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
-                    "marginBottom": "10px",
-                    "outline": "none",
-                },
-            ),
-            html.Div(
-                id="sweep-workers-warning",
-                style={"display": "none"},
-                children=[],
-            ),
-            html.Div(
-                id="sweep-budget-warning",
-                style={"display": "none"},
-                children=[],
-            ),
         ],
         style={"paddingTop": "8px"},
     )
@@ -790,6 +691,120 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                 ],
                 style={"height": "auto"},
                 content_style={"overflow": "auto"},
+            ),
+        ],
+    )
+
+
+def make_performance_panel() -> html.Div:
+    """Sweep budget / parallelism controls.
+
+    Rendered in the lower half of the right sidebar so the Circuit / Noise /
+    Thresholds tabs above don't have to share horizontal room with a fourth
+    tab.
+    """
+    return html.Div(
+        id="performance-panel",
+        style={"paddingTop": "4px"},
+        children=[
+            _section_header(
+                "Sweep Budget",
+                tooltip=(
+                    "Controls how many design points are evaluated. "
+                    "Cold compilations are expensive and only "
+                    "needed per unique structural (e.g. Qubits/Cores) combination. "
+                    "Hot evaluations are near-free (batched in Rust) and cover "
+                    "all noise parameter combinations. "
+                ),
+            ),
+            _label(
+                "Max cold compilations",
+                "Caps unique (qubits, cores) combos. Each takes ~1-10s.",
+            ),
+            dcc.Input(
+                id="cfg-max-cold",
+                type="number",
+                value=MAX_COLD_COMPILATIONS,
+                min=1,
+                max=1024,
+                step=1,
+                debounce=True,
+                className="dse-input",
+                style={
+                    "width": "100%",
+                    "background": COLORS["surface2"],
+                    "border": f"1px solid {COLORS['border']}",
+                    "color": COLORS["text"],
+                    "borderRadius": "6px",
+                    "padding": "6px 10px",
+                    "fontSize": "13px",
+                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                    "marginBottom": "10px",
+                    "outline": "none",
+                },
+            ),
+            _label(
+                "Max hot evaluations",
+                "Total grid points. Hot path is batched in Rust (~free).",
+            ),
+            dcc.Input(
+                id="cfg-max-hot",
+                type="number",
+                value=MAX_TOTAL_POINTS_HOT,
+                min=100,
+                max=100_000_000,
+                step=100,
+                debounce=True,
+                className="dse-input",
+                style={
+                    "width": "100%",
+                    "background": COLORS["surface2"],
+                    "border": f"1px solid {COLORS['border']}",
+                    "color": COLORS["text"],
+                    "borderRadius": "6px",
+                    "padding": "6px 10px",
+                    "fontSize": "13px",
+                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                    "marginBottom": "10px",
+                    "outline": "none",
+                },
+            ),
+            _label(
+                "Max workers",
+                "Parallel cold compilations. Each worker holds its own "
+                "copy of the routed circuit in RAM.",
+            ),
+            dcc.Input(
+                id="cfg-max-workers",
+                type="number",
+                value=MAX_WORKERS_DEFAULT,
+                min=1,
+                max=_WORKER_CAP,
+                step=1,
+                debounce=True,
+                className="dse-input",
+                style={
+                    "width": "100%",
+                    "background": COLORS["surface2"],
+                    "border": f"1px solid {COLORS['border']}",
+                    "color": COLORS["text"],
+                    "borderRadius": "6px",
+                    "padding": "6px 10px",
+                    "fontSize": "13px",
+                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                    "marginBottom": "10px",
+                    "outline": "none",
+                },
+            ),
+            html.Div(
+                id="sweep-workers-warning",
+                style={"display": "none"},
+                children=[],
+            ),
+            html.Div(
+                id="sweep-budget-warning",
+                style={"display": "none"},
+                children=[],
             ),
         ],
     )

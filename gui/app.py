@@ -37,6 +37,7 @@ from gui.components import (
     _tooltip_cfg,
     make_add_metric_button,
     make_fixed_config_panel,
+    make_performance_panel,
     make_metric_selector,
     make_view_tab_bar,
 )
@@ -532,8 +533,36 @@ def _right_panel() -> html.Div:
             html.Div(
                 id="fixed-config-container",
                 className="config-scroll",
-                style={"flex": "1", "overflow": "auto", "paddingBottom": "12px"},
+                style={
+                    "flex": "1 1 60%",
+                    "overflow": "auto",
+                    "minHeight": "80px",
+                    "paddingBottom": "8px",
+                },
                 children=[make_fixed_config_panel()],
+            ),
+            html.Div(
+                id="right-panel-divider",
+                title="Drag to resize",
+                style={
+                    "height": "6px",
+                    "flexShrink": "0",
+                    "margin": "4px -12px",
+                    "background": COLORS["border"],
+                    "cursor": "row-resize",
+                    "userSelect": "none",
+                },
+            ),
+            html.Div(
+                id="performance-container",
+                className="config-scroll",
+                style={
+                    "flex": "1 1 40%",
+                    "overflow": "auto",
+                    "minHeight": "60px",
+                    "paddingBottom": "12px",
+                },
+                children=[make_performance_panel()],
             ),
         ],
     )
