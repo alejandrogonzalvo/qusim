@@ -122,6 +122,7 @@ import qusim
 from qusim.hqa.placement import InitialPlacement
 
 from .constants import (
+    CAT_METRIC_BY_KEY,
     METRIC_BY_KEY,
     NOISE_DEFAULTS,
     SWEEP_POINTS_1D,
@@ -769,7 +770,10 @@ class DSEEngine:
 
     # -- Sweep methods -------------------------------------------------------
 
-    COLD_PATH_KEYS = frozenset({"num_qubits", "num_cores"})
+    COLD_PATH_KEYS = frozenset({
+        "num_qubits", "num_cores",
+        "circuit_type", "topology_type", "intracore_topology", "routing_algorithm",
+    })
     INTEGER_KEYS = frozenset({"num_qubits", "num_cores", "classical_link_width", "classical_routing_cycles"})
 
     def _memory_capped_max_hot(self, max_hot: int | None) -> tuple[int, int]:
@@ -783,7 +787,10 @@ class DSEEngine:
         requested = max_hot if max_hot is not None else MAX_TOTAL_POINTS_HOT
         return min(requested, _max_hot_points_for_memory()), requested
 
-    def _metric_values(self, metric_key: str, low: float, high: float, n: int) -> np.ndarray:
+    def _metric_values(self, metric_key: str, low, high, n: int) -> np.ndarray:
+        if metric_key in CAT_METRIC_BY_KEY:
+            # ``low`` is the pre-selected list of option values; high/n unused.
+            return np.array(low, dtype=object)
         m = METRIC_BY_KEY[metric_key]
         if m.log_scale:
             return np.logspace(low, high, n)
@@ -814,39 +821,54 @@ class DSEEngine:
         return n
 
     def _compute_axis_counts(
-        self, sweep_axes: list[tuple[str, float, float]], has_cold: bool,
+        self, sweep_axes: list, has_cold: bool,
         max_cold: int | None = None,
         max_hot: int | None = None,
     ) -> list[int]:
         """Compute per-axis point counts using a split budget model.
 
-        Cold-path axes (num_qubits, num_cores) are capped by ``max_cold``
-        (total cold compilations = product of cold-axis counts).
-        Hot-path axes are capped by ``max_hot`` (total grid points).
+        ``sweep_axes`` entries are either:
+          - ``(key, low, high)`` for numeric axes, or
+          - ``(key, values_list)`` for categorical axes (2-tuple).
 
-        Cold-path axes get their natural integer range, capped so their
-        product stays within the cold compilation budget.  Hot-path axes
-        share the remaining hot budget.
+        Categorical axes have a fixed count (len of selected values) and are
+        not subject to budget reduction.  Numeric cold-path axes (num_qubits,
+        num_cores) are capped by ``max_cold``.  Hot-path axes share the
+        remaining hot budget.
         """
         ndim = len(sweep_axes)
         cold_budget = max_cold if max_cold is not None else MAX_COLD_COMPILATIONS
         hot_budget = max_hot if max_hot is not None else MAX_TOTAL_POINTS_HOT
 
-        # Separate cold vs hot axes
-        cold_indices = []
-        hot_indices = []
-        for i, (key, _, _) in enumerate(sweep_axes):
-            if key in self.COLD_PATH_KEYS:
+        # Separate indices by kind
+        cat_indices = []     # categorical: fixed count, always cold-path
+        cold_indices = []    # numeric cold-path (num_qubits, num_cores)
+        hot_indices = []     # numeric hot-path (noise params)
+        for i, ax in enumerate(sweep_axes):
+            key = ax[0]
+            if key in CAT_METRIC_BY_KEY:
+                cat_indices.append(i)
+            elif key in self.COLD_PATH_KEYS:
                 cold_indices.append(i)
             else:
                 hot_indices.append(i)
 
         counts: list[int] = [0] * ndim
 
-        # Cold axes: distribute cold compilation budget
+        # Categorical axes: fixed at the number of selected options
+        for i in cat_indices:
+            counts[i] = len(sweep_axes[i][1])
+
+        cat_product = 1
+        for i in cat_indices:
+            cat_product *= counts[i]
+
+        # Numeric cold axes: distribute remaining cold budget
+        # (divide by cat_product so cold_budget applies to numeric cold combos)
+        effective_cold_budget = max(1, cold_budget // max(1, cat_product))
         if cold_indices:
             n_cold = len(cold_indices)
-            per_cold = max(MIN_POINTS_PER_AXIS, int(cold_budget ** (1.0 / n_cold)))
+            per_cold = max(MIN_POINTS_PER_AXIS, int(effective_cold_budget ** (1.0 / n_cold)))
             for i in cold_indices:
                 key, low, high = sweep_axes[i]
                 natural = int(high) - int(low) + 1
@@ -855,8 +877,7 @@ class DSEEngine:
             cold_product = 1
             for i in cold_indices:
                 cold_product *= counts[i]
-            while cold_product > cold_budget:
-                # Reduce the largest cold axis by 1
+            while cold_product > effective_cold_budget:
                 largest = max(cold_indices, key=lambda i: counts[i])
                 counts[largest] = max(MIN_POINTS_PER_AXIS, counts[largest] - 1)
                 cold_product = 1
@@ -865,17 +886,13 @@ class DSEEngine:
                 if all(counts[i] == MIN_POINTS_PER_AXIS for i in cold_indices):
                     break
 
-        # Hot axes: distribute hot budget (divided by cold product)
-        cold_product = 1
+        # Total cold multiplier (cat × numeric-cold) for hot budget division
+        cold_product = cat_product
         for i in cold_indices:
             cold_product *= counts[i]
 
         if hot_indices:
             n_hot = len(hot_indices)
-            # Per-axis floor × cold_product is the minimum achievable grid.
-            # If even that exceeds the hot budget the sweep will silently blow
-            # past max_hot (3^N grows fast past N≈8). Fail loudly so the user
-            # can raise max_hot or drop axes.
             min_total = (MIN_POINTS_PER_AXIS ** n_hot) * cold_product
             if min_total > hot_budget:
                 raise RuntimeError(
@@ -888,12 +905,11 @@ class DSEEngine:
                 )
             effective_hot_budget = max(1, hot_budget // max(1, cold_product))
             per_hot = max(MIN_POINTS_PER_AXIS, int(effective_hot_budget ** (1.0 / n_hot)))
-            # Clamp so total doesn't exceed budget
             while per_hot ** n_hot * cold_product > hot_budget and per_hot > MIN_POINTS_PER_AXIS:
                 per_hot -= 1
             for i in hot_indices:
                 counts[i] = per_hot
-        elif not cold_indices:
+        elif not cold_indices and not cat_indices:
             # All axes are neither cold nor hot — shouldn't happen, but fallback
             n = max(MIN_POINTS_PER_AXIS, int(hot_budget ** (1.0 / ndim)))
             counts = [n] * ndim
@@ -916,7 +932,7 @@ class DSEEngine:
         hot_noise = dict(noise)
         for k, v in swept.items():
             if k in self.COLD_PATH_KEYS:
-                cfg[k] = int(v)
+                cfg[k] = int(v) if k in self.INTEGER_KEYS else v
             else:
                 hot_noise[k] = v
         cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
@@ -972,7 +988,8 @@ class DSEEngine:
         groups: dict[tuple, list[tuple[tuple, dict]]] = {}
         for idx_key, swept in indexed_points:
             cold_vals = tuple(sorted(
-                (k, int(v)) for k, v in swept.items() if k in self.COLD_PATH_KEYS
+                (k, int(v) if k in self.INTEGER_KEYS else v)
+                for k, v in swept.items() if k in self.COLD_PATH_KEYS
             ))
             groups.setdefault(cold_vals, []).append((idx_key, swept))
 
@@ -1266,7 +1283,7 @@ class DSEEngine:
         from itertools import islice
 
         ndim = len(sweep_axes)
-        keys = [k for k, _, _ in sweep_axes]
+        keys = [ax[0] for ax in sweep_axes]
         has_cold = self._has_cold(*keys)
 
         # Clamp user-requested max_hot to what RAM can hold before computing
@@ -1286,22 +1303,40 @@ class DSEEngine:
                 ) from e
             raise
 
-        axes = [
-            self._metric_values(k, lo, hi, axis_counts[i])
-            for i, (k, lo, hi) in enumerate(sweep_axes)
-        ]
+        # Build per-axis value arrays.
+        # Categorical axes: ax = (key, values_list) — 2-tuple.
+        # Numeric axes:     ax = (key, low, high)   — 3-tuple.
+        axes = []
+        for i, ax in enumerate(sweep_axes):
+            k = ax[0]
+            if k in CAT_METRIC_BY_KEY:
+                # ax[1] is the list of selected option values
+                axes.append(self._metric_values(k, ax[1], None, axis_counts[i]))
+            else:
+                axes.append(self._metric_values(k, ax[1], ax[2], axis_counts[i]))
         shape = tuple(len(ax) for ax in axes)
         total = int(np.prod(shape))
 
         grid = np.empty(shape, dtype=_RESULT_DTYPE)
 
+        def _make_swept(idx):
+            """Build swept dict for one grid index, preserving value types."""
+            return {keys[d]: axes[d][idx[d]] for d in range(ndim)}
+
+        def _progress_params(swept):
+            """Coerce swept values to float where possible for progress display."""
+            out = {}
+            for k, v in swept.items():
+                try:
+                    out[k] = float(v)
+                except (TypeError, ValueError):
+                    out[k] = 0.0
+            return out
+
         if parallel and has_cold and cold_config is not None:
-            # Stream (idx, swept) as a generator so the scheduler's group
-            # dict is the only O(total) allocation; the temporary list of
-            # tuples that used to live alongside it is gone.
             def _indexed_iter():
                 for idx in np.ndindex(shape):
-                    yield idx, {keys[d]: float(axes[d][idx[d]]) for d in range(ndim)}
+                    yield idx, _make_swept(idx)
 
             rmap = self._parallel_cold_sweep(
                 cold_config, fixed_noise, _indexed_iter(), total,
@@ -1312,7 +1347,7 @@ class DSEEngine:
         elif has_cold and cold_config is not None:
             count = 0
             for idx in np.ndindex(shape):
-                swept = {keys[d]: float(axes[d][idx[d]]) for d in range(ndim)}
+                swept = _make_swept(idx)
                 grid[idx] = _result_to_row(
                     self._eval_point(cold_config, fixed_noise, swept)
                 )
@@ -1321,13 +1356,10 @@ class DSEEngine:
                     progress_callback(SweepProgress(
                         completed=count,
                         total=total,
-                        current_params={k: float(v) for k, v in swept.items()},
+                        current_params=_progress_params(swept),
                     ))
         else:
-            # Pure hot-path: stream indices in chunks. Materialising the
-            # full list(np.ndindex(shape)) allocates ~40 B × total tuples
-            # (~1.2 GB per 30 M-point sweep) on top of the result grid and
-            # is enough to push the process to OOM on its own.
+            # Pure hot-path: stream indices in chunks.
             index_iter = iter(np.ndindex(shape))
             completed = 0
             while True:
@@ -1338,7 +1370,7 @@ class DSEEngine:
                 for idx in chunk_indices:
                     noise = dict(fixed_noise)
                     for d in range(ndim):
-                        noise[keys[d]] = float(axes[d][idx[d]])
+                        noise[keys[d]] = axes[d][idx[d]]
                     noise_dicts.append(noise)
 
                 chunk_results = self.run_hot_batch(cached, noise_dicts)
@@ -1349,9 +1381,7 @@ class DSEEngine:
                         progress_callback(SweepProgress(
                             completed=completed,
                             total=total,
-                            current_params={
-                                keys[d]: float(axes[d][idx[d]]) for d in range(ndim)
-                            },
+                            current_params=_progress_params(_make_swept(idx)),
                         ))
                 del noise_dicts, chunk_results
 
