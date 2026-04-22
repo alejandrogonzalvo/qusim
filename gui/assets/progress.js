@@ -9,10 +9,6 @@
     "use strict";
 
     var POLL_MS = 150;
-    var DELAY_SHOW_MS = 1000; // only show overlay if sweep takes >1s
-    var _timer = null;
-    var _lastRunning = false;
-    var _runningStartedAt = null; // timestamp when running first detected
 
     function formatValue(v) {
         if (typeof v !== "number") return String(v);
@@ -31,19 +27,10 @@
 
         if (!data.running) {
             overlay.style.display = "none";
-            _runningStartedAt = null;
             return;
         }
 
-        // Track when the sweep started; skip rendering until delay elapses
-        var now = Date.now();
-        if (_runningStartedAt === null) {
-            _runningStartedAt = now;
-        }
-        if (now - _runningStartedAt < DELAY_SHOW_MS) {
-            return;
-        }
-
+        var phase = data.phase || "compiling";
         var pct = data.percentage || 0;
         var completed = data.completed || 0;
         var total = data.total || 0;
@@ -95,31 +82,58 @@
         overlay.style.justifyContent = "center";
         overlay.style.transition = "opacity 0.15s";
 
-        overlay.innerHTML =
-            '<div style="width:320px;max-width:90%">' +
-            // Percentage label
-            '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">' +
-            '<span style="font-size:13px;font-weight:600;color:#2B2B2B">' +
-            Math.round(pct) +
-            "%</span>" +
-            '<span style="font-size:11px;color:#888">' +
-            completed +
-            " / " +
-            total +
-            "</span>" +
-            "</div>" +
-            // Progress bar track
-            '<div style="width:100%;height:6px;background:#E5E5E5;border-radius:3px;overflow:hidden">' +
-            '<div style="width:' +
-            pct +
-            "%;height:100%;background:#2B2B2B;border-radius:3px;transition:width 0.1s linear" +
-            '"></div>' +
-            "</div>" +
-            // Parameters
-            paramHtml +
-            // Cold compilation counter
-            coldHtml +
-            "</div>";
+        var contentHtml;
+
+        if (phase === "compiling") {
+            // During cold compilation, show a pulsing indicator instead of 0/0 bar.
+            contentHtml =
+                '<div style="width:320px;max-width:90%;text-align:center">' +
+                '<div style="font-size:13px;font-weight:600;color:#2B2B2B;margin-bottom:8px">' +
+                'Compiling circuit\u2026' +
+                '</div>' +
+                '<div style="width:100%;height:6px;background:#E5E5E5;border-radius:3px;overflow:hidden">' +
+                '<div style="width:30%;height:100%;background:#2B2B2B;border-radius:3px;animation:sweep-pulse 1.2s ease-in-out infinite"></div>' +
+                '</div>' +
+                coldHtml +
+                '</div>';
+        } else {
+            contentHtml =
+                '<div style="width:320px;max-width:90%">' +
+                // Percentage label
+                '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">' +
+                '<span style="font-size:13px;font-weight:600;color:#2B2B2B">' +
+                Math.round(pct) +
+                "%</span>" +
+                '<span style="font-size:11px;color:#888">' +
+                completed +
+                " / " +
+                total +
+                "</span>" +
+                "</div>" +
+                // Progress bar track
+                '<div style="width:100%;height:6px;background:#E5E5E5;border-radius:3px;overflow:hidden">' +
+                '<div style="width:' +
+                pct +
+                "%;height:100%;background:#2B2B2B;border-radius:3px;transition:width 0.1s linear" +
+                '"></div>' +
+                '</div>' +
+                // Parameters
+                paramHtml +
+                // Cold compilation counter
+                coldHtml +
+                '</div>';
+        }
+
+        overlay.innerHTML = contentHtml;
+
+        // Inject the pulse animation if not already present.
+        if (!document.getElementById("sweep-pulse-style")) {
+            var style = document.createElement("style");
+            style.id = "sweep-pulse-style";
+            style.textContent =
+                "@keyframes sweep-pulse{0%{transform:translateX(-100%)}100%{transform:translateX(400%)}}";
+            document.head.appendChild(style);
+        }
     }
 
     function poll() {
@@ -129,7 +143,6 @@
             })
             .then(function (data) {
                 renderOverlay(data);
-                _lastRunning = data.running;
             })
             .catch(function () {
                 // Server busy (sweep in progress), keep polling
@@ -144,6 +157,6 @@
     }
 
     function start() {
-        _timer = setInterval(poll, POLL_MS);
+        setInterval(poll, POLL_MS);
     }
 })();

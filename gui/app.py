@@ -209,6 +209,7 @@ def _update_progress(p: SweepProgress) -> None:
         },
         "cold_completed": p.cold_completed,
         "cold_total": p.cold_total,
+        "phase": "sweeping",
     }
 
 
@@ -1039,7 +1040,7 @@ def run_sweep(
 
     try:
         global _sweep_progress
-        _sweep_progress = {"running": True, "completed": 0, "total": 0, "percentage": 0, "current_params": {}}
+        _sweep_progress = {"running": True, "completed": 0, "total": 0, "percentage": 0, "current_params": {}, "phase": "compiling"}
         t_start = time.time()
 
         # Build fixed noise dict from right-panel sliders
@@ -1181,6 +1182,7 @@ def run_sweep(
                         (o["label"] for o in cat_def.options if o["value"] == cat_value),
                         cat_value,
                     )
+                _sweep_progress = {**_sweep_progress, "phase": "compiling"}
                 cached = _engine.run_cold(**fc, noise=fixed_noise)
                 facet_progress["cold_done"] += 1
                 # Report cold compilation progress.

@@ -300,7 +300,7 @@ SWEEP_POINTS_COLD_3D = 5
 #     (num_qubits, num_cores) combination.
 #   Hot evaluations:   near-free when batched via Rust, safe to run many.
 MAX_COLD_COMPILATIONS = 64       # cap on unique cold-path configs
-MAX_TOTAL_POINTS_HOT = 50_000   # cap on total grid points (hot eval is cheap)
+MAX_TOTAL_POINTS_HOT = 500      # cap on total grid points (hot eval is cheap)
 
 # Legacy alias kept for backward compat in _points_per_axis
 MAX_TOTAL_POINTS_COLD = MAX_COLD_COMPILATIONS
