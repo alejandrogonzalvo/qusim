@@ -42,6 +42,8 @@ from gui.components import (
 )
 from gui.constants import (
     ANALYSIS_TABS,
+    CAT_METRIC_BY_KEY,
+    CATEGORICAL_METRICS,
     MAX_SWEEP_AXES,
     METRIC_BY_KEY,
     NOISE_DEFAULTS,
@@ -184,6 +186,8 @@ def _slim_sweep_for_browser(data: dict) -> dict:
     for k in ("xs", "ys", "zs", "axes", "shape"):
         if k in data:
             slim[k] = data[k]
+    if "facet_keys" in data:
+        slim["facet_keys"] = data["facet_keys"]
     return slim
 
 # Shared progress state — written by sweep callback, read by Flask route.
@@ -708,7 +712,8 @@ from gui.constants import SWEEPABLE_METRICS as _SM
 
 @app.callback(
     [Output(f"noise-row-{m.key}", "style") for m in _SM]
-    + [Output("cfg-row-num-qubits", "style"), Output("cfg-row-num-cores", "style")],
+    + [Output("cfg-row-num-qubits", "style"), Output("cfg-row-num-cores", "style")]
+    + [Output(f"cfg-row-cat-{cat.key}", "style") for cat in CATEGORICAL_METRICS],
     *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
     Input("num-metrics-store", "data"),
     prevent_initial_call=False,
@@ -725,7 +730,10 @@ def toggle_noise_rows(*args):
     ]
     qubits_style = {"display": "none"} if "num_qubits" in swept else {}
     cores_style = {"display": "none"} if "num_cores" in swept else {}
-    return noise_styles + [qubits_style, cores_style]
+    cat_styles = [
+        {"display": "none"} if cat.key in swept else {} for cat in CATEGORICAL_METRICS
+    ]
+    return noise_styles + [qubits_style, cores_style] + cat_styles
 
 
 # ---------------------------------------------------------------------------
@@ -771,19 +779,23 @@ def update_budget_warning(max_cold, max_hot, num_metrics, *dynamic_args):
     slider_vals = dynamic_args[MAX_METRICS:]
     n = int(num_metrics or 1)
 
-    active: list[tuple[str, float, float]] = []
+    active = []
     seen: set = set()
     for i in range(n):
         k = dropdown_vals[i]
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        if k in CAT_METRIC_BY_KEY:
+            continue
         r = slider_vals[i]
-        if k and r and k not in seen:
-            seen.add(k)
+        if r:
             active.append((k, float(r[0]), float(r[1])))
 
     if not active:
         return [], {"display": "none"}
 
-    has_cold = any(k in _engine.COLD_PATH_KEYS for k, _, _ in active)
+    has_cold = any(ax[0] in _engine.COLD_PATH_KEYS for ax in active)
     max_hot_int = int(max_hot) if max_hot else None
     effective_max_hot, requested_max_hot = _engine._memory_capped_max_hot(max_hot_int)
     mem_capped = effective_max_hot < requested_max_hot
@@ -913,13 +925,14 @@ _SIM_INPUTS = [
         Input(f"metric-slider-{i}", "value"),
     ]],
     Input("num-metrics-store", "data"),
+    *[Input(f"metric-checklist-{i}", "value") for i in range(MAX_METRICS)],
     Input("cfg-circuit-type", "value"),
-    Input("cfg-num-qubits", "value"),
-    Input("cfg-num-cores", "value"),
     Input("cfg-topology", "value"),
     Input("cfg-intracore-topology", "value"),
     Input("cfg-placement", "value"),
     Input("cfg-routing-algorithm", "value"),
+    Input("cfg-num-qubits", "value"),
+    Input("cfg-num-cores", "value"),
     Input("cfg-seed", "value"),
     Input("cfg-dynamic-decoupling", "value"),
     Input("cfg-max-cold", "value"),
@@ -940,6 +953,7 @@ app.clientside_callback(
 
 _METRIC_DROPDOWN_STATES = [State(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)]
 _METRIC_SLIDER_STATES = [State(f"metric-slider-{i}", "value") for i in range(MAX_METRICS)]
+_METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in range(MAX_METRICS)]
 
 
 @app.callback(
@@ -963,6 +977,7 @@ _METRIC_SLIDER_STATES = [State(f"metric-slider-{i}", "value") for i in range(MAX
     *_METRIC_DROPDOWN_STATES,
     *_METRIC_SLIDER_STATES,
     State("num-metrics-store", "data"),
+    *_METRIC_CHECKLIST_STATES,
     State("cfg-circuit-type", "value"),
     State("cfg-num-qubits", "value"),
     State("cfg-num-cores", "value"),
@@ -1000,6 +1015,7 @@ def run_sweep(
     dropdown_vals = all_args[idx:idx + MAX_METRICS]; idx += MAX_METRICS
     slider_vals = all_args[idx:idx + MAX_METRICS]; idx += MAX_METRICS
     num_metrics = all_args[idx]; idx += 1
+    checklist_vals = all_args[idx:idx + MAX_METRICS]; idx += MAX_METRICS
     circuit_type = all_args[idx]; idx += 1
     num_qubits = all_args[idx]; idx += 1
     num_cores = all_args[idx]; idx += 1
@@ -1038,16 +1054,26 @@ def run_sweep(
                 fixed_noise[m.key] = NOISE_DEFAULTS[m.key]
         fixed_noise["dynamic_decoupling"] = bool(dynamic_decoupling)
 
-        # Active metrics — collect from all N dropdowns
-        active = []
+        # Sweep axes from left sidebar dropdowns.
+        active_numeric = []
+        active_categorical = []
         seen: set = set()
         for i in range(int(num_metrics or 1)):
             k = dropdown_vals[i]
-            r = slider_vals[i]
-            if k and r and k not in seen:
-                seen.add(k)
-                active.append((k, r))
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            cat = CAT_METRIC_BY_KEY.get(k)
+            if cat:
+                checked = checklist_vals[i]
+                if checked:
+                    active_categorical.append((cat.key, list(checked)))
+            else:
+                r = slider_vals[i]
+                if r:
+                    active_numeric.append((k, r))
 
+        active = active_numeric + active_categorical
         if not active:
             return (
                 plot_empty("Add at least one metric axis and click Run"),
@@ -1076,12 +1102,13 @@ def run_sweep(
             "routing_algorithm": routing_algorithm or "hqa_sabre",
         }
 
-        cached = _engine.run_cold(**cold_config, noise=fixed_noise)
-        cold_elapsed = time.time() - t_start
+        # Build numeric sweep_axes from slider ranges.
+        sweep_axes = [(k, r[0], r[1]) for k, r in active_numeric]
 
-        # Use sweep_nd for N >= 4, legacy methods for 1-3D
-        if len(active) >= 4:
-            sweep_axes = [(k, r[0], r[1]) for k, r in active]
+        if not active_categorical:
+            # Pure numeric sweep — single cold compilation.
+            cached = _engine.run_cold(**cold_config, noise=fixed_noise)
+            cold_elapsed = time.time() - t_start
             result = _engine.sweep_nd(
                 cached=cached,
                 sweep_axes=sweep_axes,
@@ -1093,75 +1120,63 @@ def run_sweep(
                 max_hot=int(max_hot) if max_hot else None,
             )
             sweep_data = result.to_sweep_data()
-            # Convert result dicts to JSON-safe format
-            if "grid" in sweep_data:
-                if isinstance(sweep_data["grid"], list):
-                    sweep_data["grid"] = [
-                        _result_to_dict(r) if isinstance(r, dict) else r
-                        for r in sweep_data["grid"]
-                    ]
         else:
-            sweep_data = {"metric_keys": [k for k, _ in active]}
-            if len(active) == 1:
-                k0, r0 = active[0]
-                xs, results = _engine.sweep_1d(
-                    cached, k0, r0[0], r0[1], fixed_noise, cold_config=cold_config,
-                    progress_callback=_update_progress, parallel=True,
+            # Categorical axes present — faceted sweep.
+            # Build cartesian product of selected categorical values.
+            from itertools import product as _product
+            cat_keys = [k for k, _ in active_categorical]
+            cat_val_lists = [vals for _, vals in active_categorical]
+            cat_combos = list(_product(*cat_val_lists))
+
+            facet_results = []
+            for combo in cat_combos:
+                fc = {**cold_config}
+                label_dict = {}
+                for cat_key, cat_value in zip(cat_keys, combo):
+                    cat_def = CAT_METRIC_BY_KEY[cat_key]
+                    fc[cat_def.cold_config_key] = cat_value
+                    label_dict[cat_key] = next(
+                        (o["label"] for o in cat_def.options if o["value"] == cat_value),
+                        cat_value,
+                    )
+                cached = _engine.run_cold(**fc, noise=fixed_noise)
+                res = _engine.sweep_nd(
+                    cached=cached,
+                    sweep_axes=sweep_axes,
+                    fixed_noise=fixed_noise,
+                    cold_config=fc,
+                    progress_callback=_update_progress,
+                    parallel=True,
                     max_cold=int(max_cold) if max_cold else None,
                     max_hot=int(max_hot) if max_hot else None,
                 )
-                sweep_data["xs"] = xs.tolist()
-                sweep_data["grid"] = [_result_to_dict(r) for r in results]
-            elif len(active) == 2:
-                k0, r0 = active[0]
-                k1, r1 = active[1]
-                xs, ys, grid = _engine.sweep_2d(
-                    cached,
-                    k0, r0[0], r0[1],
-                    k1, r1[0], r1[1],
-                    fixed_noise,
-                    cold_config=cold_config,
-                    progress_callback=_update_progress, parallel=True,
-                    max_cold=int(max_cold) if max_cold else None,
-                    max_hot=int(max_hot) if max_hot else None,
-                )
-                sweep_data["xs"] = xs.tolist()
-                sweep_data["ys"] = ys.tolist()
-                sweep_data["grid"] = [[_result_to_dict(r) for r in row] for row in grid]
-            elif len(active) == 3:
-                k0, r0 = active[0]
-                k1, r1 = active[1]
-                k2, r2 = active[2]
-                xs, ys, zs, grid = _engine.sweep_3d(
-                    cached,
-                    k0, r0[0], r0[1],
-                    k1, r1[0], r1[1],
-                    k2, r2[0], r2[1],
-                    fixed_noise,
-                    cold_config=cold_config,
-                    progress_callback=_update_progress, parallel=True,
-                    max_cold=int(max_cold) if max_cold else None,
-                    max_hot=int(max_hot) if max_hot else None,
-                )
-                sweep_data["xs"] = xs.tolist()
-                sweep_data["ys"] = ys.tolist()
-                sweep_data["zs"] = zs.tolist()
-                sweep_data["grid"] = [
-                    [[_result_to_dict(r) for r in row] for row in plane] for plane in grid
-                ]
+                sd = res.to_sweep_data()
+                facet_results.append({"label": label_dict, **sd})
+
+            # For a single categorical combo, unwrap to plain sweep_data.
+            if len(facet_results) == 1:
+                sweep_data = facet_results[0]
+            else:
+                sweep_data = {
+                    "metric_keys": facet_results[0].get("metric_keys", []),
+                    "facets": facet_results,
+                    "facet_keys": cat_keys,
+                }
+            cold_elapsed = time.time() - t_start
 
         sweep_elapsed = time.time() - t_start - cold_elapsed
         total_elapsed = time.time() - t_start
-        cache_indicator = (
-            "cached ✓" if cached.cold_time_s < 0.1 else f"mapped in {cold_elapsed:.1f}s"
-        )
+        n_facets = len(cat_combos) if active_categorical else 1
+        pts = _count_points(sweep_data)
+        facet_tag = f" x {n_facets} facets" if n_facets > 1 else ""
         status = (
-            f"Cold path: {cache_indicator}  |  "
-            f"Sweep ({len(active)}D, {_count_points(sweep_data)} pts): {sweep_elapsed:.2f}s  |  "
+            f"Cold: {cold_elapsed:.1f}s  |  "
+            f"Sweep ({len(active_numeric)}D, {pts} pts{facet_tag}): {sweep_elapsed:.2f}s  |  "
             f"Total: {total_elapsed:.1f}s"
         )
 
-        view = resolve_view_type(current_view, len(active))
+        ndim = len(active_numeric) or 1
+        view = resolve_view_type(current_view, ndim)
         n_t = int(num_thresholds or 3)
         all_t = list(t_vals[:n_t])
         all_c = list(tc_vals[:n_t])
@@ -1178,17 +1193,19 @@ def run_sweep(
         frozen_max = dash.no_update
         frozen_label = dash.no_update
 
-        if len(active) == 3:
+        if ndim == 3 and "facets" not in sweep_data:
             interp_grid = sweep_to_interp_grid(sweep_data, out_key)
             fs_cfg = frozen_slider_config(sweep_data)
             if fs_cfg and is_frozen_view(view):
                 frozen_style = {"padding": "4px 16px 8px"}
                 frozen_min = fs_cfg["min"]
                 frozen_max = fs_cfg["max"]
-                frozen_label = f"{METRIC_BY_KEY[fs_cfg['metric_key']].label}"
+                _fk = fs_cfg["metric_key"]
+                _fm = METRIC_BY_KEY.get(_fk)
+                frozen_label = _fm.label if _fm else _fk
 
         fig = build_figure(
-            len(active),
+            ndim,
             sweep_data,
             out_key,
             view_type=view,
@@ -1203,7 +1220,7 @@ def run_sweep(
             slim_store,
             status,
             view,
-            make_view_tab_bar(len(active), view),
+            make_view_tab_bar(ndim, view),
             dirty,
             interp_grid,
             frozen_style,
@@ -1245,6 +1262,8 @@ def run_sweep(
 
 
 def _count_points(sweep_data: dict) -> int:
+    if "facets" in sweep_data:
+        return sum(_count_points(f) for f in sweep_data["facets"])
     if "shape" in sweep_data:
         result = 1
         for s in sweep_data["shape"]:
@@ -1404,15 +1423,56 @@ for _idx in range(MAX_METRICS):
             _tooltip_cfg(m.log_scale, m.unit, always_visible=True),
         )
 
-# Register default metrics for rows 3+ (rows 0-2 already have defaults in make_metric_selector)
-# These will use the DEFAULT_SWEEP_AXES list + cycle through remaining metrics
+# ---------------------------------------------------------------------------
+# Callback: toggle slider / checklist when dropdown selects categorical
+# ---------------------------------------------------------------------------
+
+_RANGE_LABEL_STYLE = {
+    "display": "flex",
+    "justifyContent": "space-between",
+    "fontSize": "11px",
+    "color": COLORS["accent2"],
+    "marginTop": "-20px",
+}
+
+for _idx in range(MAX_METRICS):
+
+    @app.callback(
+        Output(f"metric-slider-container-{_idx}", "style"),
+        Output(f"metric-checklist-container-{_idx}", "style"),
+        Output(f"metric-checklist-{_idx}", "options"),
+        Output(f"metric-checklist-{_idx}", "value"),
+        Output(f"metric-range-label-{_idx}", "style"),
+        Input(f"metric-dropdown-{_idx}", "value"),
+        prevent_initial_call=True,
+    )
+    def _toggle_slider_checklist(metric_key, _i=_idx):
+        cat = CAT_METRIC_BY_KEY.get(metric_key)
+        if cat:
+            return (
+                {"display": "none"},
+                {},
+                cat.options,
+                [o["value"] for o in cat.options],
+                {"display": "none"},
+            )
+        return (
+            {"paddingBottom": "22px"},
+            {"display": "none"},
+            [],
+            [],
+            _RANGE_LABEL_STYLE,
+        )
 
 
 # ---------------------------------------------------------------------------
 # Callback: filter dropdown options so a metric can't be selected twice
 # ---------------------------------------------------------------------------
 
-_ALL_METRIC_OPTIONS = [{"label": m.label, "value": m.key} for m in SWEEPABLE_METRICS]
+_ALL_METRIC_OPTIONS = (
+    [{"label": m.label, "value": m.key} for m in SWEEPABLE_METRICS]
+    + [{"label": c.label, "value": c.key} for c in CATEGORICAL_METRICS]
+)
 
 
 @app.callback(
@@ -1437,6 +1497,7 @@ def _filter_dropdown_options(*args):
             for opt in _ALL_METRIC_OPTIONS
         ])
     return results
+
 
 
 # ---------------------------------------------------------------------------

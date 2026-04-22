@@ -43,7 +43,7 @@ class TestResolveViewType:
         assert resolve_view_type(None, 3) == "isosurface"
 
     def test_falls_back_to_default_for_1d(self):
-        assert resolve_view_type(None, 1) == "line"
+        assert resolve_view_type(None, 1) == "parallel"
 
     def test_preserves_analysis_view_across_dimensionalities(self):
         """Analysis views (parallel, slices, importance, etc.) work for any dimensionality."""

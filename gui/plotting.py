@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import plotly.graph_objects as go
 
-from .constants import METRIC_BY_KEY, OUTPUT_METRICS
+from .constants import CAT_METRIC_BY_KEY, METRIC_BY_KEY, OUTPUT_METRICS
 
 # Map output metric key → display label
 _OUTPUT_LABELS = {m["value"]: m["label"] for m in OUTPUT_METRICS}
@@ -44,10 +44,10 @@ def _extract(results: list, output_key: str) -> np.ndarray:
 
 
 def _axis_label(metric_key: str) -> str:
-    m = METRIC_BY_KEY.get(metric_key)
+    m = METRIC_BY_KEY.get(metric_key) or CAT_METRIC_BY_KEY.get(metric_key)
     if m is None:
         return metric_key
-    unit = f" ({m.unit})" if m.unit else ""
+    unit = f" ({m.unit})" if hasattr(m, "unit") and m.unit else ""
     return f"{m.label}{unit}"
 
 
@@ -699,6 +699,10 @@ def _flatten_sweep_to_table(sweep_data: dict) -> tuple[list[str], list[str], np.
     numpy float64 array — callers should treat it as such and avoid
     re-wrapping with ``np.array(...)`` (which would copy).
     """
+    # Fast path: pre-built table from _flatten_facets_for_analysis.
+    if "_prebuilt_table" in sweep_data:
+        return sweep_data["_prebuilt_table"]
+
     metric_keys = sweep_data["metric_keys"]
     grid = sweep_data["grid"]
     ndim = len(metric_keys)
@@ -853,21 +857,28 @@ def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
     elif available_outputs:
         color_col_idx = num_param_cols
 
+    cat_ticks = sweep_data.get("_cat_tick_labels", {})
+
     dimensions = []
     for i in visible_col_indices:
         name = col_names[i]
-        m = METRIC_BY_KEY.get(name)
+        m = METRIC_BY_KEY.get(name) or CAT_METRIC_BY_KEY.get(name)
         label = m.label if m else _OUTPUT_LABELS.get(name, name)
         col = data[:, i]
         col_range = [float(col.min()), float(col.max())]
         # Avoid degenerate range
         if col_range[0] == col_range[1]:
             col_range[1] = col_range[0] + 1.0
-        dimensions.append(dict(
+        dim = dict(
             label=label,
             values=col.tolist(),
             range=col_range,
-        ))
+        )
+        if name in cat_ticks:
+            labels = cat_ticks[name]
+            dim["tickvals"] = list(range(len(labels)))
+            dim["ticktext"] = labels
+        dimensions.append(dim)
 
     color_vals = data[:, color_col_idx].tolist() if color_col_idx is not None else None
 
@@ -934,7 +945,7 @@ def plot_slice(sweep_data: dict, output_key: str) -> go.Figure:
         shared_yaxes=True,
         horizontal_spacing=0.08,
         vertical_spacing=0.12,
-        subplot_titles=[METRIC_BY_KEY[k].label if k in METRIC_BY_KEY else k for k in metric_keys],
+        subplot_titles=[getattr(METRIC_BY_KEY.get(k) or CAT_METRIC_BY_KEY.get(k), "label", k) for k in metric_keys],
     )
 
     for idx, param_key in enumerate(metric_keys):
@@ -982,6 +993,19 @@ def plot_slice(sweep_data: dict, output_key: str) -> go.Figure:
     )
     fig.update_yaxes(range=y_range, gridcolor=_GRID_COLOR, tickfont=dict(size=9, color=_TEXT_MUTED))
     fig.update_xaxes(gridcolor=_GRID_COLOR, tickfont=dict(size=9, color=_TEXT_MUTED))
+
+    # Set categorical tick labels on x-axes.
+    cat_ticks = sweep_data.get("_cat_tick_labels", {})
+    for idx, param_key in enumerate(metric_keys):
+        if param_key in cat_ticks:
+            labels = cat_ticks[param_key]
+            r = idx // cols + 1
+            c = idx % cols + 1
+            fig.update_xaxes(
+                tickvals=list(range(len(labels))),
+                ticktext=labels,
+                row=r, col=c,
+            )
     if is_fidelity:
         fig.update_yaxes(title_text=_OUTPUT_LABELS.get(output_key, output_key), row=1, col=1)
 
@@ -1011,7 +1035,7 @@ def plot_importance(sweep_data: dict, output_key: str) -> go.Figure:
             mask = data[:, idx] == v
             means.append(data[mask, out_col].mean())
         importance = max(means) - min(means) if means else 0.0
-        m = METRIC_BY_KEY.get(param_key)
+        m = METRIC_BY_KEY.get(param_key) or CAT_METRIC_BY_KEY.get(param_key)
         label = m.label if m else param_key
         importances.append((label, importance))
 
@@ -1200,7 +1224,7 @@ def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
     col_names = metric_keys + available_outputs
     labels = []
     for name in col_names:
-        m = METRIC_BY_KEY.get(name)
+        m = METRIC_BY_KEY.get(name) or CAT_METRIC_BY_KEY.get(name)
         labels.append(m.label if m else _OUTPUT_LABELS.get(name, name))
 
     n = len(col_names)
@@ -1282,6 +1306,9 @@ def plot_empty(message: str = "Select sweep axes and click Run") -> go.Figure:
 # ---------------------------------------------------------------------------
 
 def sweep_to_csv(sweep_data: dict) -> str:
+    if "facets" in sweep_data and sweep_data["facets"]:
+        return _faceted_sweep_to_csv(sweep_data)
+
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
     col_names = []
@@ -1297,6 +1324,229 @@ def sweep_to_csv(sweep_data: dict) -> str:
     return "\n".join(lines)
 
 
+def _faceted_sweep_to_csv(sweep_data: dict) -> str:
+    """Export faceted sweep data with extra columns per facet key."""
+    facet_keys = sweep_data.get("facet_keys", [])
+    facets = sweep_data["facets"]
+
+    all_lines: list[str] = []
+    header_written = False
+
+    for facet in facets:
+        label_dict = facet.get("label", {})
+        metric_keys, available_outputs, rows = _flatten_sweep_to_table(facet)
+
+        if not header_written:
+            col_names = list(facet_keys)
+            for k in metric_keys:
+                m = METRIC_BY_KEY.get(k)
+                col_names.append(m.label if m else k)
+            for k in available_outputs:
+                col_names.append(_OUTPUT_LABELS.get(k, k))
+            all_lines.append(",".join(col_names))
+            header_written = True
+
+        facet_prefix = [str(label_dict.get(fk, "")) for fk in facet_keys]
+        for row in rows:
+            all_lines.append(",".join(facet_prefix + [f"{v}" for v in row]))
+
+    return "\n".join(all_lines)
+
+
+def _facet_grid_dims(facet_keys: list[str], n_facets: int, sweep_data: dict) -> tuple[int, int, list[str]]:
+    """Compute (rows, cols, subplot_titles) for the facet grid.
+
+    * 1 facet key  → 1 row × N cols
+    * 2 facet keys → first key → rows, second → cols
+    * 3+ keys      → rows = product of all-but-last, cols = last
+    """
+    facets = sweep_data["facets"]
+    if len(facet_keys) == 1:
+        rows, cols = 1, n_facets
+    elif len(facet_keys) == 2:
+        from gui.constants import CAT_METRIC_BY_KEY as _cm
+        cols = len(_cm[facet_keys[1]].options)
+        rows = (n_facets + cols - 1) // cols
+    else:
+        from gui.constants import CAT_METRIC_BY_KEY as _cm
+        cols = len(_cm[facet_keys[-1]].options)
+        rows = (n_facets + cols - 1) // cols
+    titles = [" / ".join(str(v) for v in f["label"].values()) for f in facets]
+    return rows, cols, titles
+
+
+def _build_faceted_figure(
+    num_metrics: int,
+    sweep_data: dict,
+    output_key: str,
+    view_type: str | None = None,
+    thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
+) -> go.Figure:
+    """Build a subplot grid, one panel per facet."""
+    from plotly.subplots import make_subplots
+
+    facets = sweep_data["facets"]
+    facet_keys = sweep_data.get("facet_keys", [])
+    n_facets = len(facets)
+    rows, cols, titles = _facet_grid_dims(facet_keys, n_facets, sweep_data)
+
+    is_3d = num_metrics == 3 and view_type in ("scatter3d", "isosurface", None)
+    specs = None
+    if is_3d:
+        specs = [[{"type": "scene"} for _ in range(cols)] for _ in range(rows)]
+
+    h_spacing = max(0.02, 0.12 / cols) if not is_3d else max(0.03, 0.20 / cols)
+    v_spacing = max(0.04, 0.12 / rows) if not is_3d else max(0.06, 0.20 / rows)
+
+    fig = make_subplots(
+        rows=rows, cols=cols,
+        subplot_titles=titles + [""] * (rows * cols - n_facets),
+        specs=specs,
+        horizontal_spacing=h_spacing,
+        vertical_spacing=v_spacing,
+    )
+
+    # Compute global zmin/zmax for shared colorscale (2D views).
+    global_zmin = float("inf")
+    global_zmax = float("-inf")
+    if num_metrics == 2:
+        for facet in facets:
+            grid = facet.get("grid", [])
+            for row_data in grid:
+                for cell in row_data:
+                    v = float(cell.get(output_key, 0.0)) if isinstance(cell, dict) else 0.0
+                    if v < global_zmin:
+                        global_zmin = v
+                    if v > global_zmax:
+                        global_zmax = v
+
+    for idx, facet in enumerate(facets):
+        r = idx // cols + 1
+        c = idx % cols + 1
+
+        # Build a single-facet figure, then transplant traces into the grid.
+        panel_fig = build_figure(
+            num_metrics, facet, output_key,
+            view_type=view_type,
+            thresholds=thresholds,
+            threshold_colors=threshold_colors,
+        )
+        for trace in panel_fig.data:
+            if is_3d:
+                scene_name = f"scene{idx + 1}" if idx > 0 else "scene"
+                trace.scene = scene_name
+            if hasattr(trace, "showlegend"):
+                trace.showlegend = False
+            fig.add_trace(trace, row=r, col=c)
+
+    # Synchronize colorscale range across heatmaps/contours.
+    if num_metrics == 2 and global_zmin < global_zmax:
+        for trace in fig.data:
+            if hasattr(trace, "zmin"):
+                trace.zmin = global_zmin
+                trace.zmax = global_zmax
+
+    row_height = 500 if is_3d else 350
+    fig.update_layout(
+        **_LAYOUT_BASE,
+        height=max(500, row_height * rows),
+        showlegend=False,
+    )
+    return fig
+
+
+def _flatten_facets_for_analysis(sweep_data: dict) -> dict:
+    """Merge all facets into a single flat sweep_data for analysis views.
+
+    Each facet's grid is flattened and tagged with numeric-encoded categorical
+    values so that analysis views (parallel coordinates, slices, importance,
+    etc.) can treat categoricals as extra dimensions alongside the numeric axes.
+
+    Returns a sweep_data dict with a ``_prebuilt_table`` key containing the
+    already-flattened ``(metric_keys, available_outputs, data)`` tuple so
+    that ``_flatten_sweep_to_table`` can skip re-flattening.
+    """
+    facets = sweep_data["facets"]
+    facet_keys = sweep_data.get("facet_keys", [])
+    base_metric_keys = facets[0].get("metric_keys", [])
+    ndim = len(base_metric_keys)
+
+    # Build value→index maps for each categorical key so they become numeric.
+    cat_value_maps: list[dict[str, int]] = []
+    for fk in facet_keys:
+        seen_vals: dict[str, int] = {}
+        for f in facets:
+            v = f.get("label", {}).get(fk, "")
+            if v not in seen_vals:
+                seen_vals[v] = len(seen_vals)
+        cat_value_maps.append(seen_vals)
+
+    # Resolve axes from the first facet (all facets share the same numeric axes).
+    first = facets[0]
+    if ndim == 1:
+        axes = [first.get("xs", [])]
+    elif ndim == 2:
+        axes = [first.get("xs", []), first.get("ys", [])]
+    elif ndim == 3:
+        axes = [first.get("xs", []), first.get("ys", []), first.get("zs", [])]
+    else:
+        axes = first.get("axes", [])
+
+    # Determine available output keys from a sample cell.
+    sample = _find_sample(first.get("grid", []), ndim)
+    available_outputs = [k for k in _OUTPUT_KEYS if k in sample] if sample else []
+
+    # Flatten every facet's grid into a combined row list.
+    combined_rows: list[list[float]] = []
+    for f in facets:
+        label = f.get("label", {})
+        cat_vals = [float(cat_value_maps[ci].get(label.get(fk, ""), 0))
+                    for ci, fk in enumerate(facet_keys)]
+
+        grid = f.get("grid", [])
+
+        # Structured numpy grid (N >= 4 production path) → vectorised flatten.
+        if isinstance(grid, np.ndarray) and grid.dtype.names:
+            flat_data = _flatten_structured(grid, axes, ndim, available_outputs)
+            for ri in range(flat_data.shape[0]):
+                row = flat_data[ri].tolist()
+                row[ndim:ndim] = cat_vals
+                combined_rows.append(row)
+        else:
+            facet_rows: list[list[float]] = []
+            if ndim <= 3:
+                _flatten_nested(grid, axes, ndim, available_outputs, facet_rows)
+            else:
+                shape = tuple(f.get("shape", [len(ax) for ax in axes]))
+                _flatten_nd(grid, axes, shape, ndim, available_outputs, facet_rows)
+            for row in facet_rows:
+                row[ndim:ndim] = cat_vals
+                combined_rows.append(row)
+
+    combined_metric_keys = list(base_metric_keys) + list(facet_keys)
+
+    if not combined_rows:
+        data = np.empty((0, len(combined_metric_keys) + len(available_outputs)),
+                        dtype=np.float64)
+    else:
+        data = np.asarray(combined_rows, dtype=np.float64)
+
+    # Build index→label maps so views can show option names instead of numbers.
+    cat_tick_labels: dict[str, list[str]] = {}
+    for ci, fk in enumerate(facet_keys):
+        inv = {idx: name for name, idx in cat_value_maps[ci].items()}
+        cat_tick_labels[fk] = [inv[j] for j in range(len(inv))]
+
+    return {
+        "metric_keys": combined_metric_keys,
+        "xs": [],
+        "grid": [],
+        "_prebuilt_table": (combined_metric_keys, available_outputs, data),
+        "_cat_tick_labels": cat_tick_labels,
+    }
+
+
 def build_figure(
     num_metrics: int,
     sweep_data: dict,
@@ -1308,6 +1558,20 @@ def build_figure(
 ) -> go.Figure:
     if sweep_data is None:
         return plot_empty()
+
+    # Faceted data → delegate to subplot grid builder for spatial views,
+    # or flatten into a single dataset for analysis views.
+    if "facets" in sweep_data and sweep_data["facets"]:
+        _analysis_views = {"parallel", "slices", "importance", "pareto", "correlation"}
+        if view_type in _analysis_views:
+            sweep_data = _flatten_facets_for_analysis(sweep_data)
+        else:
+            return _build_faceted_figure(
+                num_metrics, sweep_data, output_key,
+                view_type=view_type,
+                thresholds=thresholds,
+                threshold_colors=threshold_colors,
+            )
 
     _tc = threshold_colors
 
