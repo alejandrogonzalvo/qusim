@@ -52,6 +52,23 @@ def _make_2d_facet(label_dict, nx=5, ny=4):
     return {"label": label_dict, "metric_keys": ["single_gate_error", "two_gate_error"], "xs": xs, "ys": ys, "grid": grid}
 
 
+def _make_3d_facet(label_dict, nx=8, ny=8, nz=8):
+    """Build a single-facet 3D sweep_data dict."""
+    xs = np.linspace(1e-5, 1e-1, nx).tolist()
+    ys = np.linspace(1e-4, 1e-2, ny).tolist()
+    zs = np.linspace(1e-3, 1e-1, nz).tolist()
+    grid = []
+    for i in range(nx):
+        plane = []
+        for j in range(ny):
+            row = []
+            for k in range(nz):
+                row.append({"overall_fidelity": 1.0 - (i + j + k) * 0.005, "total_epr_pairs": float(i + j + k)})
+            plane.append(row)
+        grid.append(plane)
+    return {"label": label_dict, "metric_keys": ["t1", "t2", "two_gate_time"], "xs": xs, "ys": ys, "zs": zs, "grid": grid}
+
+
 @pytest.fixture
 def faceted_1d_data():
     """Faceted 1D sweep: 2 routing algorithms."""
@@ -87,6 +104,20 @@ def faceted_2d_data():
             facets.append(_make_2d_facet({"routing_algorithm": routing, "topology_type": topo}))
     return {
         "metric_keys": ["single_gate_error", "two_gate_error"],
+        "facet_keys": ["routing_algorithm", "topology_type"],
+        "facets": facets,
+    }
+
+
+@pytest.fixture
+def faceted_3d_data():
+    """Faceted 3D sweep: 2 routing x 3 topology = 6 facets."""
+    facets = []
+    for routing in ["HQA + Sabre", "TeleSABRE"]:
+        for topo in ["Ring", "All-to-All", "Linear"]:
+            facets.append(_make_3d_facet({"routing_algorithm": routing, "topology_type": topo}))
+    return {
+        "metric_keys": ["t1", "t2", "two_gate_time"],
         "facet_keys": ["routing_algorithm", "topology_type"],
         "facets": facets,
     }
@@ -141,6 +172,18 @@ class TestFacetedBuildFigure:
             zmaxs = {t.zmax for t in heatmaps if t.zmax is not None}
             assert len(zmins) == 1, f"Expected shared zmin, got {zmins}"
             assert len(zmaxs) == 1, f"Expected shared zmax, got {zmaxs}"
+
+    def test_3d_faceted_isosurface_returns_figure(self, faceted_3d_data):
+        """6-facet 3D isosurface must render without timeout/crash."""
+        fig = build_figure(3, faceted_3d_data, "overall_fidelity", view_type="isosurface")
+        assert isinstance(fig, go.Figure)
+        assert len(fig.data) >= 6  # at least 1 trace per facet
+
+    def test_3d_faceted_scatter_returns_figure(self, faceted_3d_data):
+        """6-facet 3D scatter must render without timeout/crash."""
+        fig = build_figure(3, faceted_3d_data, "overall_fidelity", view_type="scatter3d")
+        assert isinstance(fig, go.Figure)
+        assert len(fig.data) >= 6
 
 
 # ---------------------------------------------------------------------------

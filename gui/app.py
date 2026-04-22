@@ -1127,9 +1127,51 @@ def run_sweep(
             cat_keys = [k for k, _ in active_categorical]
             cat_val_lists = [vals for _, vals in active_categorical]
             cat_combos = list(_product(*cat_val_lists))
+            n_combos = len(cat_combos)
+
+            # Unified progress: track completed points across all facets
+            # so the loading bar advances monotonically instead of resetting.
+            facet_progress = {"completed_offset": 0, "total": 0, "cold_done": 0}
+
+            def _faceted_progress(p: SweepProgress) -> None:
+                _update_progress(SweepProgress(
+                    completed=facet_progress["completed_offset"] + p.completed,
+                    total=facet_progress["total"],
+                    current_params=p.current_params,
+                    cold_completed=facet_progress["cold_done"] + p.cold_completed,
+                    cold_total=n_combos + p.cold_total,
+                ))
+
+            # Dry-run axis computation to get per-facet point count for total.
+            _dry_fc = {**cold_config}
+            for cat_key, cat_value in zip(cat_keys, cat_combos[0]):
+                _dry_fc[CAT_METRIC_BY_KEY[cat_key].cold_config_key] = cat_value
+            _dry_cached = _engine.run_cold(**_dry_fc, noise=fixed_noise)
+            _dry_res = _engine.sweep_nd(
+                cached=_dry_cached,
+                sweep_axes=sweep_axes,
+                fixed_noise=fixed_noise,
+                cold_config=_dry_fc,
+                max_cold=int(max_cold) if max_cold else None,
+                max_hot=int(max_hot) if max_hot else None,
+            )
+            per_facet_pts = _dry_res.grid.size
+            facet_progress["total"] = per_facet_pts * n_combos
+            facet_progress["cold_done"] = 1  # first combo already compiled
+            facet_progress["completed_offset"] = per_facet_pts  # first facet done
 
             facet_results = []
-            for combo in cat_combos:
+            sd = _dry_res.to_sweep_data()
+            first_label = {}
+            for cat_key, cat_value in zip(cat_keys, cat_combos[0]):
+                cat_def = CAT_METRIC_BY_KEY[cat_key]
+                first_label[cat_key] = next(
+                    (o["label"] for o in cat_def.options if o["value"] == cat_value),
+                    cat_value,
+                )
+            facet_results.append({"label": first_label, **sd})
+
+            for combo in cat_combos[1:]:
                 fc = {**cold_config}
                 label_dict = {}
                 for cat_key, cat_value in zip(cat_keys, combo):
@@ -1140,18 +1182,27 @@ def run_sweep(
                         cat_value,
                     )
                 cached = _engine.run_cold(**fc, noise=fixed_noise)
+                facet_progress["cold_done"] += 1
+                # Report cold compilation progress.
+                _update_progress(SweepProgress(
+                    completed=facet_progress["completed_offset"],
+                    total=facet_progress["total"],
+                    cold_completed=facet_progress["cold_done"],
+                    cold_total=n_combos,
+                ))
                 res = _engine.sweep_nd(
                     cached=cached,
                     sweep_axes=sweep_axes,
                     fixed_noise=fixed_noise,
                     cold_config=fc,
-                    progress_callback=_update_progress,
+                    progress_callback=_faceted_progress,
                     parallel=True,
                     max_cold=int(max_cold) if max_cold else None,
                     max_hot=int(max_hot) if max_hot else None,
                 )
                 sd = res.to_sweep_data()
                 facet_results.append({"label": label_dict, **sd})
+                facet_progress["completed_offset"] += res.grid.size
 
             # For a single categorical combo, unwrap to plain sweep_data.
             if len(facet_results) == 1:

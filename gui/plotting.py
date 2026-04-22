@@ -329,6 +329,7 @@ def plot_3d(
     output_key: str,
     thresholds: list[float] | None = None,
     threshold_colors: list[str] | None = None,
+    point_cap: int | None = None,
 ) -> go.Figure:
     _colors = threshold_colors or _THRESHOLD_COLORS
     m1 = METRIC_BY_KEY.get(metric_key1)
@@ -336,8 +337,10 @@ def plot_3d(
     m3 = METRIC_BY_KEY.get(metric_key3)
 
     # Downsample heavy grids so the browser doesn't stall rendering 50k+ markers.
+    cap = point_cap if point_cap is not None else _MAX_BROWSER_3D_POINTS
     x_values, y_values, z_values, grid, _strides = _downsample_grid_3d(
         np.asarray(x_values), np.asarray(y_values), np.asarray(z_values), grid,
+        cap=cap,
     )
 
     xs_all, ys_all, zs_all, fs_all = [], [], [], []
@@ -578,6 +581,7 @@ def plot_3d_isosurface(
     output_key: str,
     thresholds: list[float] | None = None,
     threshold_colors: list[str] | None = None,
+    point_cap: int | None = None,
 ) -> go.Figure:
     _colors = threshold_colors or _THRESHOLD_COLORS
     total_points = len(x_values) * len(y_values) * len(z_values)
@@ -589,8 +593,10 @@ def plot_3d_isosurface(
 
     # Downsample when total > cap so Plotly's marching-cubes + WebGL stays
     # on the main thread for a reasonable time.
+    cap = point_cap if point_cap is not None else _MAX_BROWSER_3D_POINTS
     x_values, y_values, z_values, grid, _strides = _downsample_grid_3d(
         np.asarray(x_values), np.asarray(y_values), np.asarray(z_values), grid,
+        cap=cap,
     )
 
     xs, ys, zs, fs, x_title, y_title, z_title = _flatten_3d_grid(
@@ -1421,6 +1427,10 @@ def _build_faceted_figure(
                     if v > global_zmax:
                         global_zmax = v
 
+    # For 3D faceted views, divide the point budget across facets so the
+    # combined figure stays within the browser's WebGL/JSON limits.
+    facet_3d_cap = _MAX_BROWSER_3D_POINTS // max(n_facets, 1) if is_3d else None
+
     for idx, facet in enumerate(facets):
         r = idx // cols + 1
         c = idx % cols + 1
@@ -1431,6 +1441,7 @@ def _build_faceted_figure(
             view_type=view_type,
             thresholds=thresholds,
             threshold_colors=threshold_colors,
+            _3d_point_cap=facet_3d_cap,
         )
         for trace in panel_fig.data:
             if is_3d:
@@ -1555,6 +1566,7 @@ def build_figure(
     thresholds: list[float] | None = None,
     threshold_colors: list[str] | None = None,
     frozen_z: float | None = None,
+    _3d_point_cap: int | None = None,
 ) -> go.Figure:
     if sweep_data is None:
         return plot_empty()
@@ -1675,9 +1687,9 @@ def build_figure(
                     threshold_colors=_tc,
                 )
                 if view_type == "isosurface":
-                    fig = plot_3d_isosurface(**_3d_args)
+                    fig = plot_3d_isosurface(**_3d_args, point_cap=_3d_point_cap)
                 else:
-                    fig = plot_3d(**_3d_args)
+                    fig = plot_3d(**_3d_args, point_cap=_3d_point_cap)
             elif num_metrics >= 4:
                 # For N >= 4, default to parallel coordinates
                 fig = plot_parallel_coordinates(sweep_data, output_key)
