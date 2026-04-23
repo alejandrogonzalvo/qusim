@@ -697,6 +697,7 @@ app.layout = html.Div(
         dcc.Store(id="interp-grid-store", data=None, storage_type="memory"),
         dcc.Store(id="frozen-axis-store", data=2, storage_type="memory"),
         dcc.Store(id="session-loaded-tick", data=0, storage_type="memory"),
+        dcc.Store(id="suppress-cascade", data=False, storage_type="memory"),
         dcc.Download(id="session-download"),
         dcc.Interval(id="sweep-check", interval=16, n_intervals=0),
     ],
@@ -1696,16 +1697,18 @@ for _idx in range(MAX_METRICS):
         Output(f"metric-slider-{_idx}", "marks"),
         Output(f"metric-slider-{_idx}", "value"),
         Output(f"metric-slider-{_idx}", "tooltip"),
+        Output("suppress-cascade", "data", allow_duplicate=True),
         Input(f"metric-dropdown-{_idx}", "value"),
+        State("suppress-cascade", "data"),
         prevent_initial_call=True,
     )
-    def _reconfigure_slider(metric_key, _i=_idx):
+    def _reconfigure_slider(metric_key, suppress, _i=_idx):
         no = dash.no_update
         if not metric_key:
-            return (no, no, no, no, no, no)
+            return (no, no, no, no, no, no, no)
         m = METRIC_BY_KEY.get(metric_key)
         if m is None:
-            return (no, no, no, no, no, no)
+            return (no, no, no, no, no, no, no)
         marks = (
             _log_marks(m.slider_min, m.slider_max, m.unit)
             if m.log_scale
@@ -1715,13 +1718,18 @@ for _idx in range(MAX_METRICS):
             step = 2 if m.key == "num_qubits" else 1
         else:
             step = (m.slider_max - m.slider_min) / 200
+        # Preserve the slider value when the dropdown change came from a
+        # session load (suppress=True); the load callback already wrote the
+        # restored value and we'd otherwise clobber it with defaults.
+        value = no if suppress else [m.slider_default_low, m.slider_default_high]
         return (
             m.slider_min,
             m.slider_max,
             step,
             marks,
-            [m.slider_default_low, m.slider_default_high],
+            value,
             _tooltip_cfg(m.log_scale, m.unit, always_visible=True),
+            False,
         )
 
 # ---------------------------------------------------------------------------
@@ -1744,25 +1752,33 @@ for _idx in range(MAX_METRICS):
         Output(f"metric-checklist-{_idx}", "options"),
         Output(f"metric-checklist-{_idx}", "value"),
         Output(f"metric-range-label-{_idx}", "style"),
+        Output("suppress-cascade", "data", allow_duplicate=True),
         Input(f"metric-dropdown-{_idx}", "value"),
+        State("suppress-cascade", "data"),
         prevent_initial_call=True,
     )
-    def _toggle_slider_checklist(metric_key, _i=_idx):
+    def _toggle_slider_checklist(metric_key, suppress, _i=_idx):
+        no = dash.no_update
         cat = CAT_METRIC_BY_KEY.get(metric_key)
         if cat:
+            # See _reconfigure_slider: preserve the loaded checklist value
+            # when the change came from a session load.
+            value = no if suppress else [o["value"] for o in cat.options]
             return (
                 {"display": "none"},
                 {},
                 cat.options,
-                [o["value"] for o in cat.options],
+                value,
                 {"display": "none"},
+                False,
             )
         return (
             {"paddingBottom": "22px"},
             {"display": "none"},
             [],
-            [],
+            no if suppress else [],
             _RANGE_LABEL_STYLE,
+            False,
         )
 
 
@@ -2079,6 +2095,7 @@ def _value_to_slider(val: float, log_scale: bool) -> float:
     Output("sweep-dirty", "data", allow_duplicate=True),
     Output("sweep-processed", "data", allow_duplicate=True),
     Output("session-loaded-tick", "data", allow_duplicate=True),
+    Output("suppress-cascade", "data", allow_duplicate=True),
     Output("status-bar", "children", allow_duplicate=True),
     Output("error-banner", "children", allow_duplicate=True),
     Output("error-banner", "style", allow_duplicate=True),
@@ -2223,6 +2240,7 @@ def on_load_session(contents, filename):
         frozen_style, frozen_min, frozen_max, frozen_val,
         hw, hw,  # sweep-dirty, sweep-processed
         hw,      # session-loaded-tick (reuse hw for monotonicity)
+        True,    # suppress-cascade: keep loaded slider/checklist values
         # ---
         msg,
         banner_children,
@@ -2236,7 +2254,7 @@ def on_load_session(contents, filename):
 _LOAD_SCALAR_OUTPUTS = 5
 # Count of trailing Outputs: status-bar, error-banner.children, error-banner.style.
 _LOAD_TRAILING_OUTPUTS = 3
-_LOAD_SWEEP_OUTPUTS = 11  # figure, sweep-store, interp, view-tabs, frozen-style, frozen-min/max/val, sweep-dirty, sweep-processed, session-loaded-tick
+_LOAD_SWEEP_OUTPUTS = 12  # figure, sweep-store, interp, view-tabs, frozen-style, frozen-min/max/val, sweep-dirty, sweep-processed, session-loaded-tick, suppress-cascade
 
 
 def _load_error_return(banner_children):
