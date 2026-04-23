@@ -2004,6 +2004,172 @@ def on_save_session(n_clicks, *all_args):
 
 
 # ---------------------------------------------------------------------------
+# Callback: load session → rehydrate controls, view, and sweep result
+# ---------------------------------------------------------------------------
+
+_AXIS_OUTPUTS = (
+    [Output(f"metric-dropdown-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)]
+    + [Output(f"metric-slider-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)]
+    + [Output(f"metric-checklist-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)]
+)
+
+_NOISE_OUTPUTS = [Output(f"noise-{m.key}", "value", allow_duplicate=True) for m in SWEEPABLE_METRICS]
+
+_CFG_OUTPUTS = [
+    Output("cfg-circuit-type", "value", allow_duplicate=True),
+    Output("cfg-num-qubits", "value", allow_duplicate=True),
+    Output("cfg-num-cores", "value", allow_duplicate=True),
+    Output("cfg-topology", "value", allow_duplicate=True),
+    Output("cfg-intracore-topology", "value", allow_duplicate=True),
+    Output("cfg-placement", "value", allow_duplicate=True),
+    Output("cfg-routing-algorithm", "value", allow_duplicate=True),
+    Output("cfg-seed", "value", allow_duplicate=True),
+    Output("cfg-dynamic-decoupling", "value", allow_duplicate=True),
+    Output("cfg-max-cold", "value", allow_duplicate=True),
+    Output("cfg-max-hot", "value", allow_duplicate=True),
+    Output("cfg-max-workers", "value", allow_duplicate=True),
+    Output("cfg-output-metric", "value", allow_duplicate=True),
+    Output("cfg-threshold-enable", "value", allow_duplicate=True),
+]
+
+_THRESH_OUTPUTS = (
+    [Output(f"cfg-threshold-{i}", "value", allow_duplicate=True) for i in range(5)]
+    + [Output(f"cfg-threshold-color-{i}", "value", allow_duplicate=True) for i in range(5)]
+)
+
+
+def _value_to_slider(val: float, log_scale: bool) -> float:
+    """Inverse of ``_slider_to_value``."""
+    import math
+    if log_scale and val is not None and val > 0:
+        return math.log10(val)
+    return val
+
+
+@app.callback(
+    *_AXIS_OUTPUTS,
+    *_CFG_OUTPUTS,
+    *_THRESH_OUTPUTS,
+    Output("num-metrics-store", "data", allow_duplicate=True),
+    Output("num-thresholds-store", "data", allow_duplicate=True),
+    Output("hot-reload-toggle", "value", allow_duplicate=True),
+    Output("view-type-store", "data", allow_duplicate=True),
+    Output("frozen-axis-store", "data", allow_duplicate=True),
+    *_NOISE_OUTPUTS,
+    Output("status-bar", "children", allow_duplicate=True),
+    Output("error-banner", "children", allow_duplicate=True),
+    Output("error-banner", "style", allow_duplicate=True),
+    Input("session-upload", "contents"),
+    State("session-upload", "filename"),
+    prevent_initial_call=True,
+)
+def on_load_session(contents, filename):
+    import base64
+    from gui.session import load as session_load, apply_session, SessionError
+
+    if contents is None:
+        raise dash.exceptions.PreventUpdate
+
+    # ``contents`` has shape 'data:<mime>;base64,<payload>'.
+    try:
+        _, b64 = contents.split(",", 1)
+        raw = base64.b64decode(b64)
+        session = session_load(raw)
+        result = apply_session(session)
+    except (SessionError, ValueError, OSError) as exc:
+        banner = _build_error_banner_children("Failed to load session", str(exc))
+        return _load_error_return(banner)
+
+    ctrls = result.controls
+    view = result.view
+
+    # Axes → MAX_METRICS slots. Pad unused slots with dash.no_update.
+    dropdown_out = [dash.no_update] * MAX_METRICS
+    slider_out   = [dash.no_update] * MAX_METRICS
+    checklist_out = [dash.no_update] * MAX_METRICS
+    for i, ax in enumerate(ctrls["axes"][:MAX_METRICS]):
+        dropdown_out[i] = ax["key"]
+        slider_out[i] = ax["slider"] if ax["slider"] is not None else dash.no_update
+        checklist_out[i] = ax["checklist"] if ax["checklist"] is not None else []
+
+    circuit = ctrls["circuit"]
+    cfg_out = [
+        circuit["circuit_type"],
+        circuit["num_qubits"],
+        circuit["num_cores"],
+        circuit["topology_type"],
+        circuit["intracore_topology"],
+        circuit["placement"],
+        circuit["routing_algorithm"],
+        circuit["seed"],
+        ["yes"] if circuit["dynamic_decoupling"] else [],
+        ctrls["performance"]["max_cold"],
+        ctrls["performance"]["max_hot"],
+        ctrls["performance"]["max_workers"],
+        ctrls["thresholds"]["output_metric"],
+        ["yes"] if ctrls["thresholds"]["enable"] else [],
+    ]
+
+    t_vals = list(ctrls["thresholds"]["values"]) + [None] * 5
+    tc_vals = list(ctrls["thresholds"]["colors"]) + [None] * 5
+    thresh_out = t_vals[:5] + tc_vals[:5]
+
+    noise = ctrls["noise"]
+    noise_out = [
+        _value_to_slider(noise.get(m.key), m.log_scale)
+        if noise.get(m.key) is not None
+        else dash.no_update
+        for m in SWEEPABLE_METRICS
+    ]
+
+    msg = f"Loaded {filename or 'session'}"
+    if result.warnings:
+        msg += f"  ({len(result.warnings)} warning(s))"
+    banner_children = []
+    banner_style = _ERROR_BANNER_HIDDEN_STYLE
+    if result.warnings:
+        banner_children = _build_error_banner_children(
+            "Session loaded with warnings",
+            "\n".join(result.warnings),
+        )
+        banner_style = _error_banner_visible_style()
+
+    return (
+        *dropdown_out,
+        *slider_out,
+        *checklist_out,
+        *cfg_out,
+        *thresh_out,
+        ctrls["num_metrics"],
+        ctrls["thresholds"]["num_thresholds"],
+        ["on"] if ctrls["hot_reload"] else [],
+        view["view_type"],
+        view["frozen_axis"],
+        *noise_out,
+        msg,
+        banner_children,
+        banner_style,
+    )
+
+
+def _load_error_return(banner_children):
+    """Return tuple for on_load_session error path — everything else no-op."""
+    outputs_total = (
+        3 * MAX_METRICS   # dropdown + slider + checklist
+        + len(_CFG_OUTPUTS)
+        + 10              # threshold values + colors
+        + 5               # num-metrics, num-thresholds, hot-reload, view-type, frozen-axis
+        + len(SWEEPABLE_METRICS)
+        + 3               # status-bar + banner children + banner style
+    )
+    stub = [dash.no_update] * outputs_total
+    stub[-3] = "Load failed"
+    stub[-2] = banner_children
+    stub[-1] = _error_banner_visible_style()
+    return tuple(stub)
+
+
+# ---------------------------------------------------------------------------
 # Clientside callbacks: sync threshold color swatches
 # ---------------------------------------------------------------------------
 
