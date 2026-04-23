@@ -16,7 +16,9 @@ dependencies = [
     "pytest (>=9.0.2,<10.0.0)",
     "pytest-benchmark (>=5.2.3,<6.0.0)",
     "pdoc (>=16.0.0,<17.0.0)",
-    "qiskit-ibm-runtime (>=0.46.1,<0.47.0)"
+    "qiskit-ibm-runtime (>=0.46.1,<0.47.0)",
+    "dash (>=4.1.0,<5.0.0)",
+    "dash-bootstrap-components (>=2.0.4,<3.0.0)"
 ]
 
 [tool.maturin]
