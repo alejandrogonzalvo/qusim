@@ -2152,15 +2152,23 @@ def on_load_session(contents, filename):
     )
 
 
+# Count of named scalar Outputs between thresholds and noise in the main
+# decorator — see on_load_session: num-metrics, num-thresholds, hot-reload,
+# view-type, frozen-axis.
+_LOAD_SCALAR_OUTPUTS = 5
+# Count of trailing Outputs: status-bar, error-banner.children, error-banner.style.
+_LOAD_TRAILING_OUTPUTS = 3
+
+
 def _load_error_return(banner_children):
     """Return tuple for on_load_session error path — everything else no-op."""
     outputs_total = (
-        3 * MAX_METRICS   # dropdown + slider + checklist
+        len(_AXIS_OUTPUTS)
         + len(_CFG_OUTPUTS)
-        + 10              # threshold values + colors
-        + 5               # num-metrics, num-thresholds, hot-reload, view-type, frozen-axis
-        + len(SWEEPABLE_METRICS)
-        + 3               # status-bar + banner children + banner style
+        + len(_THRESH_OUTPUTS)
+        + _LOAD_SCALAR_OUTPUTS
+        + len(_NOISE_OUTPUTS)
+        + _LOAD_TRAILING_OUTPUTS
     )
     stub = [dash.no_update] * outputs_total
     stub[-3] = "Load failed"
