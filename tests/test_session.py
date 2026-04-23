@@ -119,3 +119,48 @@ class TestDumpLoad:
         payload = {"schema_version": 1, "controls": {}, "view": {}, "sweep": {"present": False}, "saved_at": "x", "app": {"name": "qusim-dse"}}
         back = load(_json.dumps(payload).encode("utf-8"))
         assert back == payload
+
+
+# ---------------------------------------------------------------------------
+# validate: schema_version + required top-level keys
+# ---------------------------------------------------------------------------
+
+class TestValidate:
+    def _good(self):
+        return {
+            "schema_version": 1,
+            "saved_at": "2026-04-23T00:00:00Z",
+            "app": {"name": "qusim-dse"},
+            "controls": {}, "view": {},
+            "sweep": {"present": False},
+        }
+
+    def test_good_session_passes(self):
+        from gui.session import validate
+        validate(self._good())  # no exception
+
+    def test_missing_schema_version_raises(self):
+        from gui.session import validate, SessionError
+        bad = self._good()
+        del bad["schema_version"]
+        with pytest.raises(SessionError, match="schema_version"):
+            validate(bad)
+
+    def test_wrong_schema_version_raises(self):
+        from gui.session import validate, SessionError
+        bad = self._good()
+        bad["schema_version"] = 999
+        with pytest.raises(SessionError, match="version"):
+            validate(bad)
+
+    def test_missing_controls_raises(self):
+        from gui.session import validate, SessionError
+        bad = self._good()
+        del bad["controls"]
+        with pytest.raises(SessionError, match="controls"):
+            validate(bad)
+
+    def test_non_dict_raises(self):
+        from gui.session import validate, SessionError
+        with pytest.raises(SessionError):
+            validate([1, 2, 3])

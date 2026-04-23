@@ -57,6 +57,28 @@ def collect_session(
     }
 
 
+class SessionError(ValueError):
+    """Raised when a session payload cannot be used."""
+
+
+_REQUIRED_TOP_LEVEL = ("schema_version", "controls", "view", "sweep")
+
+
+def validate(session: Any) -> None:
+    """Raise ``SessionError`` if *session* is not a loadable session dict."""
+    if not isinstance(session, dict):
+        raise SessionError(f"session must be a dict, got {type(session).__name__}")
+    for k in _REQUIRED_TOP_LEVEL:
+        if k not in session:
+            raise SessionError(f"session is missing required key: {k!r}")
+    version = session["schema_version"]
+    if version != SCHEMA_VERSION:
+        raise SessionError(
+            f"unsupported session schema version {version!r} "
+            f"(this build reads version {SCHEMA_VERSION})"
+        )
+
+
 def dump(session: dict) -> bytes:
     """Serialize *session* to gzipped JSON bytes."""
     return gzip.compress(
