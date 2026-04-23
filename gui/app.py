@@ -933,7 +933,7 @@ def _slider_to_value(slider_pos: float, log_scale: bool) -> float:
 
 _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METRICS]
 
-_NUM_SWEEP_OUTPUTS = 13
+_NUM_SWEEP_OUTPUTS = 14
 _NO_UPDATE_SWEEP = (dash.no_update,) * _NUM_SWEEP_OUTPUTS
 
 
@@ -1034,13 +1034,15 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     Output("frozen-slider-container", "style"),
     Output("frozen-slider", "min"),
     Output("frozen-slider", "max"),
-    Output("frozen-slider-label", "children"),
+    Output("frozen-axis-dropdown", "options"),
+    Output("frozen-axis-dropdown", "value"),
     Output("error-banner", "children"),
     Output("error-banner", "style"),
     Input("sweep-trigger", "data"),
     Input("run-btn", "n_clicks"),
     State("sweep-dirty", "data"),
     State("hot-reload-toggle", "value"),
+    State("frozen-axis-store", "data"),
     *_METRIC_DROPDOWN_STATES,
     *_METRIC_SLIDER_STATES,
     State("num-metrics-store", "data"),
@@ -1071,6 +1073,7 @@ def run_sweep(
     n_clicks,
     dirty,
     hot_reload,
+    frozen_axis_idx,
     *all_args,
 ):
     is_run_btn = ctx.triggered_id == "run-btn"
@@ -1153,6 +1156,7 @@ def run_sweep(
                 dirty,
                 None,
                 {"display": "none"},
+                dash.no_update,
                 dash.no_update,
                 dash.no_update,
                 dash.no_update,
@@ -1349,18 +1353,44 @@ def run_sweep(
         frozen_style = {"display": "none"}
         frozen_min = dash.no_update
         frozen_max = dash.no_update
-        frozen_label = dash.no_update
+
+        from gui.interpolation import permute_sweep_for_frozen
+        from gui.constants import METRIC_BY_KEY
+
+        frozen_dropdown_options = dash.no_update
+        frozen_dropdown_value = dash.no_update
 
         if ndim == 3 and "facets" not in sweep_data:
-            interp_grid = sweep_to_interp_grid(sweep_data, out_key)
-            fs_cfg = frozen_slider_config(sweep_data)
+            metric_keys_3d = sweep_data.get("metric_keys", [])
+            # Validate stored frozen index against current metric set; reset to 2
+            # if out of range.
+            try:
+                f_idx = int(frozen_axis_idx) if frozen_axis_idx is not None else 2
+            except (TypeError, ValueError):
+                f_idx = 2
+            if f_idx not in (0, 1, 2):
+                f_idx = 2
+
+            permuted = permute_sweep_for_frozen(sweep_data, f_idx)
+            interp_grid = sweep_to_interp_grid(permuted, out_key)
+            fs_cfg = frozen_slider_config(permuted)
             if fs_cfg and is_frozen_view(view):
                 frozen_style = {"padding": "4px 16px 8px"}
                 frozen_min = fs_cfg["min"]
                 frozen_max = fs_cfg["max"]
-                _fk = fs_cfg["metric_key"]
-                _fm = METRIC_BY_KEY.get(_fk)
-                frozen_label = _fm.label if _fm else _fk
+
+            # Always emit dropdown options for the 3 metrics.
+            frozen_dropdown_options = [
+                {
+                    "label": (METRIC_BY_KEY.get(mk).label if METRIC_BY_KEY.get(mk) else mk),
+                    "value": i,
+                }
+                for i, mk in enumerate(metric_keys_3d)
+            ]
+            frozen_dropdown_value = f_idx
+            # Use the permuted sweep_data so build_figure and the slim store
+            # see the rearranged axes.
+            sweep_data = permuted
 
         fig = build_figure(
             ndim,
@@ -1384,7 +1414,8 @@ def run_sweep(
             frozen_style,
             frozen_min,
             frozen_max,
-            frozen_label,
+            frozen_dropdown_options,
+            frozen_dropdown_value,
             [],
             _ERROR_BANNER_HIDDEN_STYLE,
         )
@@ -1408,6 +1439,7 @@ def run_sweep(
             dirty,
             None,
             {"display": "none"},
+            dash.no_update,
             dash.no_update,
             dash.no_update,
             dash.no_update,
@@ -1857,6 +1889,52 @@ def toggle_frozen_slider_visibility(view_type, sweep_data):
     if num_metrics == 3 and is_frozen_view(view_type):
         return {"padding": "4px 16px 8px"}
     return {"display": "none"}
+
+
+# ---------------------------------------------------------------------------
+# Callback: dropdown choice → update frozen-axis-store and rebuild figure
+#           from the cached sweep result (no re-sweep).
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("frozen-axis-store", "data"),
+    Output("main-plot", "figure", allow_duplicate=True),
+    Output("interp-grid-store", "data", allow_duplicate=True),
+    Output("frozen-slider", "min", allow_duplicate=True),
+    Output("frozen-slider", "max", allow_duplicate=True),
+    Output("frozen-slider", "value", allow_duplicate=True),
+    Input("frozen-axis-dropdown", "value"),
+    State("sweep-result-store", "data"),
+    State("view-type-store", "data"),
+    State("cfg-output-metric", "value"),
+    prevent_initial_call=True,
+)
+def on_frozen_axis_change(frozen_idx, sweep_store, view_type, output_key):
+    if frozen_idx is None or sweep_store is None:
+        raise dash.exceptions.PreventUpdate
+    full = _get_sweep(sweep_store)
+    if full is None:
+        raise dash.exceptions.PreventUpdate
+    if len(full.get("metric_keys", [])) != 3:
+        raise dash.exceptions.PreventUpdate
+    try:
+        f_idx = int(frozen_idx)
+    except (TypeError, ValueError):
+        raise dash.exceptions.PreventUpdate
+    if f_idx not in (0, 1, 2):
+        raise dash.exceptions.PreventUpdate
+
+    from gui.interpolation import permute_sweep_for_frozen
+    permuted = permute_sweep_for_frozen(full, f_idx)
+    out_key = output_key or "overall_fidelity"
+    interp_grid = sweep_to_interp_grid(permuted, out_key)
+    fs_cfg = frozen_slider_config(permuted)
+    fig = build_figure(3, permuted, out_key, view_type=view_type)
+
+    new_min = fs_cfg["min"] if fs_cfg else dash.no_update
+    new_max = fs_cfg["max"] if fs_cfg else dash.no_update
+    new_val = fs_cfg["default"] if fs_cfg else dash.no_update
+    return f_idx, fig, interp_grid, new_min, new_max, new_val
 
 
 # ---------------------------------------------------------------------------
