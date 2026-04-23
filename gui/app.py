@@ -1697,7 +1697,6 @@ for _idx in range(MAX_METRICS):
         Output(f"metric-slider-{_idx}", "marks"),
         Output(f"metric-slider-{_idx}", "value"),
         Output(f"metric-slider-{_idx}", "tooltip"),
-        Output("suppress-cascade", "data", allow_duplicate=True),
         Input(f"metric-dropdown-{_idx}", "value"),
         State("suppress-cascade", "data"),
         prevent_initial_call=True,
@@ -1705,10 +1704,10 @@ for _idx in range(MAX_METRICS):
     def _reconfigure_slider(metric_key, suppress, _i=_idx):
         no = dash.no_update
         if not metric_key:
-            return (no, no, no, no, no, no, no)
+            return (no, no, no, no, no, no)
         m = METRIC_BY_KEY.get(metric_key)
         if m is None:
-            return (no, no, no, no, no, no, no)
+            return (no, no, no, no, no, no)
         marks = (
             _log_marks(m.slider_min, m.slider_max, m.unit)
             if m.log_scale
@@ -1721,6 +1720,8 @@ for _idx in range(MAX_METRICS):
         # Preserve the slider value when the dropdown change came from a
         # session load (suppress=True); the load callback already wrote the
         # restored value and we'd otherwise clobber it with defaults.
+        # ``_toggle_slider_checklist`` owns the suppress-cascade reset — one
+        # writer per dropdown trigger is enough.
         value = no if suppress else [m.slider_default_low, m.slider_default_high]
         return (
             m.slider_min,
@@ -1729,7 +1730,6 @@ for _idx in range(MAX_METRICS):
             marks,
             value,
             _tooltip_cfg(m.log_scale, m.unit, always_visible=True),
-            False,
         )
 
 # ---------------------------------------------------------------------------
