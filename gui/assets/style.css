@@ -321,3 +321,14 @@ input[type="checkbox"] {
 .axis-btn:active {
     transform: translateY(0);
 }
+
+/* ── Dropdown that opens upward (used by the frozen-axis selector at the
+       bottom of the heatmap so its menu does not run off-screen) ────── */
+.dse-dropdown-up [class*="-menu"],
+.dse-dropdown-up .Select-menu-outer {
+    top: auto !important;
+    bottom: 100% !important;
+    margin-top: 0 !important;
+    margin-bottom: 4px !important;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.12) !important;
+}
