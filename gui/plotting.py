@@ -7,7 +7,14 @@ from typing import Any
 import numpy as np
 import plotly.graph_objects as go
 
-from .constants import CAT_METRIC_BY_KEY, METRIC_BY_KEY, OUTPUT_METRICS
+from .constants import (
+    CAT_METRIC_BY_KEY,
+    FIDELITY_METRICS,
+    METRIC_BY_KEY,
+    OUTPUT_METRIC_LABEL,
+    OUTPUT_METRICS,
+    PARETO_METRIC_ORIENTATION,
+)
 
 # Map output metric key → display label
 _OUTPUT_LABELS = {m["value"]: m["label"] for m in OUTPUT_METRICS}
@@ -665,7 +672,8 @@ def plot_3d_isosurface(
 # ---------------------------------------------------------------------------
 
 _OUTPUT_KEYS = ["overall_fidelity", "algorithmic_fidelity", "routing_fidelity",
-                "coherence_fidelity", "total_circuit_time_ns", "total_epr_pairs"]
+                "coherence_fidelity", "total_circuit_time_ns", "total_epr_pairs",
+                "total_swaps", "total_teleportations", "total_network_distance"]
 
 # Maximum rows passed to per-point plot traces (parallel coords, Pareto
 # dominated cloud, slice scatter). Beyond this, we random-sample — both
@@ -1076,56 +1084,88 @@ def plot_importance(sweep_data: dict, output_key: str) -> go.Figure:
 
 
 # ---------------------------------------------------------------------------
-# Pareto front (fidelity vs EPR pairs — dominated points dimmed)
+# Pareto front (user-chosen X/Y axes — dominated points dimmed)
 # ---------------------------------------------------------------------------
 
-def plot_pareto(sweep_data: dict, output_key: str, thresholds: list[float] | None = None,
-                threshold_colors: list[str] | None = None) -> go.Figure:
+
+def _hover_format(key: str) -> str:
+    # Fidelities (0..1) want 4 decimals; integer-valued cost metrics
+    # (pair counts, swaps) want no decimals; times fall between.
+    if key in FIDELITY_METRICS:
+        return ":.4f"
+    if key == "total_circuit_time_ns":
+        return ":.1f"
+    return ":.0f"
+
+
+def plot_pareto(
+    sweep_data: dict,
+    x_key: str = "total_epr_pairs",
+    y_key: str = "overall_fidelity",
+    thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
+) -> go.Figure:
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
     if len(rows) == 0:
         return plot_empty("No data for Pareto plot")
 
+    x_label = OUTPUT_METRIC_LABEL.get(x_key, x_key)
+    y_label = OUTPUT_METRIC_LABEL.get(y_key, y_key)
+
+    if x_key == y_key:
+        return plot_empty("Pick two different metrics for the Pareto axes")
+
     data = rows  # already an ndarray from _flatten_sweep_to_table
     num_params = len(metric_keys)
 
-    fid_col = num_params + available_outputs.index("overall_fidelity") if "overall_fidelity" in available_outputs else None
-    epr_col = num_params + available_outputs.index("total_epr_pairs") if "total_epr_pairs" in available_outputs else None
+    if x_key not in available_outputs or y_key not in available_outputs:
+        missing = [k for k in (x_key, y_key) if k not in available_outputs]
+        return plot_empty(f"Missing metric(s) in sweep data: {', '.join(missing)}")
 
-    if fid_col is None or epr_col is None:
-        return plot_empty("Need both fidelity and EPR metrics for Pareto")
+    x_col = num_params + available_outputs.index(x_key)
+    y_col = num_params + available_outputs.index(y_key)
 
-    fidelity = data[:, fid_col]
-    epr = data[:, epr_col]
+    x_vals = data[:, x_col]
+    y_vals = data[:, y_col]
 
-    # Vectorised Pareto front: sort by EPR asc, then for each epr-tie group
-    # mark a point as dominated iff
-    #   fid <= max_fid_from_strictly_lower_epr   (strict-epr dominator) OR
-    #   fid <  max_fid_within_same_epr_group     (same-epr strictly-higher dominator)
-    # O(N log N) numpy, drops multi-second 50k-point runs to ~ms.
+    x_orient = PARETO_METRIC_ORIENTATION.get(x_key, "min")
+    y_orient = PARETO_METRIC_ORIENTATION.get(y_key, "max")
+
+    # Normalise to a "lower is better" frame so a single algorithm handles
+    # every axis-orientation combo. Sign-flipping preserves ordering and
+    # tie structure while letting the existing O(N log N) scan work.
+    x_norm = x_vals if x_orient == "min" else -x_vals
+    y_norm = y_vals if y_orient == "min" else -y_vals
+
+    # Vectorised Pareto front: sort by x_norm asc, then for each x-tie group
+    # a point is dominated iff
+    #   y_norm >= min_y_from_strictly_lower_x   (strict-x dominator) OR
+    #   y_norm >  min_y_within_same_x_group     (same-x strictly-lower-y dominator)
+    # O(N log N) numpy; drops multi-second 50k-point runs to ~ms.
     is_pareto = np.ones(len(data), dtype=bool)
     if len(data) > 0:
-        order = np.argsort(epr, kind="stable")
-        s_epr = epr[order]
-        s_fid = fidelity[order]
+        order = np.argsort(x_norm, kind="stable")
+        s_x = x_norm[order]
+        s_y = y_norm[order]
 
-        change = np.concatenate(([True], s_epr[1:] != s_epr[:-1]))
+        change = np.concatenate(([True], s_x[1:] != s_x[:-1]))
         group_id = np.cumsum(change) - 1
         n_groups = int(group_id[-1]) + 1
 
-        group_max = np.full(n_groups, -np.inf)
-        np.maximum.at(group_max, group_id, s_fid)
+        group_min = np.full(n_groups, np.inf)
+        np.minimum.at(group_min, group_id, s_y)
 
         if n_groups >= 2:
-            prev_max_strict = np.concatenate(
-                ([-np.inf], np.maximum.accumulate(group_max[:-1]))
+            prev_min_strict = np.concatenate(
+                ([np.inf], np.minimum.accumulate(group_min[:-1]))
             )
         else:
-            prev_max_strict = np.array([-np.inf])
+            prev_min_strict = np.array([np.inf])
 
-        s_prev = prev_max_strict[group_id]
-        s_group_max = group_max[group_id]
-        dominated_sorted = (s_fid <= s_prev) | (s_fid < s_group_max)
+        s_prev = prev_min_strict[group_id]
+        s_group_min = group_min[group_id]
+        dominated_sorted = (s_y >= s_prev) | (s_y > s_group_min)
         is_pareto[order[dominated_sorted]] = False
 
     fig = go.Figure()
@@ -1135,56 +1175,75 @@ def plot_pareto(sweep_data: dict, output_key: str, thresholds: list[float] | Non
     # scales to ~100 k markers; plain Scatter (SVG) freezes the browser
     # past a few thousand. The Pareto front itself is computed on the full
     # grid above; we only sample the cloud display.
-    dom_x = epr[dominated_mask]
-    dom_y = fidelity[dominated_mask]
+    dom_x = x_vals[dominated_mask]
+    dom_y = y_vals[dominated_mask]
     dom_full = dom_x.size
     if dom_x.size > _MAX_PLOT_POINTS:
         rng = np.random.default_rng(0)
         sample = rng.choice(dom_x.size, size=_MAX_PLOT_POINTS, replace=False)
         dom_x = dom_x[sample]
         dom_y = dom_y[sample]
+
+    x_fmt = _hover_format(x_key)
+    y_fmt = _hover_format(y_key)
+    hover = (
+        f"{x_label}: %{{x{x_fmt}}}<br>"
+        f"{y_label}: <b>%{{y{y_fmt}}}</b><extra></extra>"
+    )
+
     fig.add_trace(
         go.Scattergl(
             x=dom_x, y=dom_y,
             mode="markers",
             marker=dict(size=5, color="#CCCCCC", opacity=0.5),
             name="Dominated",
-            hovertemplate="EPR: %{x:.0f}<br>Fidelity: <b>%{y:.4f}</b><extra></extra>",
+            hovertemplate=hover,
         )
     )
 
     pareto_idx = np.where(is_pareto)[0]
-    pareto_order = np.argsort(epr[pareto_idx])
+    # Sort the front by the normalised x so the connecting line is
+    # monotonic regardless of axis orientation.
+    pareto_order = np.argsort(x_norm[pareto_idx])
     pareto_sorted = pareto_idx[pareto_order]
 
     fig.add_trace(
         go.Scatter(
-            x=epr[pareto_sorted], y=fidelity[pareto_sorted],
+            x=x_vals[pareto_sorted], y=y_vals[pareto_sorted],
             mode="lines+markers",
             line=dict(color="#4575b4", width=2),
             marker=dict(size=7, color="#4575b4", line=dict(width=1, color="#FFFFFF")),
             name="Pareto front",
-            hovertemplate="EPR: %{x:.0f}<br>Fidelity: <b>%{y:.4f}</b><extra></extra>",
+            hovertemplate=hover,
         )
     )
 
+    y_axis = dict(
+        title=dict(text=y_label, font=dict(size=12, color=_TEXT_MUTED)),
+        gridcolor=_GRID_COLOR,
+        tickfont=dict(size=10, color=_TEXT_MUTED),
+    )
+    if y_key in FIDELITY_METRICS:
+        y_axis["range"] = [0, 1]
+
+    x_axis = dict(
+        title=dict(text=x_label, font=dict(size=12, color=_TEXT_MUTED)),
+        gridcolor=_GRID_COLOR,
+        tickfont=dict(size=10, color=_TEXT_MUTED),
+    )
+    if x_key in FIDELITY_METRICS:
+        x_axis["range"] = [0, 1]
+
     fig.update_layout(
         **{**_LAYOUT_BASE, "margin": dict(l=55, r=20, t=50, b=50)},
-        xaxis=dict(
-            title=dict(text="Total EPR Pairs", font=dict(size=12, color=_TEXT_MUTED)),
-            gridcolor=_GRID_COLOR,
-            tickfont=dict(size=10, color=_TEXT_MUTED),
-        ),
-        yaxis=dict(
-            title=dict(text="Overall Fidelity", font=dict(size=12, color=_TEXT_MUTED)),
-            gridcolor=_GRID_COLOR,
-            tickfont=dict(size=10, color=_TEXT_MUTED),
-            range=[0, 1],
-        ),
+        xaxis=x_axis,
+        yaxis=y_axis,
         hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR, font_color=_TEXT_COLOR),
     )
 
-    if thresholds:
+    # Threshold lines live in fidelity-space, so only draw them when a
+    # fidelity metric is actually on the Y axis.
+    if thresholds and y_key in FIDELITY_METRICS:
         _colors = threshold_colors or _THRESHOLD_COLORS
         for i, t in enumerate(thresholds):
             fig.add_shape(
@@ -1567,6 +1626,8 @@ def build_figure(
     threshold_colors: list[str] | None = None,
     frozen_z: float | None = None,
     _3d_point_cap: int | None = None,
+    pareto_x: str | None = None,
+    pareto_y: str | None = None,
 ) -> go.Figure:
     if sweep_data is None:
         return plot_empty()
@@ -1596,7 +1657,13 @@ def build_figure(
     elif view_type == "importance":
         fig = plot_importance(sweep_data, output_key)
     elif view_type == "pareto":
-        fig = plot_pareto(sweep_data, output_key, thresholds=thresholds, threshold_colors=_tc)
+        fig = plot_pareto(
+            sweep_data,
+            x_key=pareto_x or "total_epr_pairs",
+            y_key=pareto_y or "overall_fidelity",
+            thresholds=thresholds,
+            threshold_colors=_tc,
+        )
     elif view_type == "correlation":
         fig = plot_correlation(sweep_data, output_key)
     else:

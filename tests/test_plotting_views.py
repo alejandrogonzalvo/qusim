@@ -519,31 +519,59 @@ class TestBuildFigureImportanceRouting:
 
 class TestPlotPareto:
     def test_returns_figure_from_1d(self, sweep_data_store_1d):
-        fig = plot_pareto(sweep_data_store_1d, "overall_fidelity")
+        fig = plot_pareto(sweep_data_store_1d)
         assert isinstance(fig, go.Figure)
 
     def test_returns_figure_from_2d(self, sweep_data_store_2d):
-        fig = plot_pareto(sweep_data_store_2d, "overall_fidelity")
+        fig = plot_pareto(sweep_data_store_2d)
         assert isinstance(fig, go.Figure)
 
     def test_has_scatter_traces(self, sweep_data_store_2d):
-        fig = plot_pareto(sweep_data_store_2d, "overall_fidelity")
+        fig = plot_pareto(sweep_data_store_2d)
         trace_types = [type(t).__name__ for t in fig.data]
         assert "Scatter" in trace_types
 
     def test_dominated_and_pareto_traces(self, sweep_data_store_2d):
-        fig = plot_pareto(sweep_data_store_2d, "overall_fidelity")
+        fig = plot_pareto(sweep_data_store_2d)
         assert len(fig.data) >= 2
 
     def test_pareto_trace_is_highlighted(self, sweep_data_store_2d):
-        fig = plot_pareto(sweep_data_store_2d, "overall_fidelity")
+        fig = plot_pareto(sweep_data_store_2d)
         names = [t.name for t in fig.data if hasattr(t, "name")]
         assert any("pareto" in (n or "").lower() for n in names)
 
     def test_axes_labeled(self, sweep_data_store_2d):
-        fig = plot_pareto(sweep_data_store_2d, "overall_fidelity")
+        fig = plot_pareto(sweep_data_store_2d)
         assert fig.layout.xaxis.title is not None
         assert fig.layout.yaxis.title is not None
+
+    def test_custom_axes(self):
+        xs = np.linspace(1e-5, 1e-1, 5)
+        ys = np.linspace(1e-4, 1e-2, 4)
+        grid = [[{
+            "overall_fidelity": 1.0 - (i + j) * 0.02,
+            "coherence_fidelity": 0.99 - (i + j) * 0.03,
+            "total_epr_pairs": float(i + j),
+            "total_circuit_time_ns": float(100 + i * 10 + j * 5),
+        } for j in range(len(ys))] for i in range(len(xs))]
+        sweep = {
+            "metric_keys": ["single_gate_error", "two_gate_error"],
+            "xs": xs.tolist(),
+            "ys": ys.tolist(),
+            "grid": grid,
+        }
+        fig = plot_pareto(sweep, x_key="total_circuit_time_ns", y_key="coherence_fidelity")
+        assert "Circuit Time" in (fig.layout.xaxis.title.text or "")
+        assert "Coherence Fidelity" in (fig.layout.yaxis.title.text or "")
+
+    def test_same_axis_rejected(self, sweep_data_store_2d):
+        fig = plot_pareto(
+            sweep_data_store_2d,
+            x_key="overall_fidelity",
+            y_key="overall_fidelity",
+        )
+        # plot_empty is a Figure — just confirm no scatter traces were added
+        assert len(fig.data) == 0
 
 
 class TestBuildFigureParetoRouting:
@@ -660,11 +688,23 @@ class TestThresholdOverlay:
     # --- Pareto ---
 
     def test_pareto_thresholds_add_hlines(self, sweep_data_store_2d):
-        fig = plot_pareto(sweep_data_store_2d, "overall_fidelity",
-                          thresholds=[0.7, 0.9])
+        fig = plot_pareto(sweep_data_store_2d, thresholds=[0.7, 0.9])
         shapes = list(fig.layout.shapes)
         hlines = [s for s in shapes if s.type == "line"]
         assert len(hlines) == 2
+
+    def test_pareto_thresholds_skipped_for_non_fidelity_y(self, sweep_data_store_2d):
+        # Threshold lines live in fidelity-space (0..1); when the Y axis is
+        # a cost metric they should be suppressed.
+        fig = plot_pareto(
+            sweep_data_store_2d,
+            x_key="total_epr_pairs",
+            y_key="total_circuit_time_ns",
+            thresholds=[0.7, 0.9],
+        )
+        shapes = list(fig.layout.shapes)
+        hlines = [s for s in shapes if s.type == "line"]
+        assert hlines == []
 
     # --- build_figure ---
 

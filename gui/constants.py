@@ -285,6 +285,33 @@ OUTPUT_METRICS = [
     {"label": "Network Distance", "value": "total_network_distance"},
 ]
 
+# Optimization direction per output metric.
+# "max" → higher is better (fidelities).
+# "min" → lower is better (cost/time/resources).
+# Consumed by the Pareto plot to compute dominance and pick axis ranges.
+PARETO_METRIC_ORIENTATION: dict[str, str] = {
+    "overall_fidelity": "max",
+    "algorithmic_fidelity": "max",
+    "routing_fidelity": "max",
+    "coherence_fidelity": "max",
+    "total_circuit_time_ns": "min",
+    "total_epr_pairs": "min",
+    "total_swaps": "min",
+    "total_teleportations": "min",
+    "total_network_distance": "min",
+}
+
+# Metrics bounded in [0, 1] — used to decide when to clamp the axis and
+# when to draw fidelity threshold lines on the Pareto plot.
+FIDELITY_METRICS: set[str] = {
+    "overall_fidelity",
+    "algorithmic_fidelity",
+    "routing_fidelity",
+    "coherence_fidelity",
+}
+
+OUTPUT_METRIC_LABEL: dict[str, str] = {m["value"]: m["label"] for m in OUTPUT_METRICS}
+
 # Number of sweep points per dimension (legacy, kept for backward compat)
 SWEEP_POINTS_1D = 60
 SWEEP_POINTS_2D = 30

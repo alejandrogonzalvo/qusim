@@ -509,6 +509,52 @@ def _center_panel() -> html.Div:
                     ),
                 ],
             ),
+            html.Div(
+                id="pareto-axis-container",
+                style={"display": "none", "padding": "4px 16px 8px"},
+                children=[
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "8px",
+                            "fontSize": "11px",
+                            "color": COLORS["text_muted"],
+                        },
+                        children=[
+                            html.Span("X axis", style={"flexShrink": "0"}),
+                            html.Div(
+                                style={"width": "180px", "flexShrink": "0"},
+                                children=dcc.Dropdown(
+                                    id="pareto-x-axis-dropdown",
+                                    className="dse-dropdown dse-dropdown-up",
+                                    options=OUTPUT_METRICS,
+                                    value="total_epr_pairs",
+                                    clearable=False,
+                                    searchable=False,
+                                    style={"fontSize": "11px"},
+                                ),
+                            ),
+                            html.Span(
+                                "Y axis",
+                                style={"flexShrink": "0", "marginLeft": "12px"},
+                            ),
+                            html.Div(
+                                style={"width": "180px", "flexShrink": "0"},
+                                children=dcc.Dropdown(
+                                    id="pareto-y-axis-dropdown",
+                                    className="dse-dropdown dse-dropdown-up",
+                                    options=OUTPUT_METRICS,
+                                    value="overall_fidelity",
+                                    clearable=False,
+                                    searchable=False,
+                                    style={"fontSize": "11px"},
+                                ),
+                            ),
+                        ],
+                    ),
+                ],
+            ),
             dcc.Download(id="csv-download"),
         ],
     )
@@ -1066,6 +1112,8 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     *[State(f"cfg-threshold-color-{i}", "value") for i in range(5)],
     State("num-thresholds-store", "data"),
     State("view-type-store", "data"),
+    State("pareto-x-axis-dropdown", "value"),
+    State("pareto-y-axis-dropdown", "value"),
     *_NOISE_SLIDER_STATES,
     prevent_initial_call=True,
 )
@@ -1106,6 +1154,8 @@ def run_sweep(
     tc_vals = all_args[idx:idx + 5]; idx += 5
     num_thresholds = all_args[idx]; idx += 1
     current_view = all_args[idx]; idx += 1
+    pareto_x = all_args[idx]; idx += 1
+    pareto_y = all_args[idx]; idx += 1
     noise_slider_vals = all_args[idx:]
 
     sweep_lock.acquire()
@@ -1389,6 +1439,8 @@ def run_sweep(
             view_type=view,
             thresholds=thresh,
             threshold_colors=thresh_colors or None,
+            pareto_x=pareto_x,
+            pareto_y=pareto_y,
         )
         # Send only a small token + axes metadata to the browser; the full
         # grid lives in ``_SWEEP_CACHE`` and is fetched by downstream callbacks.
@@ -1489,6 +1541,8 @@ app.clientside_callback(
     Input("cfg-threshold-enable", "value"),
     *[Input(f"cfg-threshold-{i}", "value") for i in range(5)],
     *[Input(f"cfg-threshold-color-{i}", "value") for i in range(5)],
+    Input("pareto-x-axis-dropdown", "value"),
+    Input("pareto-y-axis-dropdown", "value"),
     State("sweep-result-store", "data"),
     State("view-type-store", "data"),
     State("num-thresholds-store", "data"),
@@ -1507,12 +1561,19 @@ def replot_on_output_change(
     tc2,
     tc3,
     tc4,
+    pareto_x,
+    pareto_y,
     sweep_store,
     view_type,
     num_thresholds,
 ):
     full = _get_sweep(sweep_store)
     if full is None:
+        return dash.no_update
+    # Pareto axis changes only affect the pareto view; skip rebuilds for
+    # the other views to avoid re-rendering expensive 3-D figures.
+    if ctx.triggered_id in ("pareto-x-axis-dropdown", "pareto-y-axis-dropdown") \
+            and view_type != "pareto":
         return dash.no_update
     num_metrics = len(full.get("metric_keys", []))
     n_t = int(num_thresholds or 3)
@@ -1530,6 +1591,8 @@ def replot_on_output_change(
         view_type=view_type,
         thresholds=thresh,
         threshold_colors=thresh_colors or None,
+        pareto_x=pareto_x,
+        pareto_y=pareto_y,
     )
 
 
@@ -1697,6 +1760,8 @@ def _filter_dropdown_options(*args):
     *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
     *[State(f"cfg-threshold-color-{i}", "value") for i in range(5)],
     State("num-thresholds-store", "data"),
+    State("pareto-x-axis-dropdown", "value"),
+    State("pareto-y-axis-dropdown", "value"),
     prevent_initial_call=True,
 )
 def on_view_tab_click(
@@ -1716,6 +1781,8 @@ def on_view_tab_click(
     tc3,
     tc4,
     num_thresholds,
+    pareto_x,
+    pareto_y,
 ):
     if not ctx.triggered_id or not any(n_clicks_list):
         return dash.no_update, dash.no_update, dash.no_update
@@ -1742,6 +1809,8 @@ def on_view_tab_click(
         view_type=view_type,
         thresholds=thresh,
         threshold_colors=thresh_colors or None,
+        pareto_x=pareto_x,
+        pareto_y=pareto_y,
     )
     return fig, view_type, make_view_tab_bar(actual_metrics, view_type)
 
@@ -1877,6 +1946,21 @@ def toggle_frozen_slider_visibility(view_type, sweep_data):
         return {"display": "none"}
     num_metrics = len(sweep_data.get("metric_keys", []))
     if num_metrics == 3 and is_frozen_view(view_type):
+        return {"padding": "4px 16px 8px"}
+    return {"display": "none"}
+
+
+# ---------------------------------------------------------------------------
+# Callback: show/hide Pareto-axis dropdowns based on active view
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("pareto-axis-container", "style"),
+    Input("view-type-store", "data"),
+    prevent_initial_call=False,
+)
+def toggle_pareto_axis_visibility(view_type):
+    if view_type == "pareto":
         return {"padding": "4px 16px 8px"}
     return {"display": "none"}
 
