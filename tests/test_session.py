@@ -289,12 +289,16 @@ class TestBuildControlsDict:
     def test_includes_all_circuit_keys(self):
         from gui.session import build_controls_dict
         ctrls = build_controls_dict(**self._args())
-        for k in (
-            "num_qubits", "num_cores", "seed",
-            "circuit_type", "topology_type", "intracore_topology",
-            "placement", "routing_algorithm", "dynamic_decoupling",
-        ):
-            assert k in ctrls["circuit"]
+        c = ctrls["circuit"]
+        assert c["num_qubits"] == 16
+        assert c["num_cores"] == 4
+        assert c["seed"] == 42
+        assert c["circuit_type"] == "qft"
+        assert c["topology_type"] == "ring"
+        assert c["intracore_topology"] == "all_to_all"
+        assert c["placement"] == "random"
+        assert c["routing_algorithm"] == "hqa_sabre"
+        assert c["dynamic_decoupling"] is False
 
     def test_hot_reload_bool_from_checklist(self):
         from gui.session import build_controls_dict
@@ -309,6 +313,20 @@ class TestBuildControlsDict:
         off = build_controls_dict(**self._args(cfg_threshold_enable=[]))
         assert on["thresholds"]["enable"] is True
         assert off["thresholds"]["enable"] is False
+
+    def test_skips_none_keys_and_renumbers(self):
+        # Sparse dropdown — middle slot is None. The helper should drop it and
+        # set num_metrics to the count of surviving axes.
+        from gui.session import build_controls_dict
+        args = self._args(
+            num_metrics=3,
+            dropdown_vals=["t1", None, "t2", None, None, None, None, None, None, None, None, None],
+            slider_vals=[[4.0, 6.0], None, [4.0, 6.0]] + [None] * 9,
+            checklist_vals=[[], None, []] + [None] * 9,
+        )
+        ctrls = build_controls_dict(**args)
+        assert [ax["key"] for ax in ctrls["axes"]] == ["t1", "t2"]
+        assert ctrls["num_metrics"] == 2
 
 
 # ---------------------------------------------------------------------------

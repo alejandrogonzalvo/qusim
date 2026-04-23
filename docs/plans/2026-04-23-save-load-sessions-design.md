@@ -100,14 +100,12 @@ keyed by the token in `sweep-result-store`:
   "app": { "name": "qusim-dse", "git_sha": "c978327" },
 
   "controls": {
-    "sweep_axes": {
-      "num_metrics": 3,
-      "axes": [
-        { "key": "t1",            "slider": [4.0, 6.0], "checklist": null },
-        { "key": "t2",            "slider": [4.0, 6.0], "checklist": null },
-        { "key": "circuit_type",  "slider": null,       "checklist": ["qft", "ghz"] }
-      ]
-    },
+    "num_metrics": 3,
+    "axes": [
+      { "key": "t1",            "slider": [4.0, 6.0], "checklist": null },
+      { "key": "t2",            "slider": [4.0, 6.0], "checklist": null },
+      { "key": "circuit_type",  "slider": null,       "checklist": ["qft", "ghz"] }
+    ],
     "circuit": {
       "num_qubits": 16, "num_cores": 4, "seed": 42,
       "circuit_type": "qft", "topology_type": "ring",
