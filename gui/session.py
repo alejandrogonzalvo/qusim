@@ -105,6 +105,9 @@ class SessionApply:
     Dash Outputs. ``sweep_data`` is the sweep result (or ``None``). ``warnings``
     lists human-readable notes about any dropped fields; the Dash layer surfaces
     them in the error banner on a best-effort basis.
+
+    The returned dicts are shallow copies: nested values may alias the loaded
+    session. Treat nested values as read-only.
     """
 
     controls: dict
