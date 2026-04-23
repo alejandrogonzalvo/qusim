@@ -153,6 +153,17 @@ _SWEEP_CACHE_MAX = 3
 _sweep_token_counter = 0
 _sweep_cache_lock = threading.Lock()
 
+_session_load_counter = 0
+_session_load_lock = threading.Lock()
+
+
+def _next_session_hw(current_processed: int) -> int:
+    """Return a value strictly greater than any plausible current sweep-dirty."""
+    global _session_load_counter
+    with _session_load_lock:
+        _session_load_counter += 10000
+        return (current_processed or 0) + _session_load_counter
+
 
 def _store_sweep(data: dict) -> str:
     """Stash a full sweep_data dict server-side, return a short token."""
@@ -2056,6 +2067,16 @@ def _value_to_slider(val: float, log_scale: bool) -> float:
     Output("view-type-store", "data", allow_duplicate=True),
     Output("frozen-axis-store", "data", allow_duplicate=True),
     *_NOISE_OUTPUTS,
+    Output("main-plot", "figure", allow_duplicate=True),
+    Output("sweep-result-store", "data", allow_duplicate=True),
+    Output("interp-grid-store", "data", allow_duplicate=True),
+    Output("view-tab-container", "children", allow_duplicate=True),
+    Output("frozen-slider-container", "style", allow_duplicate=True),
+    Output("frozen-slider", "min", allow_duplicate=True),
+    Output("frozen-slider", "max", allow_duplicate=True),
+    Output("frozen-slider", "value", allow_duplicate=True),
+    Output("sweep-dirty", "data", allow_duplicate=True),
+    Output("sweep-processed", "data", allow_duplicate=True),
     Output("status-bar", "children", allow_duplicate=True),
     Output("error-banner", "children", allow_duplicate=True),
     Output("error-banner", "style", allow_duplicate=True),
@@ -2134,6 +2155,60 @@ def on_load_session(contents, filename):
         )
         banner_style = _error_banner_visible_style()
 
+    # --- Rehydrate the sweep result (if present) -------------------------
+    fig_out = dash.no_update
+    sweep_store_out = dash.no_update
+    interp_out = dash.no_update
+    view_tab_out = dash.no_update
+    frozen_style = {"display": "none"}
+    frozen_min = dash.no_update
+    frozen_max = dash.no_update
+    frozen_val = dash.no_update
+
+    sweep_data = result.sweep_data
+    if sweep_data is not None:
+        from gui.interpolation import (
+            permute_sweep_for_frozen,
+            sweep_to_interp_grid,
+            frozen_slider_config,
+            is_frozen_view,
+        )
+        ndim = len(sweep_data.get("metric_keys", []))
+        out_key = ctrls["thresholds"]["output_metric"] or "overall_fidelity"
+
+        # Apply same frozen-axis permutation used by the main sweep callback
+        # so axis 2 is always the frozen one downstream.
+        if ndim == 3 and "facets" not in sweep_data:
+            sweep_data = permute_sweep_for_frozen(sweep_data, view["frozen_axis"] or 2)
+            interp_out = sweep_to_interp_grid(sweep_data, out_key)
+            fs_cfg = frozen_slider_config(sweep_data)
+            if fs_cfg and is_frozen_view(view["view_type"]):
+                frozen_style = {"padding": "4px 16px 8px"}
+                frozen_min = fs_cfg["min"]
+                frozen_max = fs_cfg["max"]
+                frozen_val = view["frozen_slider_value"] if view["frozen_slider_value"] is not None else fs_cfg["default"]
+
+        thresh_vals = [v for v in ctrls["thresholds"]["values"] if v is not None]
+        thresh_colors = [
+            c for i, c in enumerate(ctrls["thresholds"]["colors"])
+            if ctrls["thresholds"]["values"][i] is not None
+        ]
+        thresh = thresh_vals if ctrls["thresholds"]["enable"] else None
+        if view["view_type"] in ("isosurface", "scatter3d"):
+            thresh = thresh_vals or None
+
+        fig_out = build_figure(
+            ndim, sweep_data, out_key,
+            view_type=view["view_type"],
+            thresholds=thresh,
+            threshold_colors=thresh_colors or None,
+        )
+        sweep_store_out = _slim_sweep_for_browser(sweep_data)
+        view_tab_out = make_view_tab_bar(ndim, view["view_type"])
+
+    # Suppress auto-sweep: advance both counters to a fresh high-water mark.
+    hw = _next_session_hw(0)
+
     return (
         *dropdown_out,
         *slider_out,
@@ -2146,6 +2221,11 @@ def on_load_session(contents, filename):
         view["view_type"],
         view["frozen_axis"],
         *noise_out,
+        # --- new sweep-rehydration outputs ---
+        fig_out, sweep_store_out, interp_out, view_tab_out,
+        frozen_style, frozen_min, frozen_max, frozen_val,
+        hw, hw,  # sweep-dirty, sweep-processed
+        # ---
         msg,
         banner_children,
         banner_style,
@@ -2158,6 +2238,7 @@ def on_load_session(contents, filename):
 _LOAD_SCALAR_OUTPUTS = 5
 # Count of trailing Outputs: status-bar, error-banner.children, error-banner.style.
 _LOAD_TRAILING_OUTPUTS = 3
+_LOAD_SWEEP_OUTPUTS = 10  # figure, sweep-store, interp, view-tabs, frozen-style, frozen-min/max/val, sweep-dirty, sweep-processed
 
 
 def _load_error_return(banner_children):
@@ -2168,6 +2249,7 @@ def _load_error_return(banner_children):
         + len(_THRESH_OUTPUTS)
         + _LOAD_SCALAR_OUTPUTS
         + len(_NOISE_OUTPUTS)
+        + _LOAD_SWEEP_OUTPUTS
         + _LOAD_TRAILING_OUTPUTS
     )
     stub = [dash.no_update] * outputs_total
@@ -2342,6 +2424,26 @@ def on_frozen_axis_change(frozen_idx, sweep_store, view_type, output_key):
     new_max = fs_cfg["max"] if fs_cfg else dash.no_update
     new_val = fs_cfg["default"] if fs_cfg else dash.no_update
     return f_idx, fig, interp_grid, new_min, new_max, new_val
+
+
+# ---------------------------------------------------------------------------
+# Clientside: after session load, resync window._sweepDirty so the next
+# user-driven input increment starts above the post-load high-water mark.
+# ---------------------------------------------------------------------------
+
+app.clientside_callback(
+    """function(dirty) {
+        if (typeof dirty === 'number') {
+            window._sweepDirty = dirty;
+            window._lastProcessed = dirty;
+            window._sweepPending = false;
+        }
+        return window.dash_clientside.no_update;
+    }""",
+    Output("sweep-trigger", "data", allow_duplicate=True),
+    Input("sweep-processed", "data"),
+    prevent_initial_call=True,
+)
 
 
 # ---------------------------------------------------------------------------
