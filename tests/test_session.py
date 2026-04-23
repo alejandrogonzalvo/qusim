@@ -78,3 +78,44 @@ class TestCollectSession:
         view = self._minimal_view()
         s = collect_session(self._minimal_controls(), view, None)
         assert s["view"] == view
+
+
+# ---------------------------------------------------------------------------
+# dump / load: gzipped-JSON round-trip
+# ---------------------------------------------------------------------------
+
+class TestDumpLoad:
+    def _example(self):
+        from gui.session import collect_session
+        return collect_session(
+            TestCollectSession()._minimal_controls(),
+            TestCollectSession()._minimal_view(),
+            None,
+        )
+
+    def test_dump_returns_gzip_bytes(self):
+        from gui.session import dump
+        raw = dump(self._example())
+        assert isinstance(raw, bytes)
+        # gzip magic: first two bytes
+        assert raw[:2] == b"\x1f\x8b"
+
+    def test_load_roundtrip_from_gzip_bytes(self):
+        from gui.session import dump, load
+        original = self._example()
+        back = load(dump(original))
+        assert back == original
+
+    def test_load_accepts_plain_json_string(self):
+        from gui.session import load
+        import json as _json
+        payload = {"schema_version": 1, "controls": {}, "view": {}, "sweep": {"present": False}, "saved_at": "x", "app": {"name": "qusim-dse"}}
+        back = load(_json.dumps(payload))
+        assert back == payload
+
+    def test_load_accepts_plain_json_bytes(self):
+        from gui.session import load
+        import json as _json
+        payload = {"schema_version": 1, "controls": {}, "view": {}, "sweep": {"present": False}, "saved_at": "x", "app": {"name": "qusim-dse"}}
+        back = load(_json.dumps(payload).encode("utf-8"))
+        assert back == payload

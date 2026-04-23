@@ -55,3 +55,20 @@ def collect_session(
         "view": view,
         "sweep": sweep_block,
     }
+
+
+def dump(session: dict) -> bytes:
+    """Serialize *session* to gzipped JSON bytes."""
+    return gzip.compress(
+        json.dumps(session, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
+        compresslevel=6,
+    )
+
+
+def load(raw: bytes | str) -> dict:
+    """Parse a session file. Accepts gzipped bytes, raw JSON bytes, or JSON str."""
+    if isinstance(raw, str):
+        return json.loads(raw)
+    if len(raw) >= 2 and raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    return json.loads(raw.decode("utf-8"))
