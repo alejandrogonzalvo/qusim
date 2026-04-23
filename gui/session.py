@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as _dt
 import gzip
 import json
+from dataclasses import dataclass, field
 from typing import Any
 
 SCHEMA_VERSION = 1
@@ -94,3 +95,64 @@ def load(raw: bytes | str) -> dict:
     if len(raw) >= 2 and raw[:2] == b"\x1f\x8b":
         raw = gzip.decompress(raw)
     return json.loads(raw.decode("utf-8"))
+
+
+@dataclass
+class SessionApply:
+    """Result of :func:`apply_session`.
+
+    ``controls`` and ``view`` are the filtered dicts ready to be fanned out to
+    Dash Outputs. ``sweep_data`` is the sweep result (or ``None``). ``warnings``
+    lists human-readable notes about any dropped fields; the Dash layer surfaces
+    them in the error banner on a best-effort basis.
+    """
+
+    controls: dict
+    view: dict
+    sweep_data: dict | None
+    warnings: list[str] = field(default_factory=list)
+
+
+def apply_session(session: Any) -> SessionApply:
+    """Validate *session* and return a :class:`SessionApply`."""
+    # Local import avoids a load-time cycle: constants.py imports nothing here.
+    from gui.constants import CAT_METRIC_BY_KEY, METRIC_BY_KEY
+
+    validate(session)
+
+    ctrls = dict(session["controls"])
+    view = dict(session["view"])
+    warnings: list[str] = []
+
+    # Drop axes whose metric key is no longer known to this build.
+    axes_in = ctrls.get("axes", [])
+    known = set(METRIC_BY_KEY) | set(CAT_METRIC_BY_KEY)
+    axes_out = []
+    for ax in axes_in:
+        k = ax.get("key")
+        if k in known:
+            axes_out.append(ax)
+        else:
+            warnings.append(
+                f"dropped sweep axis with unknown metric key {k!r}"
+            )
+    ctrls["axes"] = axes_out
+    ctrls["num_metrics"] = len(axes_out)
+
+    sweep_block = session.get("sweep", {})
+    sweep_data: dict | None
+    if sweep_block.get("present"):
+        sweep_data = {
+            k: sweep_block[k]
+            for k in (
+                "metric_keys", "xs", "ys", "zs", "axes", "shape",
+                "grid", "facets", "facet_keys",
+            )
+            if k in sweep_block
+        }
+    else:
+        sweep_data = None
+
+    return SessionApply(
+        controls=ctrls, view=view, sweep_data=sweep_data, warnings=warnings,
+    )
