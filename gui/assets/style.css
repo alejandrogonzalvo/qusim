@@ -306,20 +306,35 @@ input[type="checkbox"] {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   AXIS ADD / REMOVE BUTTONS
+   GHOST BUTTON — shared ghost pill used by topbar Save/Load, the
+   sidebar Add/Remove axis pair, and the CSV export button. Hover
+   lifts with a subtle surface fill; :active settles back.
    ═══════════════════════════════════════════════════════════════════ */
-.axis-btn {
+.ghost-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 12px;
+    cursor: pointer;
+    display: inline-block;
     transition: background 0.15s ease, border-color 0.15s ease,
                 color 0.15s ease, transform 0.1s ease;
+    user-select: none;
 }
-.axis-btn:hover {
-    background: var(--surface2) !important;
-    border-color: var(--accent2) !important;
-    color: var(--text) !important;
+.ghost-btn:hover {
+    background: var(--surface2);
+    border-color: var(--accent2);
+    color: var(--text);
     transform: translateY(-1px);
 }
-.axis-btn:active {
+.ghost-btn:active {
     transform: translateY(0);
+}
+/* Dashed-border modifier used by "− Remove axis". */
+.ghost-btn--dashed {
+    border-style: dashed;
 }
 
 /* ── Dropdown that opens upward (used by the frozen-axis selector at the
@@ -331,27 +346,4 @@ input[type="checkbox"] {
     margin-top: 0 !important;
     margin-bottom: 4px !important;
     box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.12) !important;
-}
-
-/* ── Topbar Save / Load buttons — ghost style with hover darkening ── */
-.topbar-btn {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    padding: 6px 14px;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    display: inline-block;
-    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-    user-select: none;
-}
-.topbar-btn:hover {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--bg);
-}
-.topbar-btn:active {
-    transform: translateY(1px);
 }
