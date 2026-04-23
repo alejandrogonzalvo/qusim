@@ -1262,10 +1262,17 @@ def plot_pareto(
 
 def _spearman_corr(x: np.ndarray, y: np.ndarray) -> float:
     def _rankdata(a: np.ndarray) -> np.ndarray:
-        order = np.argsort(a)
-        ranks = np.empty_like(order, dtype=float)
-        ranks[order] = np.arange(1, len(a) + 1, dtype=float)
-        return ranks
+        unique_vals, inverse, counts = np.unique(a, return_inverse=True, return_counts=True)
+        if len(unique_vals) == len(a):
+            order = np.argsort(a)
+            ranks = np.empty_like(order, dtype=float)
+            ranks[order] = np.arange(1, len(a) + 1, dtype=float)
+            return ranks
+            
+        cum_counts = np.cumsum(counts)
+        prev_counts = np.insert(cum_counts[:-1], 0, 0)
+        avg_ranks = (prev_counts + 1 + cum_counts) / 2.0
+        return avg_ranks[inverse]
 
     if len(x) < 3:
         return 0.0
@@ -1286,19 +1293,26 @@ def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
         return plot_empty("No data for correlation matrix")
 
     data = rows  # already an ndarray from _flatten_sweep_to_table
-    col_names = metric_keys + available_outputs
-    labels = []
-    for name in col_names:
-        m = METRIC_BY_KEY.get(name) or CAT_METRIC_BY_KEY.get(name)
-        labels.append(m.label if m else _OUTPUT_LABELS.get(name, name))
+    n_inputs = len(metric_keys)
+    n_outputs = len(available_outputs)
 
-    n = len(col_names)
-    corr = np.eye(n)
-    for i in range(n):
-        for j in range(i + 1, n):
-            c = _spearman_corr(data[:, i], data[:, j])
+    x_labels = []
+    for name in metric_keys:
+        m = METRIC_BY_KEY.get(name) or CAT_METRIC_BY_KEY.get(name)
+        x_labels.append(m.label if m else _OUTPUT_LABELS.get(name, name))
+        
+    y_labels = []
+    for name in available_outputs:
+        m = METRIC_BY_KEY.get(name) or CAT_METRIC_BY_KEY.get(name)
+        y_labels.append(m.label if m else _OUTPUT_LABELS.get(name, name))
+
+    corr = np.zeros((n_outputs, n_inputs))
+    for i in range(n_outputs):
+        out_idx = n_inputs + i
+        for j in range(n_inputs):
+            in_idx = j
+            c = _spearman_corr(data[:, out_idx], data[:, in_idx])
             corr[i, j] = c
-            corr[j, i] = c
 
     _DIVERGING = [
         [0.0, "#d73027"],
@@ -1309,8 +1323,8 @@ def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
     ]
 
     annotations = []
-    for i in range(n):
-        for j in range(n):
+    for i in range(n_outputs):
+        for j in range(n_inputs):
             annotations.append(dict(
                 x=j, y=i,
                 text=f"{corr[i, j]:.2f}",
@@ -1321,7 +1335,7 @@ def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
     fig = go.Figure(
         go.Heatmap(
             z=corr,
-            x=labels, y=labels,
+            x=x_labels, y=y_labels,
             zmin=-1.0, zmax=1.0,
             colorscale=_DIVERGING,
             showscale=True,

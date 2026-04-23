@@ -599,18 +599,17 @@ class TestPlotCorrelation:
         trace_types = [type(t).__name__ for t in fig.data]
         assert "Heatmap" in trace_types
 
-    def test_square_matrix(self, sweep_data_store_2d):
+    def test_heatmap_dimensions(self, sweep_data_store_2d):
         fig = plot_correlation(sweep_data_store_2d, "overall_fidelity")
         hm = [t for t in fig.data if isinstance(t, go.Heatmap)][0]
         z = np.array(hm.z)
-        assert z.shape[0] == z.shape[1]
+        assert z.shape == (2, 2)
 
-    def test_diagonal_is_one(self, sweep_data_store_2d):
+    def test_axes_correspond_to_inputs_and_outputs(self, sweep_data_store_2d):
         fig = plot_correlation(sweep_data_store_2d, "overall_fidelity")
         hm = [t for t in fig.data if isinstance(t, go.Heatmap)][0]
-        z = np.array(hm.z)
-        diag = np.diag(z)
-        np.testing.assert_allclose(diag, 1.0, atol=1e-10)
+        assert len(hm.x) == 2  # inputs
+        assert len(hm.y) == 2  # outputs
 
     def test_diverging_colorscale(self, sweep_data_store_2d):
         fig = plot_correlation(sweep_data_store_2d, "overall_fidelity")
