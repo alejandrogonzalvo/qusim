@@ -277,6 +277,38 @@ def _topbar() -> html.Div:
             html.Div(
                 style={"display": "flex", "alignItems": "center", "gap": "12px"},
                 children=[
+                    html.Button(
+                        "Save",
+                        id="save-btn",
+                        n_clicks=0,
+                        style={
+                            "background": "transparent",
+                            "border": f"1px solid {COLORS['border']}",
+                            "color": COLORS["text_muted"],
+                            "borderRadius": "6px",
+                            "padding": "6px 14px",
+                            "fontSize": "12px",
+                            "cursor": "pointer",
+                        },
+                    ),
+                    dcc.Upload(
+                        id="session-upload",
+                        children=html.Span(
+                            "Load",
+                            style={
+                                "border": f"1px solid {COLORS['border']}",
+                                "color": COLORS["text_muted"],
+                                "borderRadius": "6px",
+                                "padding": "6px 14px",
+                                "fontSize": "12px",
+                                "cursor": "pointer",
+                                "display": "inline-block",
+                            },
+                        ),
+                        multiple=False,
+                        accept=".gz,.json",
+                        style_active={},
+                    ),
                     dcc.Checklist(
                         id="hot-reload-toggle",
                         options=[{"label": " Hot reload", "value": "on"}],
@@ -650,6 +682,7 @@ app.layout = html.Div(
         dcc.Store(id="sweep-trigger", data=0, storage_type="memory"),
         dcc.Store(id="interp-grid-store", data=None, storage_type="memory"),
         dcc.Store(id="frozen-axis-store", data=2, storage_type="memory"),
+        dcc.Download(id="session-download"),
         dcc.Interval(id="sweep-check", interval=16, n_intervals=0),
     ],
 )
