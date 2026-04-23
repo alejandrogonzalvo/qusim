@@ -1883,6 +1883,127 @@ def export_csv(n_clicks, sweep_store):
 
 
 # ---------------------------------------------------------------------------
+# Callback: save session → gzipped JSON download
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("session-download", "data"),
+    Input("save-btn", "n_clicks"),
+    *_METRIC_DROPDOWN_STATES,
+    *_METRIC_SLIDER_STATES,
+    State("num-metrics-store", "data"),
+    *_METRIC_CHECKLIST_STATES,
+    State("cfg-circuit-type", "value"),
+    State("cfg-num-qubits", "value"),
+    State("cfg-num-cores", "value"),
+    State("cfg-topology", "value"),
+    State("cfg-intracore-topology", "value"),
+    State("cfg-placement", "value"),
+    State("cfg-routing-algorithm", "value"),
+    State("cfg-seed", "value"),
+    State("cfg-dynamic-decoupling", "value"),
+    State("cfg-max-cold", "value"),
+    State("cfg-max-hot", "value"),
+    State("cfg-max-workers", "value"),
+    State("cfg-output-metric", "value"),
+    State("cfg-threshold-enable", "value"),
+    *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
+    *[State(f"cfg-threshold-color-{i}", "value") for i in range(5)],
+    State("num-thresholds-store", "data"),
+    State("view-type-store", "data"),
+    State("frozen-axis-store", "data"),
+    State("frozen-slider", "value"),
+    State("hot-reload-toggle", "value"),
+    State("sweep-result-store", "data"),
+    *_NOISE_SLIDER_STATES,
+    prevent_initial_call=True,
+)
+def on_save_session(n_clicks, *all_args):
+    if not n_clicks:
+        return dash.no_update
+
+    from gui.session import build_controls_dict, build_view_dict, collect_session, dump
+    import time as _time
+
+    idx = 0
+    dropdown_vals = list(all_args[idx:idx + MAX_METRICS]); idx += MAX_METRICS
+    slider_vals   = list(all_args[idx:idx + MAX_METRICS]); idx += MAX_METRICS
+    num_metrics   = all_args[idx]; idx += 1
+    checklist_vals = list(all_args[idx:idx + MAX_METRICS]); idx += MAX_METRICS
+    cfg_circuit_type = all_args[idx]; idx += 1
+    cfg_num_qubits = all_args[idx]; idx += 1
+    cfg_num_cores = all_args[idx]; idx += 1
+    cfg_topology = all_args[idx]; idx += 1
+    cfg_intracore_topology = all_args[idx]; idx += 1
+    cfg_placement = all_args[idx]; idx += 1
+    cfg_routing_algorithm = all_args[idx]; idx += 1
+    cfg_seed = all_args[idx]; idx += 1
+    cfg_dd = all_args[idx]; idx += 1
+    cfg_max_cold = all_args[idx]; idx += 1
+    cfg_max_hot = all_args[idx]; idx += 1
+    cfg_max_workers = all_args[idx]; idx += 1
+    cfg_output_metric = all_args[idx]; idx += 1
+    cfg_threshold_enable = all_args[idx]; idx += 1
+    t_vals = list(all_args[idx:idx + 5]); idx += 5
+    tc_vals = list(all_args[idx:idx + 5]); idx += 5
+    num_thresholds = all_args[idx]; idx += 1
+    view_type = all_args[idx]; idx += 1
+    frozen_axis = all_args[idx]; idx += 1
+    frozen_slider_value = all_args[idx]; idx += 1
+    hot_reload = all_args[idx]; idx += 1
+    sweep_store = all_args[idx]; idx += 1
+    noise_slider_vals = list(all_args[idx:])
+
+    noise_values: dict = {}
+    for i, m in enumerate(SWEEPABLE_METRICS):
+        v = noise_slider_vals[i]
+        if v is None:
+            continue
+        noise_values[m.key] = _slider_to_value(v, m.log_scale)
+
+    controls = build_controls_dict(
+        num_metrics=num_metrics,
+        dropdown_vals=dropdown_vals,
+        slider_vals=slider_vals,
+        checklist_vals=checklist_vals,
+        cfg_circuit_type=cfg_circuit_type,
+        cfg_num_qubits=cfg_num_qubits,
+        cfg_num_cores=cfg_num_cores,
+        cfg_topology=cfg_topology,
+        cfg_intracore_topology=cfg_intracore_topology,
+        cfg_placement=cfg_placement,
+        cfg_routing_algorithm=cfg_routing_algorithm,
+        cfg_seed=cfg_seed,
+        cfg_dynamic_decoupling=cfg_dd,
+        cfg_max_cold=cfg_max_cold,
+        cfg_max_hot=cfg_max_hot,
+        cfg_max_workers=cfg_max_workers,
+        cfg_output_metric=cfg_output_metric,
+        cfg_threshold_enable=cfg_threshold_enable,
+        num_thresholds=num_thresholds,
+        threshold_values=t_vals,
+        threshold_colors=tc_vals,
+        noise_values=noise_values,
+        hot_reload=hot_reload,
+    )
+    view = build_view_dict(view_type, frozen_axis, frozen_slider_value)
+    sweep_data = _get_sweep(sweep_store)
+
+    session = collect_session(controls, view, sweep_data)
+    raw = dump(session)
+
+    fname = _time.strftime("qusim-session-%Y%m%d-%H%M%S.qusim.json.gz")
+    import base64
+    return dict(
+        content=base64.b64encode(raw).decode("ascii"),
+        filename=fname,
+        base64=True,
+        type="application/gzip",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Clientside callbacks: sync threshold color swatches
 # ---------------------------------------------------------------------------
 
