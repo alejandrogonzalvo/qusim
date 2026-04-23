@@ -980,7 +980,7 @@ def _slider_to_value(slider_pos: float, log_scale: bool) -> float:
 
 _NOISE_SLIDER_STATES = [State(f"noise-{m.key}", "value") for m in SWEEPABLE_METRICS]
 
-_NUM_SWEEP_OUTPUTS = 14
+_NUM_SWEEP_OUTPUTS = 15
 _NO_UPDATE_SWEEP = (dash.no_update,) * _NUM_SWEEP_OUTPUTS
 
 
@@ -1081,6 +1081,7 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     Output("frozen-slider-container", "style"),
     Output("frozen-slider", "min"),
     Output("frozen-slider", "max"),
+    Output("frozen-slider", "value", allow_duplicate=True),
     Output("frozen-axis-dropdown", "options"),
     Output("frozen-axis-dropdown", "value"),
     Output("error-banner", "children"),
@@ -1207,6 +1208,7 @@ def run_sweep(
                 dirty,
                 None,
                 {"display": "none"},
+                dash.no_update,
                 dash.no_update,
                 dash.no_update,
                 dash.no_update,
@@ -1404,6 +1406,7 @@ def run_sweep(
         frozen_style = {"display": "none"}
         frozen_min = dash.no_update
         frozen_max = dash.no_update
+        frozen_value = dash.no_update
 
         frozen_dropdown_options = dash.no_update
         frozen_dropdown_value = dash.no_update
@@ -1415,10 +1418,15 @@ def run_sweep(
             permuted = permute_sweep_for_frozen(sweep_data, f_idx)
             interp_grid = sweep_to_interp_grid(permuted, out_key)
             fs_cfg = frozen_slider_config(permuted)
-            if fs_cfg and is_frozen_view(view):
-                frozen_style = {"padding": "4px 16px 8px"}
+            # Always seed slider min/max/value so it matches the frozen axis even
+            # when the user is not currently on a frozen view tab — they may
+            # switch later, and the JS slice expects values inside zs's range.
+            if fs_cfg:
                 frozen_min = fs_cfg["min"]
                 frozen_max = fs_cfg["max"]
+                frozen_value = fs_cfg["default"]
+                if is_frozen_view(view):
+                    frozen_style = {"padding": "4px 16px 8px"}
 
             frozen_dropdown_options = [
                 {
@@ -1456,6 +1464,7 @@ def run_sweep(
             frozen_style,
             frozen_min,
             frozen_max,
+            frozen_value,
             frozen_dropdown_options,
             frozen_dropdown_value,
             [],
@@ -1481,6 +1490,7 @@ def run_sweep(
             dirty,
             None,
             {"display": "none"},
+            dash.no_update,
             dash.no_update,
             dash.no_update,
             dash.no_update,
@@ -1908,12 +1918,12 @@ app.clientside_callback(
             interpGrid.zs, frozenVal
         );
 
-        var plotDiv = document.getElementById("main-plot");
+        // dcc.Graph wraps the plotly div in an outer container — only the
+        // inner .js-plotly-plot element carries the live `.data` array.
+        var outer = document.getElementById("main-plot");
+        var plotDiv = outer ? outer.querySelector(".js-plotly-plot") : null;
         if (plotDiv && plotDiv.data && plotDiv.data.length > 0) {
-            var trace = plotDiv.data[0];
-            trace.z = slice2d;
-            plotDiv.layout.datarevision = (plotDiv.layout.datarevision || 0) + 1;
-            Plotly.react(plotDiv, plotDiv.data, plotDiv.layout);
+            Plotly.restyle(plotDiv, {z: [slice2d]}, [0]);
         }
 
         var v = frozenVal;
@@ -1987,16 +1997,9 @@ def on_frozen_axis_change(frozen_idx, sweep_store, view_type, output_key):
     if frozen_idx is None or sweep_store is None:
         raise dash.exceptions.PreventUpdate
     full = _get_sweep(sweep_store)
-    if full is None:
+    if full is None or len(full.get("metric_keys", [])) != 3:
         raise dash.exceptions.PreventUpdate
-    if len(full.get("metric_keys", [])) != 3:
-        raise dash.exceptions.PreventUpdate
-    try:
-        f_idx = int(frozen_idx)
-    except (TypeError, ValueError):
-        raise dash.exceptions.PreventUpdate
-    if f_idx not in (0, 1, 2):
-        raise dash.exceptions.PreventUpdate
+    f_idx = frozen_idx if frozen_idx in (0, 1, 2) else 2
 
     permuted = permute_sweep_for_frozen(full, f_idx)
     out_key = output_key or "overall_fidelity"
