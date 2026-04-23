@@ -1,6 +1,7 @@
 /target
 __pycache__/
 .venv
+/.worktrees
 
 *.json
 !tests/fixtures/**/*.json
