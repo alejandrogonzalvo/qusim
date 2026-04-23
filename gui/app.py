@@ -276,14 +276,45 @@ def _topbar() -> html.Div:
                 ],
             ),
             html.Div(
-                id="status-bar",
-                children="Ready",
                 style={
-                    "fontSize": "12px",
-                    "color": COLORS["text_muted"],
                     "flex": "1",
-                    "textAlign": "center",
+                    "display": "flex",
+                    "flexDirection": "column",
+                    "alignItems": "center",
+                    "justifyContent": "center",
+                    "minWidth": "0",
                 },
+                children=[
+                    dcc.Input(
+                        id="session-name",
+                        type="text",
+                        value="",
+                        placeholder="Untitled session",
+                        debounce=False,
+                        spellCheck=False,
+                        style={
+                            "background": "transparent",
+                            "border": "none",
+                            "outline": "none",
+                            "color": COLORS["text"],
+                            "fontSize": "14px",
+                            "fontWeight": "600",
+                            "textAlign": "center",
+                            "padding": "2px 6px",
+                            "width": "min(360px, 100%)",
+                            "maxWidth": "100%",
+                        },
+                    ),
+                    html.Div(
+                        id="status-bar",
+                        children="Ready",
+                        style={
+                            "fontSize": "11px",
+                            "color": COLORS["text_muted"],
+                            "marginTop": "-2px",
+                        },
+                    ),
+                ],
             ),
             html.Div(
                 style={"display": "flex", "alignItems": "center", "gap": "12px"},
@@ -1944,6 +1975,7 @@ def export_csv(n_clicks, sweep_store):
     State("frozen-slider", "value"),
     State("hot-reload-toggle", "value"),
     State("sweep-result-store", "data"),
+    State("session-name", "value"),
     *_NOISE_SLIDER_STATES,
     prevent_initial_call=True,
 )
@@ -1951,7 +1983,10 @@ def on_save_session(n_clicks, *all_args):
     if not n_clicks:
         return dash.no_update
 
-    from gui.session import build_controls_dict, build_view_dict, collect_session, dump
+    from gui.session import (
+        build_controls_dict, build_view_dict, collect_session, dump,
+        sanitize_filename,
+    )
     import time as _time
 
     idx = 0
@@ -1981,6 +2016,7 @@ def on_save_session(n_clicks, *all_args):
     frozen_slider_value = all_args[idx]; idx += 1
     hot_reload = all_args[idx]; idx += 1
     sweep_store = all_args[idx]; idx += 1
+    session_name = all_args[idx]; idx += 1
     noise_slider_vals = list(all_args[idx:])
 
     noise_values: dict = {}
@@ -2018,10 +2054,11 @@ def on_save_session(n_clicks, *all_args):
     view = build_view_dict(view_type, frozen_axis, frozen_slider_value)
     sweep_data = _get_sweep(sweep_store)
 
-    session = collect_session(controls, view, sweep_data)
+    session = collect_session(controls, view, sweep_data, name=session_name or "")
     raw = dump(session)
 
-    fname = _time.strftime("qusim-session-%Y%m%d-%H%M%S.qusim.json.gz")
+    stem = sanitize_filename(session_name or "")
+    fname = _time.strftime(f"{stem}-%Y%m%d-%H%M%S.qusim.json.gz")
     import base64
     return dict(
         content=base64.b64encode(raw).decode("ascii"),
@@ -2096,6 +2133,7 @@ def _value_to_slider(val: float, log_scale: bool) -> float:
     Output("sweep-processed", "data", allow_duplicate=True),
     Output("session-loaded-tick", "data", allow_duplicate=True),
     Output("suppress-cascade", "data", allow_duplicate=True),
+    Output("session-name", "value", allow_duplicate=True),
     Output("status-bar", "children", allow_duplicate=True),
     Output("error-banner", "children", allow_duplicate=True),
     Output("error-banner", "style", allow_duplicate=True),
@@ -2241,6 +2279,7 @@ def on_load_session(contents, filename):
         hw, hw,  # sweep-dirty, sweep-processed
         hw,      # session-loaded-tick (reuse hw for monotonicity)
         True,    # suppress-cascade: keep loaded slider/checklist values
+        result.name,  # session-name input
         # ---
         msg,
         banner_children,
@@ -2254,7 +2293,7 @@ def on_load_session(contents, filename):
 _LOAD_SCALAR_OUTPUTS = 5
 # Count of trailing Outputs: status-bar, error-banner.children, error-banner.style.
 _LOAD_TRAILING_OUTPUTS = 3
-_LOAD_SWEEP_OUTPUTS = 12  # figure, sweep-store, interp, view-tabs, frozen-style, frozen-min/max/val, sweep-dirty, sweep-processed, session-loaded-tick, suppress-cascade
+_LOAD_SWEEP_OUTPUTS = 13  # figure, sweep-store, interp, view-tabs, frozen-style, frozen-min/max/val, sweep-dirty, sweep-processed, session-loaded-tick, suppress-cascade, session-name
 
 
 def _load_error_return(banner_children):

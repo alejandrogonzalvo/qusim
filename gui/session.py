@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as _dt
 import gzip
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,13 +29,15 @@ def collect_session(
     controls: dict,
     view: dict,
     sweep_data: dict | None,
+    name: str = "",
 ) -> dict:
     """Build the JSON-shaped session dict.
 
     ``controls`` and ``view`` are stored verbatim (the shape is frozen by the
     schema; the caller is responsible for building the right dict). ``sweep_data``
     is the full sweep result as stored in ``_SWEEP_CACHE``; pass ``None`` if no
-    sweep has been run.
+    sweep has been run. ``name`` is the user-supplied session title; empty
+    string is the "Untitled" default.
     """
     sweep_block: dict[str, Any]
     if sweep_data is None:
@@ -52,10 +55,29 @@ def collect_session(
         "schema_version": SCHEMA_VERSION,
         "saved_at": _utc_now_iso(),
         "app": {"name": "qusim-dse"},
+        "name": name or "",
         "controls": controls,
         "view": view,
         "sweep": sweep_block,
     }
+
+
+_FILENAME_SAFE_RE = re.compile(r"[^\w.-]+", flags=re.UNICODE)
+
+
+def sanitize_filename(name: str) -> str:
+    """Return a safe filename stem for a user-supplied session title.
+
+    Replaces filesystem-unsafe characters and whitespace with hyphens, collapses
+    runs of hyphens, and falls back to ``"qusim-session"`` when the result is
+    empty.
+    """
+    cleaned = _FILENAME_SAFE_RE.sub("-", (name or "").strip())
+    cleaned = cleaned.strip("-")
+    # Collapse any run of hyphens to a single one.
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    return cleaned or "qusim-session"
 
 
 class SessionError(ValueError):
@@ -113,6 +135,7 @@ class SessionApply:
     controls: dict
     view: dict
     sweep_data: dict | None
+    name: str = ""
     warnings: list[str] = field(default_factory=list)
 
 
@@ -125,6 +148,7 @@ def apply_session(session: Any) -> SessionApply:
 
     ctrls = dict(session["controls"])
     view = dict(session["view"])
+    name = session.get("name", "") or ""
     warnings: list[str] = []
 
     # Drop axes whose metric key is no longer known to this build.
@@ -157,7 +181,8 @@ def apply_session(session: Any) -> SessionApply:
         sweep_data = None
 
     return SessionApply(
-        controls=ctrls, view=view, sweep_data=sweep_data, warnings=warnings,
+        controls=ctrls, view=view, sweep_data=sweep_data,
+        name=name, warnings=warnings,
     )
 
 

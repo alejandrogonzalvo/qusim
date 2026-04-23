@@ -343,3 +343,72 @@ class TestBuildViewDict:
         from gui.session import build_view_dict
         v = build_view_dict("isosurface", 2, None)
         assert v["frozen_slider_value"] is None
+
+
+# ---------------------------------------------------------------------------
+# Session name: round-trips through collect/apply, sanitised for filenames
+# ---------------------------------------------------------------------------
+
+class TestSessionName:
+    def _ctrls(self):
+        return TestCollectSession()._minimal_controls()
+
+    def _view(self):
+        return TestCollectSession()._minimal_view()
+
+    def test_collect_session_stores_name_when_provided(self):
+        from gui.session import collect_session
+        s = collect_session(self._ctrls(), self._view(), None, name="My Experiment")
+        assert s["name"] == "My Experiment"
+
+    def test_collect_session_defaults_name_to_empty(self):
+        from gui.session import collect_session
+        s = collect_session(self._ctrls(), self._view(), None)
+        assert s["name"] == ""
+
+    def test_apply_session_returns_name(self):
+        from gui.session import collect_session, apply_session
+        s = collect_session(self._ctrls(), self._view(), None, name="Run 42")
+        out = apply_session(s)
+        assert out.name == "Run 42"
+
+    def test_apply_session_missing_name_is_empty_string(self):
+        from gui.session import apply_session
+        s = {
+            "schema_version": 1,
+            "saved_at": "x", "app": {"name": "qusim-dse"},
+            "controls": {}, "view": {},
+            "sweep": {"present": False},
+        }
+        out = apply_session(s)
+        assert out.name == ""
+
+
+class TestSanitizeFilename:
+    def test_plain_name_unchanged(self):
+        from gui.session import sanitize_filename
+        assert sanitize_filename("my-session") == "my-session"
+
+    def test_spaces_become_hyphens(self):
+        from gui.session import sanitize_filename
+        assert sanitize_filename("my experiment one") == "my-experiment-one"
+
+    def test_strips_filesystem_specials(self):
+        from gui.session import sanitize_filename
+        assert sanitize_filename("foo/bar:baz?.qux") == "foo-bar-baz-.qux"
+
+    def test_empty_returns_default(self):
+        from gui.session import sanitize_filename
+        assert sanitize_filename("") == "qusim-session"
+
+    def test_whitespace_only_returns_default(self):
+        from gui.session import sanitize_filename
+        assert sanitize_filename("   ") == "qusim-session"
+
+    def test_collapses_repeat_separators(self):
+        from gui.session import sanitize_filename
+        assert sanitize_filename("a   b") == "a-b"
+
+    def test_preserves_unicode_letters(self):
+        from gui.session import sanitize_filename
+        assert sanitize_filename("résumé") == "résumé"
