@@ -295,6 +295,9 @@ def _topbar() -> html.Div:
                         id="session-upload",
                         children=html.Span(
                             "Load",
+                            role="button",
+                            tabIndex=0,
+                            **{"aria-label": "Load session from file"},
                             style={
                                 "border": f"1px solid {COLORS['border']}",
                                 "color": COLORS["text_muted"],
