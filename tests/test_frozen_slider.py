@@ -208,3 +208,74 @@ class TestBuildFigureFrozenRouting:
         )
         assert fig is not None
         assert len(fig.data) > 0
+
+
+# ---------------------------------------------------------------------------
+# permute_sweep_for_frozen: rearrange sweep_data so frozen axis is at index 2
+# ---------------------------------------------------------------------------
+
+class TestPermuteSweepForFrozen:
+    def _make_3d_sweep(self):
+        # value[i][j][k] = 100*i + 10*j + k  → uniquely identifies original cell
+        xs = [1.0, 2.0]
+        ys = [3.0, 4.0, 5.0]
+        zs = [6.0, 7.0, 8.0, 9.0]
+        grid = []
+        for i in range(len(xs)):
+            plane = []
+            for j in range(len(ys)):
+                row = []
+                for k in range(len(zs)):
+                    row.append({"overall_fidelity": 100*i + 10*j + k})
+                plane.append(row)
+            grid.append(plane)
+        return {
+            "metric_keys": ["t1", "t2", "two_gate_time"],
+            "xs": xs, "ys": ys, "zs": zs,
+            "grid": grid,
+        }
+
+    def test_frozen_idx_2_is_identity(self):
+        from gui.interpolation import permute_sweep_for_frozen
+        sweep = self._make_3d_sweep()
+        out = permute_sweep_for_frozen(sweep, 2)
+        assert out["xs"] == sweep["xs"]
+        assert out["ys"] == sweep["ys"]
+        assert out["zs"] == sweep["zs"]
+        assert out["metric_keys"] == sweep["metric_keys"]
+        assert out["grid"] == sweep["grid"]
+
+    def test_frozen_idx_0_swaps_x_to_z(self):
+        from gui.interpolation import permute_sweep_for_frozen
+        sweep = self._make_3d_sweep()
+        out = permute_sweep_for_frozen(sweep, 0)
+        # Axis 0 (xs, t1) becomes the frozen axis (zs)
+        assert out["zs"] == sweep["xs"]
+        assert out["xs"] == sweep["ys"]
+        assert out["ys"] == sweep["zs"]
+        assert out["metric_keys"] == ["t2", "two_gate_time", "t1"]
+        # Spot-check a value: original grid[1][2][3] = 123
+        # After permutation, frozen axis = old i, free axes = (old j, old k)
+        # New grid[i'][j'][k'] where (i', j', k') maps to (old j=i', old k=j', old i=k')
+        new_grid = out["grid"]
+        # new_grid[i'=2][j'=3][k'=1] should equal old grid[1][2][3] = 123
+        assert new_grid[2][3][1]["overall_fidelity"] == 123
+
+    def test_frozen_idx_1_swaps_y_to_z(self):
+        from gui.interpolation import permute_sweep_for_frozen
+        sweep = self._make_3d_sweep()
+        out = permute_sweep_for_frozen(sweep, 1)
+        # Axis 1 (ys, t2) becomes the frozen axis (zs)
+        assert out["zs"] == sweep["ys"]
+        assert out["xs"] == sweep["xs"]
+        assert out["ys"] == sweep["zs"]
+        assert out["metric_keys"] == ["t1", "two_gate_time", "t2"]
+        # Original grid[1][2][3] = 123 → new (i'=1 [old i], j'=3 [old k], k'=2 [old j])
+        new_grid = out["grid"]
+        assert new_grid[1][3][2]["overall_fidelity"] == 123
+
+    def test_returns_input_when_not_3d(self):
+        from gui.interpolation import permute_sweep_for_frozen
+        sweep = {"metric_keys": ["t1", "t2"], "xs": [1.0], "ys": [2.0], "grid": [[{"overall_fidelity": 0.5}]]}
+        out = permute_sweep_for_frozen(sweep, 0)
+        assert out is sweep  # unchanged passthrough

@@ -286,6 +286,65 @@ def frozen_slider_config(sweep_data: dict) -> dict | None:
     }
 
 
+def permute_sweep_for_frozen(sweep_data: dict, frozen_idx: int) -> dict:
+    """Return a sweep_data dict rearranged so that ``frozen_idx`` ends at axis 2.
+
+    Downstream consumers (build_figure, sweep_to_interp_grid, frozen_slice) all
+    assume the frozen axis is the third one (``zs``). For 3D sweeps this helper
+    permutes ``xs``, ``ys``, ``zs``, ``grid`` and ``metric_keys`` so that the
+    user's chosen ``frozen_idx`` becomes axis 2 while the other two axes keep
+    their original relative order at positions 0 and 1.
+
+    Returns the input unchanged for non-3D sweeps or when ``frozen_idx == 2``.
+    """
+    metric_keys = sweep_data.get("metric_keys", [])
+    if len(metric_keys) != 3 or frozen_idx == 2:
+        return sweep_data
+
+    if frozen_idx not in (0, 1):
+        return sweep_data
+
+    axes_data = [sweep_data["xs"], sweep_data["ys"], sweep_data["zs"]]
+    free = [i for i in range(3) if i != frozen_idx]
+    new_order = free + [frozen_idx]  # e.g. frozen=0 → [1, 2, 0]
+    new_xs = list(axes_data[new_order[0]])
+    new_ys = list(axes_data[new_order[1]])
+    new_zs = list(axes_data[new_order[2]])
+    new_keys = [metric_keys[i] for i in new_order]
+
+    # Original grid is indexed as grid[i_x][i_y][i_z].
+    # We want new_grid[i_x'][i_y'][i_z'] where the indices correspond to new_order.
+    nx, ny, nz = len(sweep_data["xs"]), len(sweep_data["ys"]), len(sweep_data["zs"])
+    sizes = [nx, ny, nz]
+    new_sizes = [sizes[new_order[0]], sizes[new_order[1]], sizes[new_order[2]]]
+    old_grid = sweep_data["grid"]
+
+    new_grid = [
+        [
+            [None for _ in range(new_sizes[2])]
+            for _ in range(new_sizes[1])
+        ]
+        for _ in range(new_sizes[0])
+    ]
+    # idx[d] = old-axis-d position, computed from new indices.
+    for a in range(new_sizes[0]):
+        for b in range(new_sizes[1]):
+            for c in range(new_sizes[2]):
+                old_idx = [0, 0, 0]
+                old_idx[new_order[0]] = a
+                old_idx[new_order[1]] = b
+                old_idx[new_order[2]] = c
+                new_grid[a][b][c] = old_grid[old_idx[0]][old_idx[1]][old_idx[2]]
+
+    out = dict(sweep_data)
+    out["xs"] = new_xs
+    out["ys"] = new_ys
+    out["zs"] = new_zs
+    out["metric_keys"] = new_keys
+    out["grid"] = new_grid
+    return out
+
+
 def frozen_slider_config_nd(
     sweep_data: dict,
     free_axes: list[int] | None = None,
