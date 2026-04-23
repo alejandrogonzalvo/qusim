@@ -58,6 +58,7 @@ from gui.dse_engine import DSEEngine, SweepProgress
 from gui.interpolation import (
     frozen_slider_config,
     is_frozen_view,
+    permute_sweep_for_frozen,
     sweep_to_interp_grid,
 )
 from gui.plotting import build_figure, plot_empty, sweep_to_csv
@@ -1354,22 +1355,12 @@ def run_sweep(
         frozen_min = dash.no_update
         frozen_max = dash.no_update
 
-        from gui.interpolation import permute_sweep_for_frozen
-        from gui.constants import METRIC_BY_KEY
-
         frozen_dropdown_options = dash.no_update
         frozen_dropdown_value = dash.no_update
 
         if ndim == 3 and "facets" not in sweep_data:
             metric_keys_3d = sweep_data.get("metric_keys", [])
-            # Validate stored frozen index against current metric set; reset to 2
-            # if out of range.
-            try:
-                f_idx = int(frozen_axis_idx) if frozen_axis_idx is not None else 2
-            except (TypeError, ValueError):
-                f_idx = 2
-            if f_idx not in (0, 1, 2):
-                f_idx = 2
+            f_idx = frozen_axis_idx if frozen_axis_idx in (0, 1, 2) else 2
 
             permuted = permute_sweep_for_frozen(sweep_data, f_idx)
             interp_grid = sweep_to_interp_grid(permuted, out_key)
@@ -1379,7 +1370,6 @@ def run_sweep(
                 frozen_min = fs_cfg["min"]
                 frozen_max = fs_cfg["max"]
 
-            # Always emit dropdown options for the 3 metrics.
             frozen_dropdown_options = [
                 {
                     "label": (METRIC_BY_KEY.get(mk).label if METRIC_BY_KEY.get(mk) else mk),
@@ -1924,7 +1914,6 @@ def on_frozen_axis_change(frozen_idx, sweep_store, view_type, output_key):
     if f_idx not in (0, 1, 2):
         raise dash.exceptions.PreventUpdate
 
-    from gui.interpolation import permute_sweep_for_frozen
     permuted = permute_sweep_for_frozen(full, f_idx)
     out_key = output_key or "overall_fidelity"
     interp_grid = sweep_to_interp_grid(permuted, out_key)
