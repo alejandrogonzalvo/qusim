@@ -696,6 +696,7 @@ app.layout = html.Div(
         dcc.Store(id="sweep-trigger", data=0, storage_type="memory"),
         dcc.Store(id="interp-grid-store", data=None, storage_type="memory"),
         dcc.Store(id="frozen-axis-store", data=2, storage_type="memory"),
+        dcc.Store(id="session-loaded-tick", data=0, storage_type="memory"),
         dcc.Download(id="session-download"),
         dcc.Interval(id="sweep-check", interval=16, n_intervals=0),
     ],
@@ -2077,6 +2078,7 @@ def _value_to_slider(val: float, log_scale: bool) -> float:
     Output("frozen-slider", "value", allow_duplicate=True),
     Output("sweep-dirty", "data", allow_duplicate=True),
     Output("sweep-processed", "data", allow_duplicate=True),
+    Output("session-loaded-tick", "data", allow_duplicate=True),
     Output("status-bar", "children", allow_duplicate=True),
     Output("error-banner", "children", allow_duplicate=True),
     Output("error-banner", "style", allow_duplicate=True),
@@ -2167,17 +2169,12 @@ def on_load_session(contents, filename):
 
     sweep_data = result.sweep_data
     if sweep_data is not None:
-        from gui.interpolation import (
-            permute_sweep_for_frozen,
-            sweep_to_interp_grid,
-            frozen_slider_config,
-            is_frozen_view,
-        )
+        from gui.interpolation import permute_sweep_for_frozen
         ndim = len(sweep_data.get("metric_keys", []))
         out_key = ctrls["thresholds"]["output_metric"] or "overall_fidelity"
 
-        # Apply same frozen-axis permutation used by the main sweep callback
-        # so axis 2 is always the frozen one downstream.
+        # Permute so axis 2 is the frozen axis; downstream (build_figure,
+        # sweep_to_interp_grid, frozen_slice) all assume axis 2 is frozen.
         if ndim == 3 and "facets" not in sweep_data:
             sweep_data = permute_sweep_for_frozen(sweep_data, view["frozen_axis"] or 2)
             interp_out = sweep_to_interp_grid(sweep_data, out_key)
@@ -2225,6 +2222,7 @@ def on_load_session(contents, filename):
         fig_out, sweep_store_out, interp_out, view_tab_out,
         frozen_style, frozen_min, frozen_max, frozen_val,
         hw, hw,  # sweep-dirty, sweep-processed
+        hw,      # session-loaded-tick (reuse hw for monotonicity)
         # ---
         msg,
         banner_children,
@@ -2238,7 +2236,7 @@ def on_load_session(contents, filename):
 _LOAD_SCALAR_OUTPUTS = 5
 # Count of trailing Outputs: status-bar, error-banner.children, error-banner.style.
 _LOAD_TRAILING_OUTPUTS = 3
-_LOAD_SWEEP_OUTPUTS = 10  # figure, sweep-store, interp, view-tabs, frozen-style, frozen-min/max/val, sweep-dirty, sweep-processed
+_LOAD_SWEEP_OUTPUTS = 11  # figure, sweep-store, interp, view-tabs, frozen-style, frozen-min/max/val, sweep-dirty, sweep-processed, session-loaded-tick
 
 
 def _load_error_return(banner_children):
@@ -2432,16 +2430,16 @@ def on_frozen_axis_change(frozen_idx, sweep_store, view_type, output_key):
 # ---------------------------------------------------------------------------
 
 app.clientside_callback(
-    """function(dirty) {
-        if (typeof dirty === 'number') {
-            window._sweepDirty = dirty;
-            window._lastProcessed = dirty;
+    """function(tick) {
+        if (typeof tick === 'number' && tick > 0) {
+            window._sweepDirty = tick;
+            window._lastProcessed = tick;
             window._sweepPending = false;
         }
         return window.dash_clientside.no_update;
     }""",
     Output("sweep-trigger", "data", allow_duplicate=True),
-    Input("sweep-processed", "data"),
+    Input("session-loaded-tick", "data"),
     prevent_initial_call=True,
 )
 
