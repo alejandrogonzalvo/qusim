@@ -476,15 +476,17 @@ def _center_panel() -> html.Div:
                     html.Div(
                         style={"display": "flex", "alignItems": "center", "gap": "8px"},
                         children=[
-                            html.Span(
-                                id="frozen-slider-label",
-                                children="Frozen axis",
-                                style={
-                                    "fontSize": "11px",
-                                    "fontWeight": "600",
-                                    "color": COLORS["text_muted"],
-                                    "whiteSpace": "nowrap",
-                                },
+                            html.Div(
+                                style={"width": "170px", "flexShrink": "0"},
+                                children=dcc.Dropdown(
+                                    id="frozen-axis-dropdown",
+                                    className="dse-dropdown dse-dropdown-up",
+                                    options=[],
+                                    value=2,
+                                    clearable=False,
+                                    searchable=False,
+                                    style={"fontSize": "11px"},
+                                ),
                             ),
                             dcc.Slider(
                                 id="frozen-slider",
@@ -600,6 +602,7 @@ app.layout = html.Div(
         dcc.Store(id="sweep-processed", data=0, storage_type="memory"),
         dcc.Store(id="sweep-trigger", data=0, storage_type="memory"),
         dcc.Store(id="interp-grid-store", data=None, storage_type="memory"),
+        dcc.Store(id="frozen-axis-store", data=2, storage_type="memory"),
         dcc.Interval(id="sweep-check", interval=16, n_intervals=0),
     ],
 )
