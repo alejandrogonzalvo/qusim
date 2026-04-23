@@ -159,3 +159,84 @@ def apply_session(session: Any) -> SessionApply:
     return SessionApply(
         controls=ctrls, view=view, sweep_data=sweep_data, warnings=warnings,
     )
+
+
+def build_controls_dict(
+    *,
+    num_metrics: int,
+    dropdown_vals: list,
+    slider_vals: list,
+    checklist_vals: list,
+    cfg_circuit_type: str,
+    cfg_num_qubits: int,
+    cfg_num_cores: int,
+    cfg_topology: str,
+    cfg_intracore_topology: str,
+    cfg_placement: str,
+    cfg_routing_algorithm: str,
+    cfg_seed: int,
+    cfg_dynamic_decoupling: list,
+    cfg_max_cold: int | None,
+    cfg_max_hot: int | None,
+    cfg_max_workers: int | None,
+    cfg_output_metric: str,
+    cfg_threshold_enable: list,
+    num_thresholds: int,
+    threshold_values: list,
+    threshold_colors: list,
+    noise_values: dict,
+    hot_reload: list,
+) -> dict:
+    """Assemble the schema-shaped ``controls`` dict from raw callback values."""
+    axes = []
+    for i in range(int(num_metrics or 0)):
+        key = dropdown_vals[i]
+        if key is None:
+            continue
+        axes.append({
+            "key": key,
+            "slider": list(slider_vals[i]) if slider_vals[i] is not None else None,
+            "checklist": list(checklist_vals[i]) if checklist_vals[i] else None,
+        })
+
+    return {
+        "num_metrics": len(axes),
+        "axes": axes,
+        "circuit": {
+            "num_qubits": cfg_num_qubits,
+            "num_cores": cfg_num_cores,
+            "seed": cfg_seed,
+            "circuit_type": cfg_circuit_type,
+            "topology_type": cfg_topology,
+            "intracore_topology": cfg_intracore_topology,
+            "placement": cfg_placement,
+            "routing_algorithm": cfg_routing_algorithm,
+            "dynamic_decoupling": bool(cfg_dynamic_decoupling and "yes" in cfg_dynamic_decoupling),
+        },
+        "noise": dict(noise_values),
+        "thresholds": {
+            "output_metric": cfg_output_metric,
+            "enable": bool(cfg_threshold_enable and "yes" in cfg_threshold_enable),
+            "num_thresholds": int(num_thresholds or 3),
+            "values": list(threshold_values),
+            "colors": list(threshold_colors),
+        },
+        "performance": {
+            "max_cold": cfg_max_cold,
+            "max_hot": cfg_max_hot,
+            "max_workers": cfg_max_workers,
+        },
+        "hot_reload": bool(hot_reload and "on" in hot_reload),
+    }
+
+
+def build_view_dict(
+    view_type: str,
+    frozen_axis: int,
+    frozen_slider_value: float | None,
+) -> dict:
+    return {
+        "view_type": view_type,
+        "frozen_axis": frozen_axis,
+        "frozen_slider_value": frozen_slider_value,
+    }

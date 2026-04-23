@@ -247,3 +247,81 @@ class TestApplySession:
         from gui.session import apply_session, SessionError
         with pytest.raises(SessionError):
             apply_session({"schema_version": 0})
+
+
+# ---------------------------------------------------------------------------
+# build_controls_dict: assemble schema-shaped dict from raw callback args
+# ---------------------------------------------------------------------------
+
+class TestBuildControlsDict:
+    def _args(self, **overrides):
+        # Match the order the save callback passes to build_controls_dict.
+        args = {
+            "num_metrics": 2,
+            "dropdown_vals": ["t1", "t2", None, None, None, None, None, None, None, None, None, None],
+            "slider_vals":   [[4.0, 6.0], [4.0, 6.0]] + [None] * 10,
+            "checklist_vals": [[], []] + [None] * 10,
+            "cfg_circuit_type": "qft",
+            "cfg_num_qubits": 16, "cfg_num_cores": 4,
+            "cfg_topology": "ring", "cfg_intracore_topology": "all_to_all",
+            "cfg_placement": "random", "cfg_routing_algorithm": "hqa_sabre",
+            "cfg_seed": 42, "cfg_dynamic_decoupling": [],
+            "cfg_max_cold": None, "cfg_max_hot": None, "cfg_max_workers": None,
+            "cfg_output_metric": "overall_fidelity",
+            "cfg_threshold_enable": [], "num_thresholds": 3,
+            "threshold_values": [0.5, 0.7, 0.9, None, None],
+            "threshold_colors": ["#ff0000", "#ffaa00", "#00ff00", None, None],
+            "noise_values": {"single_gate_error": 1e-4, "two_gate_error": 1e-3},
+            "hot_reload": [],
+        }
+        args.update(overrides)
+        return args
+
+    def test_picks_up_active_axes(self):
+        from gui.session import build_controls_dict
+        ctrls = build_controls_dict(**self._args())
+        assert ctrls["num_metrics"] == 2
+        keys = [ax["key"] for ax in ctrls["axes"]]
+        assert keys == ["t1", "t2"]
+        assert ctrls["axes"][0]["slider"] == [4.0, 6.0]
+        assert ctrls["axes"][0]["checklist"] is None
+
+    def test_includes_all_circuit_keys(self):
+        from gui.session import build_controls_dict
+        ctrls = build_controls_dict(**self._args())
+        for k in (
+            "num_qubits", "num_cores", "seed",
+            "circuit_type", "topology_type", "intracore_topology",
+            "placement", "routing_algorithm", "dynamic_decoupling",
+        ):
+            assert k in ctrls["circuit"]
+
+    def test_hot_reload_bool_from_checklist(self):
+        from gui.session import build_controls_dict
+        on = build_controls_dict(**self._args(hot_reload=["on"]))
+        off = build_controls_dict(**self._args(hot_reload=[]))
+        assert on["hot_reload"] is True
+        assert off["hot_reload"] is False
+
+    def test_threshold_enable_bool_from_checklist(self):
+        from gui.session import build_controls_dict
+        on = build_controls_dict(**self._args(cfg_threshold_enable=["yes"]))
+        off = build_controls_dict(**self._args(cfg_threshold_enable=[]))
+        assert on["thresholds"]["enable"] is True
+        assert off["thresholds"]["enable"] is False
+
+
+# ---------------------------------------------------------------------------
+# build_view_dict
+# ---------------------------------------------------------------------------
+
+class TestBuildViewDict:
+    def test_copies_the_three_fields(self):
+        from gui.session import build_view_dict
+        v = build_view_dict("frozen_heatmap", 1, 5.0)
+        assert v == {"view_type": "frozen_heatmap", "frozen_axis": 1, "frozen_slider_value": 5.0}
+
+    def test_none_slider_is_allowed(self):
+        from gui.session import build_view_dict
+        v = build_view_dict("isosurface", 2, None)
+        assert v["frozen_slider_value"] is None
