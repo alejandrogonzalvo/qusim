@@ -1017,3 +1017,159 @@ def make_view_tab_bar(num_metrics: int = 2, active: str | None = None) -> html.D
         },
         children=children,
     )
+
+
+# ---------------------------------------------------------------------------
+# Figure-of-Merit controls (shown above plot when the Merit view is active)
+# ---------------------------------------------------------------------------
+
+
+_FOM_FIELD_STYLE = {
+    "width": "100%",
+    "background": COLORS["surface2"],
+    "border": f"1px solid {COLORS['border']}",
+    "color": COLORS["text"],
+    "borderRadius": "4px",
+    "padding": "4px 8px",
+    "fontSize": "12px",
+    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+    "outline": "none",
+}
+
+_FOM_LABEL_STYLE = {
+    "fontSize": "10px",
+    "fontWeight": "700",
+    "textTransform": "uppercase",
+    "letterSpacing": "0.06em",
+    "color": COLORS["text_muted"],
+    "marginBottom": "2px",
+    "display": "block",
+}
+
+
+def make_merit_controls() -> html.Div:
+    """Formula panel shown above the main plot when the Merit view is active.
+
+    Importing ``PRESET_OPTIONS`` and ``DEFAULT_FOM`` locally keeps this module
+    decoupled from ``gui.fom`` for consumers that don't render the panel.
+    """
+    from .fom import DEFAULT_FOM, PRESET_OPTIONS
+
+    # Render intermediates as "name = expr" lines in a single textarea. That
+    # avoids the complexity of pattern-matched dynamic rows and still round-
+    # trips cleanly to/from the FoM store.
+    intermediates_text = "\n".join(
+        f"{name} = {expr}" for name, expr in DEFAULT_FOM.intermediates
+    )
+
+    row_style = {
+        "display": "flex",
+        "gap": "10px",
+        "marginBottom": "6px",
+    }
+
+    return html.Div(
+        id="merit-controls-container",
+        style={
+            "display": "none",
+            "padding": "6px 16px 10px",
+            "borderTop": f"1px solid {COLORS['border']}",
+        },
+        children=[
+            html.Div(
+                style=row_style,
+                children=[
+                    html.Div(
+                        style={"flex": "0 0 220px"},
+                        children=[
+                            html.Label("Preset", style=_FOM_LABEL_STYLE),
+                            dcc.Dropdown(
+                                id="fom-preset",
+                                className="dse-dropdown dse-dropdown-up",
+                                options=PRESET_OPTIONS,
+                                value="fidelity_per_epr",
+                                clearable=False,
+                                searchable=False,
+                                style={"fontSize": "11px"},
+                            ),
+                        ],
+                    ),
+                    html.Div(
+                        style={"flex": "1 1 auto"},
+                        children=[
+                            html.Label("Name", style=_FOM_LABEL_STYLE),
+                            dcc.Input(
+                                id="fom-name",
+                                type="text",
+                                value=DEFAULT_FOM.name,
+                                debounce=True,
+                                style=_FOM_FIELD_STYLE,
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            html.Div(
+                style=row_style,
+                children=[
+                    html.Div(
+                        style={"flex": "1 1 0"},
+                        children=[
+                            html.Label("Numerator", style=_FOM_LABEL_STYLE),
+                            dcc.Input(
+                                id="fom-numerator",
+                                type="text",
+                                value=DEFAULT_FOM.numerator,
+                                debounce=True,
+                                style=_FOM_FIELD_STYLE,
+                            ),
+                        ],
+                    ),
+                    html.Div(
+                        style={"flex": "1 1 0"},
+                        children=[
+                            html.Label("Denominator", style=_FOM_LABEL_STYLE),
+                            dcc.Input(
+                                id="fom-denominator",
+                                type="text",
+                                value=DEFAULT_FOM.denominator,
+                                debounce=True,
+                                style=_FOM_FIELD_STYLE,
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            html.Div(
+                style={"marginBottom": "4px"},
+                children=[
+                    html.Label(
+                        "Intermediates  (one per line, e.g. cost = total_epr_pairs + 1e-9 * total_circuit_time_ns)",
+                        style=_FOM_LABEL_STYLE,
+                    ),
+                    dcc.Textarea(
+                        id="fom-intermediates",
+                        value=intermediates_text,
+                        style={
+                            **_FOM_FIELD_STYLE,
+                            "height": "54px",
+                            "resize": "vertical",
+                        },
+                    ),
+                ],
+            ),
+            html.Div(
+                id="fom-status",
+                style={
+                    "fontSize": "11px",
+                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                    "color": COLORS["text_muted"],
+                    "marginTop": "4px",
+                    "whiteSpace": "nowrap",
+                    "overflow": "hidden",
+                    "textOverflow": "ellipsis",
+                },
+                children="",
+            ),
+        ],
+    )

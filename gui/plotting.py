@@ -1358,6 +1358,274 @@ def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
 
 
 # ---------------------------------------------------------------------------
+# Figure of Merit view
+# ---------------------------------------------------------------------------
+
+_FOM_OUTPUT_KEY = "__fom__"
+
+
+def _rebuild_grid_with_fom(sweep_data: dict, fom_values: np.ndarray) -> dict:
+    """Return a shallow-copied sweep_data whose grid is a nested list of
+    ``{"__fom__": value}`` dicts — ready to feed into the existing 1/2/3-D
+    plotters by passing ``output_key="__fom__"``.
+
+    ``fom_values`` is the flat C-order array produced by
+    :func:`gui.fom.compute_for_sweep`; it must match the grid shape implied
+    by the sweep's axes.
+    """
+    ndim = len(sweep_data["metric_keys"])
+    axes = _resolve_axes(sweep_data, ndim)
+    shape = tuple(len(ax) for ax in axes)
+    total = int(np.prod(shape)) if shape else 0
+    if total != fom_values.size:
+        raise ValueError(
+            f"FoM value count ({fom_values.size}) does not match grid shape {shape}"
+        )
+    arr = fom_values.reshape(shape)
+
+    def build(idx: tuple[int, ...], d: int):
+        if d == ndim:
+            v = float(arr[idx])
+            return {_FOM_OUTPUT_KEY: v}
+        return [build(idx + (i,), d + 1) for i in range(shape[d])]
+
+    new_sweep = dict(sweep_data)
+    new_sweep["grid"] = build((), 0)
+    new_sweep.pop("facets", None)
+    new_sweep.pop("facet_keys", None)
+    return new_sweep
+
+
+def plot_merit(
+    sweep_data: dict,
+    fom_config,
+    view_hint: str | None = None,
+    thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
+    point_cap: int | None = None,
+) -> go.Figure:
+    """Plot the FoM landscape as denominator (x) vs numerator (y), coloured
+    by the computed FoM value, one marker per design point.
+
+    On hover, each marker exposes every intermediate, the numerator /
+    denominator values, the FoM itself, and the swept axis values that
+    identify which design point it is.
+    """
+    from gui.fom import FomConfig, compute_breakdown
+
+    if not isinstance(fom_config, FomConfig):
+        fom_config = FomConfig.from_dict(fom_config or {})
+
+    if sweep_data is None:
+        return plot_empty("No sweep loaded — run a sweep first")
+
+    # Facets → flatten to a single analysis table, same path as parallel/corr.
+    if "facets" in sweep_data and sweep_data["facets"]:
+        sweep_data = _flatten_facets_for_analysis(sweep_data)
+
+    bd = compute_breakdown(sweep_data, fom_config)
+    if bd.error is not None:
+        return plot_empty(f"FoM error: {bd.error}")
+
+    num = np.asarray(bd.numerator, dtype=float)
+    den = np.asarray(bd.denominator, dtype=float)
+    fom = np.asarray(bd.fom, dtype=float)
+
+    finite_mask = np.isfinite(num) & np.isfinite(den) & np.isfinite(fom)
+    if not finite_mask.any():
+        return plot_empty(
+            "FoM produced no finite values — check for divide-by-zero or constant expressions."
+        )
+
+    num_f = num[finite_mask]
+    den_f = den[finite_mask]
+    fom_f = fom[finite_mask]
+
+    # --- Build customdata + hover template ---------------------------------
+    # Columns, in order: num, den, fom, <sweep axis values>, <output primitives
+    # referenced in the formulas>, <intermediate values>.
+    referenced = (
+        _fom_referenced_names(fom_config)
+        | set(bd.intermediates.keys())  # also include names appearing only in intermediates
+    )
+    # Show every swept axis (they identify the point) plus any referenced output.
+    axis_cols: list[tuple[str, np.ndarray]] = [
+        (name, bd.primitives[name][finite_mask])
+        for name in bd.sweep_axes
+        if name in bd.primitives
+    ]
+    output_cols: list[tuple[str, np.ndarray]] = [
+        (name, bd.primitives[name][finite_mask])
+        for name in bd.output_keys
+        if name in bd.primitives and name in referenced
+    ]
+    inter_cols: list[tuple[str, np.ndarray]] = [
+        (name, vals[finite_mask]) for name, vals in bd.intermediates.items()
+    ]
+
+    columns = (
+        [("__num__", num_f), ("__den__", den_f), ("__fom__", fom_f)]
+        + axis_cols + output_cols + inter_cols
+    )
+    customdata = np.column_stack([c[1] for c in columns])
+
+    fom_name = fom_config.name or "Figure of Merit"
+    num_expr = (fom_config.numerator or "").strip() or "1"
+    den_expr = (fom_config.denominator or "").strip() or "1"
+
+    # Register labels so any downstream consumer that reads _OUTPUT_LABELS
+    # (e.g. CSV export of a FoM) shows the user-configured name.
+    _OUTPUT_LABELS[_FOM_OUTPUT_KEY] = fom_name
+
+    hover_lines: list[str] = [
+        f"<b>{fom_name}: %{{customdata[2]:.4g}}</b>",
+        f"  numerator ({_truncate_expr(num_expr)}) = %{{customdata[0]:.4g}}",
+        f"  denominator ({_truncate_expr(den_expr)}) = %{{customdata[1]:.4g}}",
+    ]
+    col_idx = 3
+    if axis_cols:
+        hover_lines.append("<br><i>sweep point</i>")
+        for name, _ in axis_cols:
+            label = _axis_label(name)
+            hover_lines.append(f"  {label} = %{{customdata[{col_idx}]:.4g}}")
+            col_idx += 1
+    if output_cols:
+        hover_lines.append("<br><i>outputs</i>")
+        for name, _ in output_cols:
+            label = _OUTPUT_LABELS.get(name, name)
+            hover_lines.append(f"  {label} = %{{customdata[{col_idx}]:.4g}}")
+            col_idx += 1
+    if inter_cols:
+        hover_lines.append("<br><i>intermediates</i>")
+        for name, _ in inter_cols:
+            hover_lines.append(f"  {name} = %{{customdata[{col_idx}]:.4g}}")
+            col_idx += 1
+    hovertemplate = "<br>".join(hover_lines) + "<extra></extra>"
+
+    # --- Axis scales: pick log when values are strictly positive and span
+    # more than two decades; otherwise keep linear. ---
+    def _pick_scale(arr: np.ndarray) -> str:
+        if (arr > 0).all():
+            vmin = float(arr.min())
+            vmax = float(arr.max())
+            if vmin > 0 and vmax / vmin > 100:
+                return "log"
+        return "linear"
+
+    x_type = _pick_scale(den_f)
+    y_type = _pick_scale(num_f)
+
+    # --- Diverging colour scale centred on the median FoM for contrast. ---
+    _COLORSCALE = [
+        [0.0, "#2B2B2B"],
+        [0.25, "#5a5a5a"],
+        [0.5, "#888888"],
+        [0.75, "#B3B3B3"],
+        [1.0, "#F0F0F0"],
+    ]
+
+    fig = go.Figure()
+
+    # Faint iso-FoM guide lines (y = FoM · x) at 25/50/75 percentiles, so the
+    # eye can read ratios at a glance.
+    if fom_f.size >= 4:
+        pct_levels = sorted({
+            round(float(np.percentile(fom_f, q)), 12)
+            for q in (25, 50, 75)
+        })
+        if x_type == "log" and y_type == "log":
+            x_line = np.array([den_f.min(), den_f.max()])
+        else:
+            x_line = np.linspace(max(den_f.min(), 0.0), den_f.max(), 2)
+        for lvl in pct_levels:
+            if lvl <= 0 and (x_type == "log" or y_type == "log"):
+                continue
+            y_line = lvl * x_line
+            fig.add_trace(go.Scatter(
+                x=x_line, y=y_line,
+                mode="lines",
+                line=dict(color="rgba(43,43,43,0.18)", width=1, dash="dot"),
+                hoverinfo="skip",
+                showlegend=False,
+                name=f"{fom_name}={lvl:.3g}",
+            ))
+
+    fig.add_trace(go.Scatter(
+        x=den_f, y=num_f,
+        mode="markers",
+        marker=dict(
+            size=6,
+            color=fom_f,
+            colorscale=_COLORSCALE,
+            cmin=float(fom_f.min()),
+            cmax=float(fom_f.max()),
+            colorbar=dict(
+                title=dict(text=fom_name, side="right",
+                           font=dict(size=11, color=_TEXT_MUTED)),
+                tickfont=dict(color=_TEXT_MUTED, size=10),
+                outlinewidth=0, thickness=14, len=0.85,
+            ),
+            line=dict(width=0),
+            opacity=0.85,
+        ),
+        customdata=customdata,
+        hovertemplate=hovertemplate,
+        showlegend=False,
+    ))
+
+    x_title = f"Denominator  ·  {_truncate_expr(den_expr, 80)}"
+    y_title = f"Numerator  ·  {_truncate_expr(num_expr, 80)}"
+    fig.update_layout(
+        **_LAYOUT_BASE,
+        xaxis=dict(
+            title=dict(text=x_title, font=dict(size=12, color=_TEXT_MUTED)),
+            type=x_type,
+            gridcolor=_GRID_COLOR, zerolinecolor=_GRID_COLOR,
+            tickfont=dict(size=10, color=_TEXT_MUTED),
+        ),
+        yaxis=dict(
+            title=dict(text=y_title, font=dict(size=12, color=_TEXT_MUTED)),
+            type=y_type,
+            gridcolor=_GRID_COLOR, zerolinecolor=_GRID_COLOR,
+            tickfont=dict(size=10, color=_TEXT_MUTED),
+        ),
+        hoverlabel=dict(
+            bgcolor="#FFFFFF",
+            bordercolor=_GRID_COLOR,
+            font=dict(
+                color=_TEXT_COLOR,
+                family="'JetBrains Mono', 'SF Mono', monospace",
+                size=11,
+            ),
+            align="left",
+        ),
+    )
+    return fig
+
+
+def _truncate_expr(expr: str, limit: int = 60) -> str:
+    """Shorten an expression string for display in axis/hover labels."""
+    s = (expr or "").strip()
+    if len(s) <= limit:
+        return s
+    return s[: limit - 1] + "…"
+
+
+def _fom_referenced_names(fom_config) -> set[str]:
+    """Free variable names referenced anywhere in the FoM formula.
+
+    Used to pick which primitive columns to include in hover text.
+    """
+    from gui.fom import _referenced_names
+    refs: set[str] = set()
+    for _, expr in fom_config.intermediates:
+        refs |= _referenced_names(expr)
+    refs |= _referenced_names(fom_config.numerator or "")
+    refs |= _referenced_names(fom_config.denominator or "")
+    return refs
+
+
+# ---------------------------------------------------------------------------
 # Empty / error placeholder
 # ---------------------------------------------------------------------------
 
@@ -1642,9 +1910,21 @@ def build_figure(
     _3d_point_cap: int | None = None,
     pareto_x: str | None = None,
     pareto_y: str | None = None,
+    fom_config: dict | None = None,
 ) -> go.Figure:
     if sweep_data is None:
         return plot_empty()
+
+    # Merit view: custom FoM laid out over the sweep axes — handled before
+    # facet dispatch because it builds its own flattened sweep internally.
+    if view_type == "merit":
+        return plot_merit(
+            sweep_data,
+            fom_config or {},
+            thresholds=thresholds,
+            threshold_colors=threshold_colors,
+            point_cap=_3d_point_cap,
+        )
 
     # Faceted data → delegate to subplot grid builder for spatial views,
     # or flatten into a single dataset for analysis views.

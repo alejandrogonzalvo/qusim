@@ -211,6 +211,7 @@ def build_controls_dict(
     threshold_colors: list,
     noise_values: dict,
     hot_reload: list,
+    fom_config: dict | None = None,
 ) -> dict:
     """Assemble the schema-shaped ``controls`` dict from raw callback values."""
     axes = []
@@ -252,6 +253,7 @@ def build_controls_dict(
             "max_workers": cfg_max_workers,
         },
         "hot_reload": bool(hot_reload and "on" in hot_reload),
+        "fom": fom_config or None,
     }
 
 

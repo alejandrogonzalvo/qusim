@@ -373,4 +373,5 @@ ANALYSIS_TABS: list[dict] = [
     {"value": "importance", "label": "Importance"},
     {"value": "pareto", "label": "Pareto"},
     {"value": "correlation", "label": "Corr."},
+    {"value": "merit", "label": "Merit"},
 ]

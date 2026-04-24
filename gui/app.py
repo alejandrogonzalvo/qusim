@@ -37,6 +37,7 @@ from gui.components import (
     _tooltip_cfg,
     make_add_metric_button,
     make_fixed_config_panel,
+    make_merit_controls,
     make_performance_panel,
     make_metric_selector,
     make_view_tab_bar,
@@ -61,6 +62,7 @@ from gui.interpolation import (
     permute_sweep_for_frozen,
     sweep_to_interp_grid,
 )
+from gui.fom import DEFAULT_FOM, PRESETS, FomConfig, compute_for_sweep
 from gui.plotting import build_figure, plot_empty, sweep_to_csv
 
 _ANALYSIS_VIEW_KEYS = {t["value"] for t in ANALYSIS_TABS}
@@ -600,6 +602,7 @@ def _center_panel() -> html.Div:
                     ),
                 ],
             ),
+            make_merit_controls(),
             dcc.Download(id="csv-download"),
         ],
     )
@@ -697,6 +700,11 @@ app.layout = html.Div(
         dcc.Store(id="frozen-axis-store", data=2, storage_type="memory"),
         dcc.Store(id="session-loaded-tick", data=0, storage_type="memory"),
         dcc.Store(id="suppress-cascade", data=False, storage_type="memory"),
+        dcc.Store(
+            id="fom-config-store",
+            data=DEFAULT_FOM.to_dict(),
+            storage_type="memory",
+        ),
         dcc.Download(id="session-download"),
         dcc.Interval(id="sweep-check", interval=16, n_intervals=0),
     ],
@@ -1163,6 +1171,7 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     State("view-type-store", "data"),
     State("pareto-x-axis-dropdown", "value"),
     State("pareto-y-axis-dropdown", "value"),
+    State("fom-config-store", "data"),
     *_NOISE_SLIDER_STATES,
     prevent_initial_call=True,
 )
@@ -1205,6 +1214,7 @@ def run_sweep(
     current_view = all_args[idx]; idx += 1
     pareto_x = all_args[idx]; idx += 1
     pareto_y = all_args[idx]; idx += 1
+    fom_config = all_args[idx]; idx += 1
     noise_slider_vals = all_args[idx:]
 
     sweep_lock.acquire()
@@ -1497,6 +1507,7 @@ def run_sweep(
             threshold_colors=thresh_colors or None,
             pareto_x=pareto_x,
             pareto_y=pareto_y,
+            fom_config=fom_config,
         )
         # Send only a small token + axes metadata to the browser; the full
         # grid lives in ``_SWEEP_CACHE`` and is fetched by downstream callbacks.
@@ -1604,6 +1615,7 @@ app.clientside_callback(
     State("sweep-result-store", "data"),
     State("view-type-store", "data"),
     State("num-thresholds-store", "data"),
+    State("fom-config-store", "data"),
     prevent_initial_call=True,
 )
 def replot_on_output_change(
@@ -1624,6 +1636,7 @@ def replot_on_output_change(
     sweep_store,
     view_type,
     num_thresholds,
+    fom_config,
 ):
     full = _get_sweep(sweep_store)
     if full is None:
@@ -1651,6 +1664,7 @@ def replot_on_output_change(
         threshold_colors=thresh_colors or None,
         pareto_x=pareto_x,
         pareto_y=pareto_y,
+        fom_config=fom_config,
     )
 
 
@@ -1835,6 +1849,7 @@ def _filter_dropdown_options(*args):
     State("num-thresholds-store", "data"),
     State("pareto-x-axis-dropdown", "value"),
     State("pareto-y-axis-dropdown", "value"),
+    State("fom-config-store", "data"),
     prevent_initial_call=True,
 )
 def on_view_tab_click(
@@ -1856,6 +1871,7 @@ def on_view_tab_click(
     num_thresholds,
     pareto_x,
     pareto_y,
+    fom_config,
 ):
     if not ctx.triggered_id or not any(n_clicks_list):
         return dash.no_update, dash.no_update, dash.no_update
@@ -1884,6 +1900,7 @@ def on_view_tab_click(
         threshold_colors=thresh_colors or None,
         pareto_x=pareto_x,
         pareto_y=pareto_y,
+        fom_config=fom_config,
     )
     return fig, view_type, make_view_tab_bar(actual_metrics, view_type)
 
@@ -1944,6 +1961,7 @@ def export_csv(n_clicks, sweep_store):
     State("hot-reload-toggle", "value"),
     State("sweep-result-store", "data"),
     State("session-name", "value"),
+    State("fom-config-store", "data"),
     *_NOISE_SLIDER_STATES,
     prevent_initial_call=True,
 )
@@ -1985,6 +2003,7 @@ def on_save_session(n_clicks, *all_args):
     hot_reload = all_args[idx]; idx += 1
     sweep_store = all_args[idx]; idx += 1
     session_name = all_args[idx]; idx += 1
+    fom_config = all_args[idx]; idx += 1
     noise_slider_vals = list(all_args[idx:])
 
     noise_values: dict = {}
@@ -2018,6 +2037,7 @@ def on_save_session(n_clicks, *all_args):
         threshold_colors=tc_vals,
         noise_values=noise_values,
         hot_reload=hot_reload,
+        fom_config=fom_config,
     )
     view = build_view_dict(view_type, frozen_axis, frozen_slider_value)
     sweep_data = _get_sweep(sweep_store)
@@ -2105,6 +2125,11 @@ def _value_to_slider(val: float, log_scale: bool) -> float:
     Output("status-bar", "children", allow_duplicate=True),
     Output("error-banner", "children", allow_duplicate=True),
     Output("error-banner", "style", allow_duplicate=True),
+    Output("fom-config-store", "data", allow_duplicate=True),
+    Output("fom-name", "value", allow_duplicate=True),
+    Output("fom-numerator", "value", allow_duplicate=True),
+    Output("fom-denominator", "value", allow_duplicate=True),
+    Output("fom-intermediates", "value", allow_duplicate=True),
     Input("session-upload", "contents"),
     State("session-upload", "filename"),
     prevent_initial_call=True,
@@ -2167,6 +2192,13 @@ def on_load_session(contents, filename):
         else dash.no_update
         for m in SWEEPABLE_METRICS
     ]
+
+    fom_dict = ctrls.get("fom") or DEFAULT_FOM.to_dict()
+    fom_cfg_obj = FomConfig.from_dict(fom_dict)
+    fom_name_out = fom_cfg_obj.name
+    fom_num_out = fom_cfg_obj.numerator
+    fom_den_out = fom_cfg_obj.denominator
+    fom_inter_out = "\n".join(f"{n} = {e}" for n, e in fom_cfg_obj.intermediates)
 
     msg = f"Loaded {filename or 'session'}"
     if result.warnings:
@@ -2252,6 +2284,7 @@ def on_load_session(contents, filename):
         msg,
         banner_children,
         banner_style,
+        fom_dict, fom_name_out, fom_num_out, fom_den_out, fom_inter_out,
     )
 
 
@@ -2259,8 +2292,9 @@ def on_load_session(contents, filename):
 # decorator — see on_load_session: num-metrics, num-thresholds, hot-reload,
 # view-type, frozen-axis.
 _LOAD_SCALAR_OUTPUTS = 5
-# Count of trailing Outputs: status-bar, error-banner.children, error-banner.style.
-_LOAD_TRAILING_OUTPUTS = 3
+# Count of trailing Outputs: status-bar, banner.children, banner.style,
+# fom-config-store, fom-name, fom-numerator, fom-denominator, fom-intermediates.
+_LOAD_TRAILING_OUTPUTS = 8
 _LOAD_SWEEP_OUTPUTS = 13  # figure, sweep-store, interp, view-tabs, frozen-style, frozen-min/max/val, sweep-dirty, sweep-processed, session-loaded-tick, suppress-cascade, session-name
 
 
@@ -2276,9 +2310,10 @@ def _load_error_return(banner_children):
         + _LOAD_TRAILING_OUTPUTS
     )
     stub = [dash.no_update] * outputs_total
-    stub[-3] = "Load failed"
-    stub[-2] = banner_children
-    stub[-1] = _error_banner_visible_style()
+    # Trailing order: status-bar, banner.children, banner.style, then 5 FoM outputs.
+    stub[-8] = "Load failed"
+    stub[-7] = banner_children
+    stub[-6] = _error_banner_visible_style()
     return tuple(stub)
 
 
@@ -2409,6 +2444,142 @@ def toggle_pareto_axis_visibility(view_type):
     if view_type == "pareto":
         return {"padding": "4px 16px 8px"}
     return {"display": "none"}
+
+
+# ---------------------------------------------------------------------------
+# Callbacks: Figure of Merit (Merit view)
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("merit-controls-container", "style"),
+    Input("view-type-store", "data"),
+    prevent_initial_call=False,
+)
+def toggle_merit_controls_visibility(view_type):
+    if view_type == "merit":
+        return {
+            "display": "block",
+            "padding": "6px 16px 10px",
+            "borderTop": f"1px solid {COLORS['border']}",
+        }
+    return {"display": "none"}
+
+
+def _parse_intermediates(text: str) -> list[tuple[str, str]]:
+    """Parse the textarea format (``name = expr`` per line) into tuples."""
+    out: list[tuple[str, str]] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        name, expr = line.split("=", 1)
+        name = name.strip()
+        expr = expr.strip()
+        if not name or not expr:
+            continue
+        out.append((name, expr))
+    return out
+
+
+@app.callback(
+    Output("fom-name", "value", allow_duplicate=True),
+    Output("fom-numerator", "value", allow_duplicate=True),
+    Output("fom-denominator", "value", allow_duplicate=True),
+    Output("fom-intermediates", "value", allow_duplicate=True),
+    Input("fom-preset", "value"),
+    prevent_initial_call=True,
+)
+def on_fom_preset_change(preset_key):
+    preset = PRESETS.get(preset_key or "")
+    if not preset:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    intermediates = preset.get("intermediates") or []
+    text = "\n".join(f"{n} = {e}" for n, e in intermediates)
+    return preset["name"], preset["numerator"], preset["denominator"], text
+
+
+@app.callback(
+    Output("fom-config-store", "data"),
+    Output("fom-status", "children"),
+    Output("fom-status", "style"),
+    Input("fom-name", "value"),
+    Input("fom-numerator", "value"),
+    Input("fom-denominator", "value"),
+    Input("fom-intermediates", "value"),
+    State("sweep-result-store", "data"),
+    prevent_initial_call=False,
+)
+def on_fom_formula_change(name, numerator, denominator, intermediates_text, sweep_store):
+    config = FomConfig(
+        name=(name or "Figure of Merit").strip() or "Figure of Merit",
+        numerator=(numerator or "").strip() or "1",
+        denominator=(denominator or "").strip() or "1",
+        intermediates=tuple(_parse_intermediates(intermediates_text or "")),
+    )
+    base_style = {
+        "fontSize": "11px",
+        "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+        "marginTop": "4px",
+        "whiteSpace": "nowrap",
+        "overflow": "hidden",
+        "textOverflow": "ellipsis",
+    }
+
+    full = _get_sweep(sweep_store) if sweep_store is not None else None
+    if full is None:
+        status = "No sweep loaded — formula will apply once a sweep runs."
+        style = {**base_style, "color": COLORS["text_muted"]}
+        return config.to_dict(), status, style
+
+    result = compute_for_sweep(full, config)
+    if result.error:
+        style = {**base_style, "color": FEEDBACK_COLORS["error"]["text"]}
+        primitives_hint = ", ".join(result.primitives[:6])
+        more = "..." if len(result.primitives) > 6 else ""
+        status = f"✗ {result.error}  |  vars: {primitives_hint}{more}"
+        return config.to_dict(), status, style
+
+    values = result.values
+    assert values is not None
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        style = {**base_style, "color": FEEDBACK_COLORS["warning"]["text"]}
+        status = "⚠ All FoM values were non-finite (check for divide-by-zero)."
+        return config.to_dict(), status, style
+
+    vmin, vmax, vmean = float(finite.min()), float(finite.max()), float(finite.mean())
+    style = {**base_style, "color": COLORS["accent"]}
+    status = (
+        f"✓ FoM over sweep: min {vmin:.4g}  mean {vmean:.4g}  max {vmax:.4g}"
+        f"  ({finite.size}/{values.size} finite)"
+    )
+    return config.to_dict(), status, style
+
+
+@app.callback(
+    Output("main-plot", "figure", allow_duplicate=True),
+    Input("fom-config-store", "data"),
+    State("view-type-store", "data"),
+    State("sweep-result-store", "data"),
+    prevent_initial_call=True,
+)
+def replot_on_fom_change(fom_config, view_type, sweep_store):
+    if view_type != "merit":
+        return dash.no_update
+    full = _get_sweep(sweep_store)
+    if full is None:
+        return dash.no_update
+    num_metrics = len(full.get("metric_keys", []))
+    return build_figure(
+        num_metrics,
+        full,
+        "overall_fidelity",
+        view_type="merit",
+        fom_config=fom_config,
+    )
 
 
 # ---------------------------------------------------------------------------
