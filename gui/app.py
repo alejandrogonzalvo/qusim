@@ -805,6 +805,96 @@ def toggle_metric_rows(add_clicks, remove_clicks, num_metrics, *dropdown_vals):
 
 
 # ---------------------------------------------------------------------------
+# Callback: per-row "×" button → drop that specific sweep axis
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    *[Output(f"metric-row-wrap-{i}", "style", allow_duplicate=True) for i in range(MAX_METRICS)],
+    *[Output(f"metric-dropdown-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)],
+    *[Output(f"metric-slider-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)],
+    *[Output(f"metric-checklist-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)],
+    Output("add-metric-btn", "style", allow_duplicate=True),
+    Output("remove-metric-btn", "style", allow_duplicate=True),
+    Output("num-metrics-store", "data", allow_duplicate=True),
+    Output("suppress-cascade", "data", allow_duplicate=True),
+    Input({"type": "remove-metric-x", "index": ALL}, "n_clicks"),
+    *[State(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
+    *[State(f"metric-slider-{i}", "value") for i in range(MAX_METRICS)],
+    *[State(f"metric-checklist-{i}", "value") for i in range(MAX_METRICS)],
+    State("num-metrics-store", "data"),
+    prevent_initial_call=True,
+)
+def on_remove_specific_metric(n_clicks_list, *all_states):
+    triggered = ctx.triggered_id
+    # Pattern-matched inputs can fire with n_clicks=None on component
+    # (re)mount; only proceed when a real click registered for the
+    # triggering row.
+    if not isinstance(triggered, dict) or triggered.get("type") != "remove-metric-x":
+        raise dash.exceptions.PreventUpdate
+    clicked = triggered.get("index")
+    if not isinstance(clicked, int):
+        raise dash.exceptions.PreventUpdate
+    if not any(n_clicks_list):
+        raise dash.exceptions.PreventUpdate
+
+    dropdown_vals = list(all_states[0:MAX_METRICS])
+    slider_vals   = list(all_states[MAX_METRICS:2 * MAX_METRICS])
+    checklist_vals = list(all_states[2 * MAX_METRICS:3 * MAX_METRICS])
+    num_metrics = all_states[3 * MAX_METRICS] or 1
+
+    # Never remove the last remaining axis, and never act on a hidden slot.
+    if num_metrics <= 1 or clicked < 0 or clicked >= num_metrics:
+        raise dash.exceptions.PreventUpdate
+
+    # Shift every axis below the clicked row up by one slot.
+    for k in range(clicked, num_metrics - 1):
+        dropdown_vals[k] = dropdown_vals[k + 1]
+        slider_vals[k]   = slider_vals[k + 1]
+        checklist_vals[k] = checklist_vals[k + 1]
+
+    new_num = num_metrics - 1
+
+    row_styles = [
+        {} if i < new_num else {"display": "none"}
+        for i in range(MAX_METRICS)
+    ]
+
+    _btn_base = {
+        "flex": "1",
+        "background": "transparent",
+        "borderRadius": "6px",
+        "padding": "6px",
+        "cursor": "pointer",
+        "fontSize": "12px",
+    }
+    add_style = (
+        {**_btn_base, "border": f"1px solid {COLORS['border']}", "color": COLORS["text_muted"]}
+        if new_num < MAX_METRICS
+        else {"display": "none"}
+    )
+    remove_style = (
+        {**_btn_base, "border": f"1px dashed {COLORS['border']}", "color": COLORS["text_muted"]}
+        if new_num > 1
+        else {"display": "none"}
+    )
+
+    # suppress-cascade=True tells the downstream dropdown listeners
+    # (_reconfigure_slider, _toggle_slider_checklist) to preserve the slider
+    # and checklist values we just shifted, instead of resetting them.
+    return (
+        *row_styles,
+        *dropdown_vals,
+        *slider_vals,
+        *checklist_vals,
+        add_style,
+        remove_style,
+        new_num,
+        True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Callback: add / remove threshold rows
 # ---------------------------------------------------------------------------
 

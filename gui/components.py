@@ -238,7 +238,7 @@ def make_metric_selector(index: int) -> html.Div:
                     ),
                     html.Button(
                         "×",
-                        id=f"remove-metric-{index}",
+                        id={"type": "remove-metric-x", "index": index},
                         n_clicks=0,
                         style={
                             "background": "transparent",
