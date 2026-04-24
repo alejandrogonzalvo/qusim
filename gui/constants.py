@@ -345,7 +345,9 @@ MIN_POINTS_PER_AXIS = 3
 
 # View tab definitions per sweep dimensionality
 VIEW_TABS: dict[int, list[dict]] = {
-    1: [],
+    1: [
+        {"value": "line", "label": "Line"},
+    ],
     2: [
         {"value": "heatmap", "label": "Heatmap"},
         {"value": "contour", "label": "Contour"},
@@ -359,7 +361,7 @@ VIEW_TABS: dict[int, list[dict]] = {
 }
 
 VIEW_TAB_DEFAULTS: dict[int, str] = {
-    1: "parallel",
+    1: "line",
     2: "contour",
     3: "isosurface",
 }
