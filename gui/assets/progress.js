@@ -137,8 +137,18 @@
         }
     }
 
+    function getSid() {
+        if (window._userSid) return window._userSid;
+        try { return sessionStorage.getItem("qusim_sid") || ""; } catch (e) { return ""; }
+    }
+
     function poll() {
-        fetch("/api/progress")
+        var sid = getSid();
+        if (!sid) {
+            // sid not yet provisioned by the clientside callback; skip this tick.
+            return;
+        }
+        fetch("/api/progress?sid=" + encodeURIComponent(sid))
             .then(function (r) {
                 return r.json();
             })

@@ -151,7 +151,8 @@ MAX_METRICS = MAX_SWEEP_AXES  # Alias for the centralised cap
 from collections import OrderedDict
 
 _SWEEP_CACHE: "OrderedDict[str, dict]" = OrderedDict()
-_SWEEP_CACHE_MAX = 3
+# Sized for ~3 concurrent users keeping their last few sweeps in memory.
+_SWEEP_CACHE_MAX = 12
 _sweep_token_counter = 0
 _sweep_cache_lock = threading.Lock()
 
@@ -205,9 +206,15 @@ def _slim_sweep_for_browser(data: dict) -> dict:
         slim["facet_keys"] = data["facet_keys"]
     return slim
 
-# Shared progress state — written by sweep callback, read by Flask route.
-# Simple dict is safe under the GIL for atomic reads/writes.
-_sweep_progress: dict = {"running": False}
+# Per-user progress state — keyed by browser session id (sid).
+# Sweeps are serialised by ``sweep_lock``, but multiple users may poll
+# concurrently, so each user only sees the progress of the sweep they kicked
+# off. The active sid for the current sweep is stored in a threadlocal that
+# the sweep callback sets before running, so ``_update_progress`` (called
+# deep inside the sweep machinery) can route writes to the right slot.
+_sweep_progress_by_sid: dict[str, dict] = {}
+_sweep_progress_lock = threading.Lock()
+_sweep_progress_tls = threading.local()
 
 
 def _progress_label(k: str) -> str:
@@ -218,10 +225,25 @@ def _progress_label(k: str) -> str:
     return k
 
 
+def _set_progress(sid: str, payload: dict) -> None:
+    with _sweep_progress_lock:
+        if payload.get("running"):
+            _sweep_progress_by_sid[sid] = payload
+        else:
+            _sweep_progress_by_sid.pop(sid, None)
+
+
+def _get_progress(sid: str) -> dict:
+    with _sweep_progress_lock:
+        return _sweep_progress_by_sid.get(sid) or {"running": False}
+
+
 def _update_progress(p: SweepProgress) -> None:
     """Progress callback passed into sweep methods."""
-    global _sweep_progress
-    _sweep_progress = {
+    sid = getattr(_sweep_progress_tls, "sid", None)
+    if not sid:
+        return
+    _set_progress(sid, {
         "running": True,
         "completed": p.completed,
         "total": p.total,
@@ -232,13 +254,16 @@ def _update_progress(p: SweepProgress) -> None:
         "cold_completed": p.cold_completed,
         "cold_total": p.cold_total,
         "phase": "sweeping",
-    }
+    })
 
 
 @server.route("/api/progress")
 def _api_progress():
     import json
-    return json.dumps(_sweep_progress), 200, {"Content-Type": "application/json"}
+    from flask import request
+    sid = request.args.get("sid", "")
+    payload = _get_progress(sid) if sid else {"running": False}
+    return json.dumps(payload), 200, {"Content-Type": "application/json"}
 
 
 # Global CSS is in gui/assets/style.css — Dash auto-loads it.
@@ -689,6 +714,10 @@ app.layout = html.Div(
             children=[_left_sidebar(), _center_panel(), _right_panel()],
         ),
         # State stores
+        # Per-tab session id, populated by a clientside callback on load.
+        # Used to route sweep progress back to the user who started it.
+        dcc.Store(id="user-sid", data=None, storage_type="session"),
+        dcc.Interval(id="sid-init", interval=200, max_intervals=1),
         dcc.Store(id="num-metrics-store", data=3, storage_type="memory"),
         dcc.Store(id="sweep-result-store", data=None, storage_type="memory"),
         dcc.Store(id="view-type-store", data="isosurface", storage_type="memory"),
@@ -1211,6 +1240,33 @@ app.clientside_callback(
 )
 
 
+# Generate (or reuse) a per-tab session id so the server can route sweep
+# progress back to the user who started it. Persists across reloads via
+# sessionStorage (same tab) and is exposed on window so progress.js can
+# read it for /api/progress polling.
+app.clientside_callback(
+    """function(_n, existing) {
+        var sid = existing;
+        if (!sid) {
+            try { sid = sessionStorage.getItem('qusim_sid') || ''; } catch (e) { sid = ''; }
+        }
+        if (!sid) {
+            if (window.crypto && window.crypto.randomUUID) {
+                sid = window.crypto.randomUUID();
+            } else {
+                sid = 'sid-' + Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
+            }
+        }
+        try { sessionStorage.setItem('qusim_sid', sid); } catch (e) {}
+        window._userSid = sid;
+        return sid;
+    }""",
+    Output("user-sid", "data"),
+    Input("sid-init", "n_intervals"),
+    State("user-sid", "data"),
+)
+
+
 _METRIC_DROPDOWN_STATES = [State(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)]
 _METRIC_SLIDER_STATES = [State(f"metric-slider-{i}", "value") for i in range(MAX_METRICS)]
 _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in range(MAX_METRICS)]
@@ -1262,6 +1318,7 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     State("pareto-x-axis-dropdown", "value"),
     State("pareto-y-axis-dropdown", "value"),
     State("fom-config-store", "data"),
+    State("user-sid", "data"),
     *_NOISE_SLIDER_STATES,
     prevent_initial_call=True,
 )
@@ -1305,13 +1362,18 @@ def run_sweep(
     pareto_x = all_args[idx]; idx += 1
     pareto_y = all_args[idx]; idx += 1
     fom_config = all_args[idx]; idx += 1
+    user_sid = all_args[idx]; idx += 1
     noise_slider_vals = all_args[idx:]
 
     sweep_lock.acquire()
 
     try:
-        global _sweep_progress
-        _sweep_progress = {"running": True, "completed": 0, "total": 0, "percentage": 0, "current_params": {}, "phase": "compiling"}
+        # Route progress for this sweep to the user who started it.
+        # Empty sid (e.g. clientside callback hasn't fired yet) falls back to a
+        # neutral key so the sweep still runs but no overlay is shown anywhere.
+        sid = user_sid or "_no_sid"
+        _sweep_progress_tls.sid = sid
+        _set_progress(sid, {"running": True, "completed": 0, "total": 0, "percentage": 0, "current_params": {}, "phase": "compiling"})
         t_start = time.time()
 
         # Build fixed noise dict from right-panel sliders
@@ -1648,7 +1710,10 @@ def run_sweep(
             _error_banner_visible_style(),
         )
     finally:
-        _sweep_progress = {"running": False}
+        sid = getattr(_sweep_progress_tls, "sid", None)
+        if sid:
+            _set_progress(sid, {"running": False})
+        _sweep_progress_tls.sid = None
         sweep_lock.release()
 
 
@@ -2735,5 +2800,15 @@ app.clientside_callback(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("qusim DSE GUI starting at http://localhost:8050")
-    app.run(debug=True, host="0.0.0.0", port=8050)
+    # Multi-user knobs:
+    # - debug=False: no hot-reload (which breaks under concurrent requests)
+    #   and no traceback leaks to the browser.
+    # - host="127.0.0.1": only cloudflared (or local browser) can reach the
+    #   port; nothing on the LAN can connect directly.
+    # - threaded=True: the Flask dev server serves each request on its own
+    #   thread, so polling endpoints stay responsive while a sweep runs.
+    # Override host via QUSIM_HOST=0.0.0.0 if you need direct LAN access.
+    host = os.environ.get("QUSIM_HOST", "127.0.0.1")
+    port = int(os.environ.get("QUSIM_PORT", "8050"))
+    print(f"qusim DSE GUI starting at http://{host}:{port}")
+    app.run(debug=False, host=host, port=port, threaded=True)
