@@ -685,7 +685,7 @@ class DSEEngine:
             gate_error_arr=gate_error_arr,
             gate_time_arr=gate_time_arr,
             gate_names=gate_names,
-            total_epr_pairs=0,
+            total_epr_pairs=raw["total_epr_pairs"],
             total_swaps=raw["total_swaps"],
             total_teleportations=raw["total_teleportations"],
             total_network_distance=0,

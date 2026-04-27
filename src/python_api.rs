@@ -592,6 +592,11 @@ pub fn telesabre_map_and_estimate<'py>(
     dict.set_item("total_teleportations", result.num_teledata)?;
     dict.set_item("total_telegate", result.num_telegate)?;
     dict.set_item("total_swaps", result.num_swaps)?;
+    // Each OP_TELEPORT (data teleportation) and OP_TELEGATE (remote gate via
+    // gate teleportation) consumes one Bell pair, so the EPR-pair budget is
+    // the sum of both counters. Mirrors HQA's `total_epr_pairs == total_teleportations`
+    // convention (HQA only does data teleportation).
+    dict.set_item("total_epr_pairs", result.num_teledata + result.num_telegate)?;
 
     dict.set_item("algorithmic_fidelity", fidelity.algorithmic_fidelity)?;
     dict.set_item("routing_fidelity", fidelity.routing_fidelity)?;

@@ -540,7 +540,7 @@ def telesabre_map_circuit(
         placements=raw["placements"],
         total_teleportations=raw["total_teleportations"],
         total_swaps=raw["total_swaps"],
-        total_epr_pairs=0,
+        total_epr_pairs=raw["total_epr_pairs"],
         total_network_distance=0,
         teleportations_per_slice=[],
         algorithmic_fidelity=raw["algorithmic_fidelity"],
