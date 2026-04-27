@@ -23,6 +23,8 @@
 #   PUBLIC_URL       (default: https://upv-dse.gonzalvo.dev) URL printed for sharing
 #   SKIP_TUNNEL=1    start the app without the tunnel
 #   SKIP_APP=1       start only the tunnel (assume app is already running)
+#   APP_RESTART=0    do NOT respawn the Dash app if it dies (default: respawn)
+#                    Respawn is throttled: more than 3 deaths in 60s aborts.
 
 set -euo pipefail
 
@@ -88,26 +90,31 @@ if [[ "${SKIP_TUNNEL:-0}" != "1" ]]; then
   fi
 fi
 
-# --- Start the Dash app -------------------------------------------------------
-if [[ "${SKIP_APP:-0}" != "1" ]]; then
+# --- Start the Dash app (extracted into a function so we can respawn) --------
+start_app() {
   echo "[serve] starting Dash app on http://$QUSIM_HOST:$QUSIM_PORT (log: $APP_LOG)"
   QUSIM_HOST="$QUSIM_HOST" QUSIM_PORT="$QUSIM_PORT" \
     "$PROJECT_ROOT/.venv/bin/python" "$PROJECT_ROOT/gui/app.py" \
-    > "$APP_LOG" 2>&1 &
+    >> "$APP_LOG" 2>&1 &
   APP_PID=$!
 
   # Wait for the port to start accepting connections (max ~15s).
   for _ in $(seq 1 30); do
     if (echo > "/dev/tcp/$QUSIM_HOST/$QUSIM_PORT") 2>/dev/null; then
-      break
+      return 0
     fi
     if ! kill -0 "$APP_PID" 2>/dev/null; then
       echo "[serve] ERROR: Dash app exited before opening the port. Tail of $APP_LOG:" >&2
       tail -30 "$APP_LOG" >&2 || true
-      exit 1
+      return 1
     fi
     sleep 0.5
   done
+  return 0
+}
+
+if [[ "${SKIP_APP:-0}" != "1" ]]; then
+  start_app || exit 1
 fi
 
 # --- Start the tunnel ---------------------------------------------------------
@@ -151,11 +158,48 @@ fi
 
 echo "[serve] running. Ctrl+C to stop."
 
-# Wait on whichever child processes we started; exit if any of them dies.
+# Track app restart timestamps so we can give up if it crash-loops.
+APP_RESTART="${APP_RESTART:-1}"
+RESTART_WINDOW_SEC=60
+RESTART_LIMIT=3
+declare -a recent_restarts=()
+
+prune_restarts() {
+  local cutoff=$(( $(date +%s) - RESTART_WINDOW_SEC ))
+  local kept=()
+  if (( ${#recent_restarts[@]} > 0 )); then
+    for ts in "${recent_restarts[@]}"; do
+      (( ts >= cutoff )) && kept+=("$ts")
+    done
+  fi
+  if (( ${#kept[@]} > 0 )); then
+    recent_restarts=( "${kept[@]}" )
+  else
+    recent_restarts=()
+  fi
+}
+
+# Wait on whichever child processes we started.
+# If the app dies and APP_RESTART=1, respawn it (so `pull_and_restart.sh`
+# can pick up new code by killing the app process). Cloudflared dying is
+# always fatal — its credentials are tied to this process group anyway.
 while true; do
   if [[ -n "$APP_PID" ]] && ! kill -0 "$APP_PID" 2>/dev/null; then
-    echo "[serve] Dash app exited. Stopping." >&2
-    exit 1
+    if [[ "$APP_RESTART" != "1" ]]; then
+      echo "[serve] Dash app exited (APP_RESTART=0). Stopping." >&2
+      exit 1
+    fi
+    prune_restarts
+    if (( ${#recent_restarts[@]} >= RESTART_LIMIT )); then
+      echo "[serve] Dash app died $RESTART_LIMIT times in ${RESTART_WINDOW_SEC}s — giving up." >&2
+      exit 1
+    fi
+    recent_restarts+=( "$(date +%s)" )
+    echo "[serve] Dash app exited; respawning (restart #${#recent_restarts[@]} in last ${RESTART_WINDOW_SEC}s)."
+    if ! start_app; then
+      echo "[serve] respawn failed; aborting." >&2
+      exit 1
+    fi
   fi
   if [[ -n "$TUNNEL_PID" ]] && ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
     echo "[serve] cloudflared exited. Stopping." >&2
