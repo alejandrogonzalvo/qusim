@@ -1396,20 +1396,22 @@ def _rebuild_grid_with_fom(sweep_data: dict, fom_values: np.ndarray) -> dict:
     return new_sweep
 
 
-def plot_merit(
-    sweep_data: dict,
-    fom_config,
-    view_hint: str | None = None,
-    thresholds: list[float] | None = None,
-    threshold_colors: list[str] | None = None,
-    point_cap: int | None = None,
-) -> go.Figure:
-    """Plot the FoM landscape as denominator (x) vs numerator (y), coloured
-    by the computed FoM value, one marker per design point.
+# ---------------------------------------------------------------------------
+# Merit view: shared helpers used by both Heatmap and Pareto modes.
+# ---------------------------------------------------------------------------
 
-    On hover, each marker exposes every intermediate, the numerator /
-    denominator values, the FoM itself, and the swept axis values that
-    identify which design point it is.
+
+_MERIT_VIRIDIS = "Viridis"
+# Neutral grey shown in the heatmap where the FoM evaluated to NaN/Inf.
+_MERIT_NODATA_COLOR = "rgba(180,180,180,0.55)"
+
+
+def _build_merit_breakdown(sweep_data: dict, fom_config):
+    """Resolve sweep + FoM into a ``FomBreakdown`` or an empty-figure on error.
+
+    Returns ``(breakdown, fom_config_normalized, sweep_data_resolved,
+    error_figure_or_None)``. When the last element is non-None, callers
+    should return it directly.
     """
     from gui.fom import FomConfig, compute_breakdown
 
@@ -1417,15 +1419,335 @@ def plot_merit(
         fom_config = FomConfig.from_dict(fom_config or {})
 
     if sweep_data is None:
-        return plot_empty("No sweep loaded — run a sweep first")
+        return None, fom_config, None, plot_empty("No sweep loaded — run a sweep first")
 
-    # Facets → flatten to a single analysis table, same path as parallel/corr.
     if "facets" in sweep_data and sweep_data["facets"]:
         sweep_data = _flatten_facets_for_analysis(sweep_data)
 
     bd = compute_breakdown(sweep_data, fom_config)
     if bd.error is not None:
-        return plot_empty(f"FoM error: {bd.error}")
+        return None, fom_config, sweep_data, plot_empty(f"FoM error: {bd.error}")
+    return bd, fom_config, sweep_data, None
+
+
+def _snap_to_grid(value: float, grid_values: np.ndarray) -> float:
+    """Snap ``value`` to the nearest discrete point in ``grid_values``."""
+    if grid_values.size == 0:
+        return float(value)
+    idx = int(np.argmin(np.abs(grid_values - value)))
+    return float(grid_values[idx])
+
+
+def _frozen_mask(
+    primitives: dict[str, np.ndarray],
+    frozen_values: dict[str, float] | None,
+    n_rows: int,
+) -> tuple[np.ndarray, dict[str, float]]:
+    """Return a boolean row-mask selecting points whose frozen-axis values
+    match (after snapping) the requested ``frozen_values``. Also returns the
+    snapped values actually used, so the UI can echo them back.
+    """
+    mask = np.ones(n_rows, dtype=bool)
+    snapped: dict[str, float] = {}
+    for axis_key, value in (frozen_values or {}).items():
+        col = primitives.get(axis_key)
+        if col is None or value is None:
+            continue
+        unique_vals = np.unique(col[np.isfinite(col)])
+        if unique_vals.size == 0:
+            continue
+        snap_v = _snap_to_grid(float(value), unique_vals)
+        snapped[axis_key] = snap_v
+        # rtol/atol tuned for typical sweep axis spacings — tight enough to
+        # avoid neighbouring grid points, loose enough to absorb float noise.
+        mask &= np.isclose(col, snap_v, rtol=1e-9, atol=1e-12)
+    return mask, snapped
+
+
+def _pick_axis_scale(values: np.ndarray) -> str:
+    """Return ``'log'`` or ``'linear'`` based on the value distribution."""
+    if values.size == 0:
+        return "linear"
+    finite = values[np.isfinite(values)]
+    if finite.size == 0 or not (finite > 0).all():
+        return "linear"
+    vmin = float(finite.min())
+    vmax = float(finite.max())
+    if vmin > 0 and vmax / vmin > 100:
+        return "log"
+    return "linear"
+
+
+# ---------------------------------------------------------------------------
+# Merit view: Heatmap mode
+# ---------------------------------------------------------------------------
+
+
+def plot_merit_heatmap(
+    sweep_data: dict,
+    fom_config,
+    x_axis: str | None = None,
+    y_axis: str | None = None,
+    frozen_values: dict[str, float] | None = None,
+    thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
+) -> go.Figure:
+    """Render the FoM as a 2-D heatmap over two selected sweep axes, with
+    the remaining sweep axes pinned to specific values via ``frozen_values``.
+
+    When only one sweep axis is active the figure degrades to a 1-D line
+    plot; with zero sweep axes a clear empty-state message is shown.
+    """
+    # Guard before evaluation: a sweep with zero axes can't plot anything,
+    # and the FoM evaluator would raise "sweep is empty" with a less useful
+    # message. Catching it here keeps the empty-state UX consistent.
+    if (sweep_data is not None
+            and not (sweep_data.get("metric_keys") or [])):
+        return plot_empty(
+            "Add at least one sweep axis to view the FoM heatmap."
+        )
+
+    bd, fom_config, _resolved, err = _build_merit_breakdown(sweep_data, fom_config)
+    if err is not None:
+        return err
+
+    sweep_axes = list(bd.sweep_axes)
+    if not sweep_axes:
+        return plot_empty(
+            "Add at least one sweep axis to view the FoM heatmap."
+        )
+
+    fom_arr = np.asarray(bd.fom, dtype=float)
+    num_arr = np.asarray(bd.numerator, dtype=float)
+    den_arr = np.asarray(bd.denominator, dtype=float)
+    n_rows = fom_arr.shape[0]
+
+    fom_name = fom_config.name or "Figure of Merit"
+
+    # --- 1-D fallback ------------------------------------------------------
+    if len(sweep_axes) == 1:
+        x_key = sweep_axes[0]
+        x_col = bd.primitives[x_key]
+        finite_mask = np.isfinite(fom_arr)
+        order = np.argsort(x_col[finite_mask])
+        x_sorted = x_col[finite_mask][order]
+        fom_sorted = fom_arr[finite_mask][order]
+        num_sorted = num_arr[finite_mask][order]
+        den_sorted = den_arr[finite_mask][order]
+
+        custom = np.column_stack([num_sorted, den_sorted])
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=x_sorted, y=fom_sorted,
+            mode="lines+markers",
+            line=dict(color=_LINE_COLOR, width=2),
+            marker=dict(size=5, color=_LINE_COLOR, opacity=0.8),
+            customdata=custom,
+            hovertemplate=(
+                f"{_axis_label(x_key)}: %{{x:.4g}}<br>"
+                f"<b>{fom_name}: %{{y:.4g}}</b><br>"
+                "  numerator = %{customdata[0]:.4g}<br>"
+                "  denominator = %{customdata[1]:.4g}"
+                "<extra></extra>"
+            ),
+            showlegend=False,
+        ))
+        fig.update_layout(
+            **_LAYOUT_BASE,
+            xaxis=dict(
+                title=dict(text=_axis_label(x_key), font=dict(size=12, color=_TEXT_MUTED)),
+                gridcolor=_GRID_COLOR, tickfont=dict(size=10, color=_TEXT_MUTED),
+            ),
+            yaxis=dict(
+                title=dict(text=fom_name, font=dict(size=12, color=_TEXT_MUTED)),
+                gridcolor=_GRID_COLOR, tickfont=dict(size=10, color=_TEXT_MUTED),
+            ),
+            hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR,
+                            font_color=_TEXT_COLOR),
+        )
+        return fig
+
+    # --- ≥2-D heatmap ------------------------------------------------------
+    # Resolve X / Y to actual sweep axes, falling back if the caller picked
+    # something stale (e.g. left-over selection from a previous sweep).
+    if x_axis not in sweep_axes:
+        x_axis = sweep_axes[0]
+    if y_axis not in sweep_axes or y_axis == x_axis:
+        y_axis = next((k for k in sweep_axes if k != x_axis), x_axis)
+
+    other_axes = [k for k in sweep_axes if k not in (x_axis, y_axis)]
+    frozen = dict(frozen_values or {})
+    # Default any missing frozen value to the median grid point — reproducible
+    # and keeps the heatmap meaningful before the user touches a slider.
+    for k in other_axes:
+        if k not in frozen:
+            uvals = np.unique(bd.primitives[k][np.isfinite(bd.primitives[k])])
+            if uvals.size:
+                frozen[k] = float(uvals[uvals.size // 2])
+
+    mask, snapped = _frozen_mask(bd.primitives, {k: frozen[k] for k in other_axes if k in frozen}, n_rows)
+    if not mask.any():
+        return plot_empty(
+            "No sweep points match the selected frozen-axis values."
+        )
+
+    x_col = bd.primitives[x_axis][mask]
+    y_col = bd.primitives[y_axis][mask]
+    fom_col = fom_arr[mask]
+    num_col = num_arr[mask]
+    den_col = den_arr[mask]
+
+    x_unique = np.unique(x_col[np.isfinite(x_col)])
+    y_unique = np.unique(y_col[np.isfinite(y_col)])
+    if x_unique.size == 0 or y_unique.size == 0:
+        return plot_empty("FoM landscape is empty for this slice.")
+
+    z = np.full((y_unique.size, x_unique.size), np.nan, dtype=float)
+    num_grid = np.full_like(z, np.nan)
+    den_grid = np.full_like(z, np.nan)
+    x_idx_map = {float(v): i for i, v in enumerate(x_unique)}
+    y_idx_map = {float(v): i for i, v in enumerate(y_unique)}
+    for xi, yi, fi, ni, di in zip(x_col, y_col, fom_col, num_col, den_col):
+        ix = x_idx_map.get(float(xi))
+        iy = y_idx_map.get(float(yi))
+        if ix is None or iy is None:
+            continue
+        z[iy, ix] = fi
+        num_grid[iy, ix] = ni
+        den_grid[iy, ix] = di
+
+    finite_z = z[np.isfinite(z)]
+    if finite_z.size == 0:
+        return plot_empty(
+            "FoM produced no finite values — check for divide-by-zero or constant expressions."
+        )
+
+    # Customdata: per-cell num + den + frozen values (echoed in hover).
+    frozen_keys = list(other_axes)
+    customdata = np.empty((y_unique.size, x_unique.size, 2 + len(frozen_keys)),
+                          dtype=float)
+    customdata[:, :, 0] = num_grid
+    customdata[:, :, 1] = den_grid
+    for fi, fk in enumerate(frozen_keys):
+        customdata[:, :, 2 + fi] = snapped.get(fk, float("nan"))
+
+    hover_lines = [
+        f"{_axis_label(x_axis)}: %{{x:.4g}}",
+        f"{_axis_label(y_axis)}: %{{y:.4g}}",
+        f"<b>{fom_name}: %{{z:.4g}}</b>",
+        "  numerator = %{customdata[0]:.4g}",
+        "  denominator = %{customdata[1]:.4g}",
+    ]
+    if frozen_keys:
+        hover_lines.append("<i>frozen</i>")
+        for i, fk in enumerate(frozen_keys):
+            hover_lines.append(
+                f"  {_axis_label(fk)} = %{{customdata[{2 + i}]:.4g}}"
+            )
+    hovertemplate = "<br>".join(hover_lines) + "<extra></extra>"
+
+    fig = go.Figure()
+    fig.add_trace(go.Heatmap(
+        x=x_unique, y=y_unique, z=z,
+        colorscale=_MERIT_VIRIDIS,
+        zmin=float(finite_z.min()), zmax=float(finite_z.max()),
+        colorbar=dict(
+            title=dict(text=fom_name, side="right",
+                       font=dict(size=11, color=_TEXT_MUTED)),
+            tickfont=dict(color=_TEXT_MUTED, size=10),
+            outlinewidth=0, thickness=14, len=0.85,
+        ),
+        customdata=customdata,
+        hovertemplate=hovertemplate,
+        # Plotly renders NaN cells transparent; the plot bg shows through as
+        # the "no data" colour.
+        hoverongaps=False,
+        zsmooth=False,
+    ))
+
+    # Iso-level contour overlay using the user-picked threshold colours.
+    if thresholds:
+        colors = threshold_colors or _THRESHOLD_COLORS
+        zmin = float(finite_z.min())
+        zmax = float(finite_z.max())
+        for i, t in enumerate(thresholds):
+            if t is None:
+                continue
+            t_f = float(t)
+            if t_f < zmin or t_f > zmax:
+                # Outside the data range — Plotly would silently draw nothing.
+                continue
+            color = colors[i % len(colors)]
+            fig.add_trace(go.Contour(
+                x=x_unique, y=y_unique, z=z,
+                contours=dict(
+                    start=t_f, end=t_f, size=0,
+                    showlines=True, coloring="lines",
+                    showlabels=True,
+                    labelfont=dict(size=11, color=color),
+                ),
+                line=dict(color=color, width=2),
+                showscale=False,
+                hoverinfo="skip",
+                name=f"FoM = {t_f:g}",
+            ))
+
+    fig.update_layout(
+        **_LAYOUT_BASE,
+        xaxis=dict(
+            title=dict(text=_axis_label(x_axis), font=dict(size=12, color=_TEXT_MUTED)),
+            gridcolor=_GRID_COLOR, tickfont=dict(size=10, color=_TEXT_MUTED),
+        ),
+        yaxis=dict(
+            title=dict(text=_axis_label(y_axis), font=dict(size=12, color=_TEXT_MUTED)),
+            gridcolor=_GRID_COLOR, tickfont=dict(size=10, color=_TEXT_MUTED),
+        ),
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR,
+                        font_color=_TEXT_COLOR, align="left"),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Merit view: Pareto mode (numerator vs denominator scatter, with iso-FoM
+# guide lines, optional colour-by-input, and Pareto-front highlighting).
+# ---------------------------------------------------------------------------
+
+
+def _pareto_front_mask(num: np.ndarray, den: np.ndarray) -> np.ndarray:
+    """Return a boolean mask selecting Pareto-optimal points under
+    *maximize* numerator and *minimize* denominator.
+
+    O(N²) pairwise comparison — fine for the ≤4096-point sweeps we run.
+    """
+    n = num.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    # A point i is dominated iff there exists j with num[j] >= num[i] and
+    # den[j] <= den[i] AND at least one of those is strict.
+    num_arr = num.reshape(-1, 1)  # (N, 1)
+    den_arr = den.reshape(-1, 1)
+    ge_num = num_arr.T >= num_arr  # (N, N) → j-rows broadcast across i-cols
+    le_den = den_arr.T <= den_arr
+    strict = (num_arr.T > num_arr) | (den_arr.T < den_arr)
+    dominated = (ge_num & le_den & strict).any(axis=1)
+    return ~dominated
+
+
+def plot_merit_pareto(
+    sweep_data: dict,
+    fom_config,
+    color_by: str | None = None,
+    thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
+) -> go.Figure:
+    """Numerator-vs-denominator scatter with iso-FoM guide lines, optional
+    colour-by-input, and Pareto-front highlighting (max numerator, min
+    denominator).
+    """
+    bd, fom_config, _resolved, err = _build_merit_breakdown(sweep_data, fom_config)
+    if err is not None:
+        return err
 
     num = np.asarray(bd.numerator, dtype=float)
     den = np.asarray(bd.denominator, dtype=float)
@@ -1446,9 +1768,8 @@ def plot_merit(
     # referenced in the formulas>, <intermediate values>.
     referenced = (
         _fom_referenced_names(fom_config)
-        | set(bd.intermediates.keys())  # also include names appearing only in intermediates
+        | set(bd.intermediates.keys())
     )
-    # Show every swept axis (they identify the point) plus any referenced output.
     axis_cols: list[tuple[str, np.ndarray]] = [
         (name, bd.primitives[name][finite_mask])
         for name in bd.sweep_axes
@@ -1473,8 +1794,6 @@ def plot_merit(
     num_expr = (fom_config.numerator or "").strip() or "1"
     den_expr = (fom_config.denominator or "").strip() or "1"
 
-    # Register labels so any downstream consumer that reads _OUTPUT_LABELS
-    # (e.g. CSV export of a FoM) shows the user-configured name.
     _OUTPUT_LABELS[_FOM_OUTPUT_KEY] = fom_name
 
     hover_lines: list[str] = [
@@ -1486,8 +1805,9 @@ def plot_merit(
     if axis_cols:
         hover_lines.append("<br><i>sweep point</i>")
         for name, _ in axis_cols:
-            label = _axis_label(name)
-            hover_lines.append(f"  {label} = %{{customdata[{col_idx}]:.4g}}")
+            hover_lines.append(
+                f"  {_axis_label(name)} = %{{customdata[{col_idx}]:.4g}}"
+            )
             col_idx += 1
     if output_cols:
         hover_lines.append("<br><i>outputs</i>")
@@ -1502,76 +1822,149 @@ def plot_merit(
             col_idx += 1
     hovertemplate = "<br>".join(hover_lines) + "<extra></extra>"
 
-    # --- Axis scales: pick log when values are strictly positive and span
-    # more than two decades; otherwise keep linear. ---
-    def _pick_scale(arr: np.ndarray) -> str:
-        if (arr > 0).all():
-            vmin = float(arr.min())
-            vmax = float(arr.max())
-            if vmin > 0 and vmax / vmin > 100:
-                return "log"
-        return "linear"
+    x_type = _pick_axis_scale(den_f)
+    y_type = _pick_axis_scale(num_f)
 
-    x_type = _pick_scale(den_f)
-    y_type = _pick_scale(num_f)
+    # --- Pareto front: maximise numerator, minimise denominator. -----------
+    front_mask = _pareto_front_mask(num_f, den_f)
 
-    # --- Diverging colour scale centred on the median FoM for contrast. ---
-    _COLORSCALE = [
-        [0.0, "#2B2B2B"],
-        [0.25, "#5a5a5a"],
-        [0.5, "#888888"],
-        [0.75, "#B3B3B3"],
-        [1.0, "#F0F0F0"],
-    ]
+    # --- Resolve colour-by source. -----------------------------------------
+    color_by = (color_by or "").strip().lower()
+    color_mode = "fom"
+    color_values: np.ndarray = fom_f
+    color_label = fom_name
+    if color_by == "none":
+        color_mode = "none"
+    elif color_by and color_by != "fom":
+        # Try to match against an active sweep axis (case-insensitive).
+        axis_lookup = {a.lower(): a for a in bd.sweep_axes}
+        axis_key = axis_lookup.get(color_by)
+        if axis_key and axis_key in bd.primitives:
+            color_mode = "axis"
+            color_values = bd.primitives[axis_key][finite_mask]
+            color_label = _axis_label(axis_key)
+    # else fall through to FoM colouring
 
     fig = go.Figure()
 
-    # Faint iso-FoM guide lines (y = FoM · x) at 25/50/75 percentiles, so the
-    # eye can read ratios at a glance.
-    if fom_f.size >= 4:
+    # --- Iso-FoM guide lines from user-picked thresholds. ------------------
+    # On a (denominator, numerator) plot, FoM = num/den = c is the line
+    # num = c·den — straight on log-log, straight on linear.
+    iso_levels: list[tuple[float, str]] = []
+    if thresholds:
+        colors = threshold_colors or _THRESHOLD_COLORS
+        for i, t in enumerate(thresholds):
+            if t is None:
+                continue
+            iso_levels.append((float(t), colors[i % len(colors)]))
+    if not iso_levels and fom_f.size >= 4:
+        # Fallback: faint percentile guide lines so the plot stays readable
+        # even when the user hasn't enabled thresholds.
         pct_levels = sorted({
             round(float(np.percentile(fom_f, q)), 12)
             for q in (25, 50, 75)
         })
-        if x_type == "log" and y_type == "log":
-            x_line = np.array([den_f.min(), den_f.max()])
-        else:
-            x_line = np.linspace(max(den_f.min(), 0.0), den_f.max(), 2)
-        for lvl in pct_levels:
-            if lvl <= 0 and (x_type == "log" or y_type == "log"):
-                continue
-            y_line = lvl * x_line
-            fig.add_trace(go.Scatter(
-                x=x_line, y=y_line,
-                mode="lines",
-                line=dict(color="rgba(43,43,43,0.18)", width=1, dash="dot"),
-                hoverinfo="skip",
-                showlegend=False,
-                name=f"{fom_name}={lvl:.3g}",
-            ))
+        iso_levels = [(lvl, "rgba(43,43,43,0.18)") for lvl in pct_levels]
 
-    fig.add_trace(go.Scatter(
-        x=den_f, y=num_f,
-        mode="markers",
-        marker=dict(
-            size=6,
-            color=fom_f,
-            colorscale=_COLORSCALE,
-            cmin=float(fom_f.min()),
-            cmax=float(fom_f.max()),
-            colorbar=dict(
-                title=dict(text=fom_name, side="right",
-                           font=dict(size=11, color=_TEXT_MUTED)),
-                tickfont=dict(color=_TEXT_MUTED, size=10),
-                outlinewidth=0, thickness=14, len=0.85,
+    if x_type == "log":
+        x_line = np.array([float(den_f.min()), float(den_f.max())])
+    else:
+        x_line = np.array([0.0, float(den_f.max())])
+    for lvl, color in iso_levels:
+        if lvl <= 0 and (x_type == "log" or y_type == "log"):
+            continue
+        y_line = lvl * x_line
+        is_threshold = color != "rgba(43,43,43,0.18)"
+        fig.add_trace(go.Scatter(
+            x=x_line, y=y_line,
+            mode="lines+text" if is_threshold else "lines",
+            text=["", f"FoM={lvl:g}"] if is_threshold else None,
+            textposition="top left" if is_threshold else None,
+            textfont=dict(color=color, size=10) if is_threshold else None,
+            line=dict(
+                color=color,
+                width=1.6 if is_threshold else 1,
+                dash="dash" if is_threshold else "dot",
             ),
+            hoverinfo="skip",
+            showlegend=False,
+            name=f"FoM={lvl:.3g}",
+        ))
+
+    # --- Markers: dominated points (faint, small) + Pareto-front (large). --
+    dom_mask = ~front_mask
+    if dom_mask.any():
+        marker_kwargs = dict(
+            size=5,
             line=dict(width=0),
-            opacity=0.85,
-        ),
-        customdata=customdata,
-        hovertemplate=hovertemplate,
-        showlegend=False,
-    ))
+            opacity=0.35,
+        )
+        if color_mode == "none":
+            marker_kwargs["color"] = _TEXT_MUTED
+        else:
+            marker_kwargs.update(dict(
+                color=color_values[dom_mask],
+                colorscale=_MERIT_VIRIDIS,
+                cmin=float(np.nanmin(color_values)),
+                cmax=float(np.nanmax(color_values)),
+                showscale=False,
+            ))
+        fig.add_trace(go.Scatter(
+            x=den_f[dom_mask], y=num_f[dom_mask],
+            mode="markers",
+            marker=marker_kwargs,
+            customdata=customdata[dom_mask],
+            hovertemplate=hovertemplate,
+            showlegend=False,
+            name="dominated",
+        ))
+
+    # Pareto-front line connecting front points sorted by denominator.
+    front_idx = np.where(front_mask)[0]
+    if front_idx.size:
+        order = np.argsort(den_f[front_idx])
+        fx = den_f[front_idx][order]
+        fy = num_f[front_idx][order]
+        fig.add_trace(go.Scatter(
+            x=fx, y=fy,
+            mode="lines",
+            line=dict(color=_ACCENT, width=1.2, dash="solid"),
+            hoverinfo="skip",
+            showlegend=False,
+            opacity=0.6,
+            name="Pareto front",
+        ))
+
+        front_marker = dict(
+            size=10,
+            line=dict(width=1.5, color=_ACCENT),
+            opacity=1.0,
+        )
+        if color_mode == "none":
+            front_marker["color"] = "#FFFFFF"
+        else:
+            front_marker.update(dict(
+                color=color_values[front_mask],
+                colorscale=_MERIT_VIRIDIS,
+                cmin=float(np.nanmin(color_values)),
+                cmax=float(np.nanmax(color_values)),
+                colorbar=dict(
+                    title=dict(text=color_label, side="right",
+                               font=dict(size=11, color=_TEXT_MUTED)),
+                    tickfont=dict(color=_TEXT_MUTED, size=10),
+                    outlinewidth=0, thickness=14, len=0.85,
+                ),
+                showscale=True,
+            ))
+        fig.add_trace(go.Scatter(
+            x=den_f[front_mask], y=num_f[front_mask],
+            mode="markers",
+            marker=front_marker,
+            customdata=customdata[front_mask],
+            hovertemplate=hovertemplate,
+            showlegend=False,
+            name="Pareto-optimal",
+        ))
 
     x_title = f"Denominator  ·  {_truncate_expr(den_expr, 80)}"
     y_title = f"Numerator  ·  {_truncate_expr(num_expr, 80)}"
@@ -1601,6 +1994,44 @@ def plot_merit(
         ),
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Merit view: top-level dispatcher (Heatmap by default, Pareto on request).
+# ---------------------------------------------------------------------------
+
+
+def plot_merit(
+    sweep_data: dict,
+    fom_config,
+    view_hint: str | None = None,
+    thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
+    point_cap: int | None = None,
+    mode: str = "heatmap",
+    x_axis: str | None = None,
+    y_axis: str | None = None,
+    frozen_values: dict[str, float] | None = None,
+    color_by: str | None = None,
+) -> go.Figure:
+    """Dispatch to either the heatmap or the (numerator-vs-denominator)
+    Pareto-style scatter view of the FoM, based on ``mode``.
+    """
+    m = (mode or "heatmap").lower()
+    if m == "pareto":
+        return plot_merit_pareto(
+            sweep_data, fom_config,
+            color_by=color_by,
+            thresholds=thresholds,
+            threshold_colors=threshold_colors,
+        )
+    return plot_merit_heatmap(
+        sweep_data, fom_config,
+        x_axis=x_axis, y_axis=y_axis,
+        frozen_values=frozen_values,
+        thresholds=thresholds,
+        threshold_colors=threshold_colors,
+    )
 
 
 def _truncate_expr(expr: str, limit: int = 60) -> str:
@@ -1911,6 +2342,11 @@ def build_figure(
     pareto_x: str | None = None,
     pareto_y: str | None = None,
     fom_config: dict | None = None,
+    merit_mode: str = "heatmap",
+    merit_x_axis: str | None = None,
+    merit_y_axis: str | None = None,
+    merit_frozen_values: dict | None = None,
+    merit_color_by: str | None = None,
 ) -> go.Figure:
     if sweep_data is None:
         return plot_empty()
@@ -1924,6 +2360,11 @@ def build_figure(
             thresholds=thresholds,
             threshold_colors=threshold_colors,
             point_cap=_3d_point_cap,
+            mode=merit_mode,
+            x_axis=merit_x_axis,
+            y_axis=merit_y_axis,
+            frozen_values=merit_frozen_values,
+            color_by=merit_color_by,
         )
 
     # Faceted data → delegate to subplot grid builder for spatial views,

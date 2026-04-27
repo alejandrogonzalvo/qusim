@@ -21,7 +21,7 @@ from typing import Any
 import dash
 import dash_bootstrap_components as dbc
 import numpy as np
-from dash import ALL, Input, Output, State, ctx, dcc, html
+from dash import ALL, MATCH, Input, Output, State, ctx, dcc, html
 
 # ---------------------------------------------------------------------------
 # Path setup
@@ -38,6 +38,7 @@ from gui.components import (
     make_add_metric_button,
     make_fixed_config_panel,
     make_merit_controls,
+    make_merit_view_controls,
     make_performance_panel,
     make_metric_selector,
     make_view_tab_bar,
@@ -520,6 +521,7 @@ def _center_panel() -> html.Div:
                     "position": "relative",
                 },
                 children=[
+                    make_merit_view_controls(),
                     dcc.Graph(
                         id="main-plot",
                         figure=plot_empty(),
@@ -734,6 +736,8 @@ app.layout = html.Div(
             data=DEFAULT_FOM.to_dict(),
             storage_type="memory",
         ),
+        dcc.Store(id="merit-mode-store", data="heatmap", storage_type="memory"),
+        dcc.Store(id="merit-frozen-values-store", data={}, storage_type="memory"),
         dcc.Download(id="session-download"),
         dcc.Interval(id="sweep-check", interval=16, n_intervals=0),
     ],
@@ -1771,6 +1775,11 @@ app.clientside_callback(
     State("view-type-store", "data"),
     State("num-thresholds-store", "data"),
     State("fom-config-store", "data"),
+    State("merit-mode-store", "data"),
+    State("merit-x-axis-dropdown", "value"),
+    State("merit-y-axis-dropdown", "value"),
+    State({"type": "merit-frozen-slider", "index": ALL}, "value"),
+    State("merit-color-by-dropdown", "value"),
     prevent_initial_call=True,
 )
 def replot_on_output_change(
@@ -1792,6 +1801,11 @@ def replot_on_output_change(
     view_type,
     num_thresholds,
     fom_config,
+    merit_mode,
+    merit_x_axis,
+    merit_y_axis,
+    merit_frozen_slider_values,
+    merit_color_by,
 ):
     full = _get_sweep(sweep_store)
     if full is None:
@@ -1810,6 +1824,9 @@ def replot_on_output_change(
     thresh = thresh_vals if threshold_enable and "yes" in threshold_enable else None
     if view_type in ("isosurface", "scatter3d"):
         thresh = thresh_vals or None
+    merit_frozen = _frozen_values_from_sliders(
+        list(full.get("metric_keys", [])), merit_frozen_slider_values,
+    )
     return build_figure(
         num_metrics,
         full,
@@ -1820,6 +1837,11 @@ def replot_on_output_change(
         pareto_x=pareto_x,
         pareto_y=pareto_y,
         fom_config=fom_config,
+        merit_mode=merit_mode or "heatmap",
+        merit_x_axis=merit_x_axis,
+        merit_y_axis=merit_y_axis,
+        merit_frozen_values=merit_frozen,
+        merit_color_by=merit_color_by,
     )
 
 
@@ -2714,26 +2736,343 @@ def on_fom_formula_change(name, numerator, denominator, intermediates_text, swee
     return config.to_dict(), status, style
 
 
+def _resolve_thresholds(threshold_enable, all_t, all_c) -> tuple[list[float] | None, list[str] | None]:
+    """Filter the right-sidebar threshold inputs into ``(values, colors)``.
+
+    Returns ``(None, None)`` if the user disabled thresholds; otherwise both
+    lists are aligned and contain only the populated entries.
+    """
+    if not (threshold_enable and "yes" in (threshold_enable or [])):
+        return None, None
+    vals: list[float] = []
+    colors: list[str] = []
+    for v, c in zip(all_t, all_c):
+        if v is None:
+            continue
+        vals.append(float(v))
+        colors.append(c or "")
+    return (vals or None), (colors or None)
+
+
+def _frozen_values_from_sliders(metric_keys, slider_values) -> dict[str, float]:
+    """Map pattern-matched slider values back to ``{axis_key: value}``.
+
+    Slider index ``i`` corresponds to ``metric_keys[i]`` while the axis is
+    active; out-of-range or ``None`` values are dropped.
+    """
+    out: dict[str, float] = {}
+    for i, val in enumerate(slider_values or []):
+        if i >= len(metric_keys) or val is None:
+            continue
+        try:
+            out[metric_keys[i]] = float(val)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _build_merit_figure(
+    sweep_store, fom_config, threshold_enable, threshold_vals, threshold_cols,
+    mode, x_axis, y_axis, frozen_slider_values, color_by,
+):
+    """Resolve every merit-tab input into a ``build_figure`` call.
+
+    Returns ``dash.no_update`` if the sweep cache is empty so callers don't
+    need to repeat the guard.
+    """
+    full = _get_sweep(sweep_store)
+    if full is None:
+        return dash.no_update
+    metric_keys = list(full.get("metric_keys", []))
+    thresh, thresh_colors = _resolve_thresholds(
+        threshold_enable, threshold_vals, threshold_cols,
+    )
+    frozen = _frozen_values_from_sliders(metric_keys, frozen_slider_values)
+    return build_figure(
+        len(metric_keys), full, "overall_fidelity",
+        view_type="merit",
+        thresholds=thresh, threshold_colors=thresh_colors,
+        fom_config=fom_config,
+        merit_mode=mode or "heatmap",
+        merit_x_axis=x_axis,
+        merit_y_axis=y_axis,
+        merit_frozen_values=frozen,
+        merit_color_by=color_by,
+    )
+
+
 @app.callback(
     Output("main-plot", "figure", allow_duplicate=True),
     Input("fom-config-store", "data"),
     State("view-type-store", "data"),
     State("sweep-result-store", "data"),
+    State("merit-mode-store", "data"),
+    State("merit-x-axis-dropdown", "value"),
+    State("merit-y-axis-dropdown", "value"),
+    State({"type": "merit-frozen-slider", "index": ALL}, "value"),
+    State("merit-color-by-dropdown", "value"),
+    State("cfg-threshold-enable", "value"),
+    *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
+    *[State(f"cfg-threshold-color-{i}", "value") for i in range(5)],
     prevent_initial_call=True,
 )
-def replot_on_fom_change(fom_config, view_type, sweep_store):
+def replot_on_fom_change(
+    fom_config, view_type, sweep_store, mode, x_axis, y_axis,
+    frozen_slider_values, color_by, threshold_enable,
+    t0, t1, t2, t3, t4, tc0, tc1, tc2, tc3, tc4,
+):
     if view_type != "merit":
         return dash.no_update
-    full = _get_sweep(sweep_store)
-    if full is None:
+    return _build_merit_figure(
+        sweep_store, fom_config, threshold_enable,
+        [t0, t1, t2, t3, t4], [tc0, tc1, tc2, tc3, tc4],
+        mode, x_axis, y_axis, frozen_slider_values, color_by,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Merit view: two-mode UI (Heatmap + Pareto) with selectable X/Y axes,
+# frozen sliders for the remaining axes, and a colour-by dropdown for the
+# Pareto scatter.
+# ---------------------------------------------------------------------------
+
+
+_MERIT_VIEW_CONTAINER_STYLE_VISIBLE = {
+    "display": "block",
+    "padding": "6px 16px 6px",
+    "borderBottom": f"1px solid {COLORS['border']}",
+    "background": COLORS["bg"],
+}
+_MERIT_VIEW_CONTAINER_STYLE_HIDDEN = {"display": "none"}
+
+
+@app.callback(
+    Output("merit-view-controls-container", "style"),
+    Input("view-type-store", "data"),
+    prevent_initial_call=False,
+)
+def toggle_merit_view_controls_visibility(view_type):
+    if view_type == "merit":
+        return _MERIT_VIEW_CONTAINER_STYLE_VISIBLE
+    return _MERIT_VIEW_CONTAINER_STYLE_HIDDEN
+
+
+@app.callback(
+    Output("merit-mode-store", "data"),
+    Output("merit-heatmap-controls", "style"),
+    Output("merit-pareto-controls", "style"),
+    Output({"type": "merit-mode-btn", "index": ALL}, "style"),
+    Input({"type": "merit-mode-btn", "index": ALL}, "n_clicks"),
+    State({"type": "merit-mode-btn", "index": ALL}, "id"),
+    State("merit-mode-store", "data"),
+    prevent_initial_call=False,
+)
+def on_merit_mode_change(_n_clicks, ids, current_mode):
+    triggered = ctx.triggered_id
+    if isinstance(triggered, dict) and triggered.get("type") == "merit-mode-btn":
+        new_mode = triggered.get("index", current_mode or "heatmap")
+    else:
+        new_mode = current_mode or "heatmap"
+
+    button_styles = []
+    for entry in ids:
+        is_active = entry.get("index") == new_mode
+        button_styles.append({
+            "background": COLORS["accent"] if is_active else "transparent",
+            "color": "#fff" if is_active else COLORS["text_muted"],
+            "border": f"1px solid {COLORS['border']}",
+            "borderRadius": "4px",
+            "padding": "3px 12px",
+            "fontSize": "11px",
+            "fontWeight": "600" if is_active else "400",
+            "cursor": "pointer",
+            "transition": "all 0.15s ease",
+        })
+
+    heatmap_style = {"display": "block"} if new_mode == "heatmap" else {"display": "none"}
+    pareto_style = {"display": "block"} if new_mode == "pareto" else {"display": "none"}
+    return new_mode, heatmap_style, pareto_style, button_styles
+
+
+def _axis_dropdown_options(metric_keys: list[str]) -> list[dict]:
+    return [{"label": _progress_label(k), "value": k} for k in metric_keys]
+
+
+def _slider_marks(values: list[float]) -> dict:
+    """Build slider tick marks for a discrete grid; label every value when ≤8,
+    otherwise label first/last + a few interior ticks.
+    """
+    if not values:
+        return {}
+    if len(values) <= 8:
+        return {float(v): {"label": f"{v:g}",
+                            "style": {"fontSize": "9px", "color": COLORS["text_muted"]}}
+                for v in values}
+    # Sparse marks: first, last, and ~3 evenly-spaced interior points.
+    indices = sorted({0, len(values) - 1,
+                      len(values) // 4, len(values) // 2,
+                      (3 * len(values)) // 4})
+    return {float(values[i]): {"label": f"{values[i]:g}",
+                                "style": {"fontSize": "9px",
+                                          "color": COLORS["text_muted"]}}
+            for i in indices}
+
+
+@app.callback(
+    Output("merit-x-axis-dropdown", "options"),
+    Output("merit-x-axis-dropdown", "value"),
+    Output("merit-y-axis-dropdown", "options"),
+    Output("merit-y-axis-dropdown", "value"),
+    Output("merit-color-by-dropdown", "options"),
+    Output("merit-color-by-dropdown", "value"),
+    Output({"type": "merit-frozen-slider", "index": ALL}, "min"),
+    Output({"type": "merit-frozen-slider", "index": ALL}, "max"),
+    Output({"type": "merit-frozen-slider", "index": ALL}, "step"),
+    Output({"type": "merit-frozen-slider", "index": ALL}, "value"),
+    Output({"type": "merit-frozen-slider", "index": ALL}, "marks"),
+    Output({"type": "merit-frozen-slider-label", "index": ALL}, "children"),
+    Input("sweep-result-store", "data"),
+    State("merit-x-axis-dropdown", "value"),
+    State("merit-y-axis-dropdown", "value"),
+    State("merit-color-by-dropdown", "value"),
+    State({"type": "merit-frozen-slider", "index": ALL}, "id"),
+    prevent_initial_call=False,
+)
+def populate_merit_controls_on_sweep(sweep_store, prev_x, prev_y, prev_color, slider_ids):
+    n_sliders = len(slider_ids)
+
+    metric_keys: list[str] = []
+    axes_values: list[list[float]] = []
+    if sweep_store and isinstance(sweep_store, dict):
+        metric_keys = list(sweep_store.get("metric_keys", []) or [])
+        if "axes" in sweep_store and isinstance(sweep_store["axes"], list):
+            axes_values = [list(a) for a in sweep_store["axes"]]
+        else:
+            for k in ("xs", "ys", "zs"):
+                if k in sweep_store and sweep_store[k] is not None:
+                    axes_values.append(list(sweep_store[k]))
+
+    # Truncate axes_values to match metric_keys length (defensive).
+    axes_values = axes_values[:len(metric_keys)]
+    while len(axes_values) < len(metric_keys):
+        axes_values.append([])
+
+    options = _axis_dropdown_options(metric_keys)
+
+    # Pick X and Y, preferring the user's last selection if still valid.
+    x_value = prev_x if prev_x in metric_keys else (metric_keys[0] if metric_keys else None)
+    y_value = prev_y if prev_y in metric_keys and prev_y != x_value else None
+    if y_value is None:
+        y_value = next((k for k in metric_keys if k != x_value), None)
+
+    color_options = (
+        [{"label": "FoM", "value": "fom"}, {"label": "None", "value": "none"}]
+        + [{"label": _progress_label(k), "value": k} for k in metric_keys]
+    )
+    color_value = prev_color if prev_color in {"fom", "none", *metric_keys} else (
+        metric_keys[0] if metric_keys else "fom"
+    )
+
+    # Per-slider config — index aligns with metric_keys[i] when active.
+    mins = [0] * n_sliders
+    maxs = [1] * n_sliders
+    steps = [None] * n_sliders
+    values = [0] * n_sliders
+    marks_list: list[dict] = [{} for _ in range(n_sliders)]
+    labels: list[str] = ["" for _ in range(n_sliders)]
+    for i in range(min(n_sliders, len(metric_keys))):
+        ax = sorted({float(v) for v in axes_values[i]
+                     if v is not None and np.isfinite(float(v))}) if axes_values[i] else []
+        if not ax:
+            continue
+        mins[i] = float(ax[0])
+        maxs[i] = float(ax[-1]) if ax[-1] != ax[0] else float(ax[0]) + 1.0
+        # ``step=None`` + sorted ``marks`` snaps the slider to the discrete
+        # grid points — works correctly for integer axes (Cores) and unevenly
+        # spaced log axes alike.
+        steps[i] = None
+        values[i] = float(ax[len(ax) // 2])
+        marks_list[i] = _slider_marks(ax)
+        labels[i] = _progress_label(metric_keys[i])
+
+    return (
+        options, x_value, options, y_value,
+        color_options, color_value,
+        mins, maxs, steps, values, marks_list, labels,
+    )
+
+
+@app.callback(
+    Output({"type": "merit-frozen-slider-row", "index": ALL}, "style"),
+    Input("merit-x-axis-dropdown", "value"),
+    Input("merit-y-axis-dropdown", "value"),
+    Input("sweep-result-store", "data"),
+    State({"type": "merit-frozen-slider-row", "index": ALL}, "id"),
+    prevent_initial_call=False,
+)
+def update_merit_frozen_row_visibility(x_axis, y_axis, sweep_store, row_ids):
+    metric_keys = []
+    if sweep_store and isinstance(sweep_store, dict):
+        metric_keys = list(sweep_store.get("metric_keys", []) or [])
+    visible = {"display": "block"}
+    hidden = {"display": "none"}
+    out = []
+    for entry in row_ids:
+        i = entry.get("index", -1)
+        if i is None or i < 0 or i >= len(metric_keys):
+            out.append(hidden)
+            continue
+        key = metric_keys[i]
+        if key == x_axis or key == y_axis:
+            out.append(hidden)
+        else:
+            out.append(visible)
+    return out
+
+
+@app.callback(
+    Output({"type": "merit-frozen-slider-value", "index": MATCH}, "children"),
+    Input({"type": "merit-frozen-slider", "index": MATCH}, "value"),
+    prevent_initial_call=False,
+)
+def display_merit_frozen_slider_value(value):
+    if value is None:
+        return ""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if abs(v) >= 1e5 or (v != 0 and abs(v) < 1e-3):
+        return f"{v:.3e}"
+    return f"{v:.4g}"
+
+
+@app.callback(
+    Output("main-plot", "figure", allow_duplicate=True),
+    Input("merit-mode-store", "data"),
+    Input("merit-x-axis-dropdown", "value"),
+    Input("merit-y-axis-dropdown", "value"),
+    Input({"type": "merit-frozen-slider", "index": ALL}, "value"),
+    Input("merit-color-by-dropdown", "value"),
+    State("sweep-result-store", "data"),
+    State("view-type-store", "data"),
+    State("fom-config-store", "data"),
+    State("cfg-threshold-enable", "value"),
+    *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
+    *[State(f"cfg-threshold-color-{i}", "value") for i in range(5)],
+    prevent_initial_call=True,
+)
+def replot_on_merit_view_change(
+    mode, x_axis, y_axis, frozen_slider_values, color_by,
+    sweep_store, view_type, fom_config, threshold_enable,
+    t0, t1, t2, t3, t4, tc0, tc1, tc2, tc3, tc4,
+):
+    if view_type != "merit":
         return dash.no_update
-    num_metrics = len(full.get("metric_keys", []))
-    return build_figure(
-        num_metrics,
-        full,
-        "overall_fidelity",
-        view_type="merit",
-        fom_config=fom_config,
+    return _build_merit_figure(
+        sweep_store, fom_config, threshold_enable,
+        [t0, t1, t2, t3, t4], [tc0, tc1, tc2, tc3, tc4],
+        mode, x_axis, y_axis, frozen_slider_values, color_by,
     )
 
 

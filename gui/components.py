@@ -15,6 +15,7 @@ from .constants import (
     DEFAULT_SWEEP_AXES,
     INTRACORE_TOPOLOGY_TYPES,
     MAX_COLD_COMPILATIONS,
+    MAX_SWEEP_AXES,
     MAX_TOTAL_POINTS_HOT,
     MAX_WORKERS_DEFAULT,
     METRIC_BY_KEY,
@@ -1016,6 +1017,208 @@ def make_view_tab_bar(num_metrics: int = 2, active: str | None = None) -> html.D
             "alignItems": "center",
         },
         children=children,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Figure-of-Merit *view* controls — mode toggle + per-mode selectors that sit
+# above the Plotly canvas in the Merit tab. The formula editor below the plot
+# is rendered separately by ``make_merit_controls``.
+# ---------------------------------------------------------------------------
+
+
+def _merit_mode_button(label: str, mode: str, is_active: bool) -> html.Button:
+    return html.Button(
+        label,
+        id={"type": "merit-mode-btn", "index": mode},
+        n_clicks=0,
+        style={
+            "background": COLORS["accent"] if is_active else "transparent",
+            "color": "#fff" if is_active else COLORS["text_muted"],
+            "border": f"1px solid {COLORS['border']}",
+            "borderRadius": "4px",
+            "padding": "3px 12px",
+            "fontSize": "11px",
+            "fontWeight": "600" if is_active else "400",
+            "cursor": "pointer",
+            "transition": "all 0.15s ease",
+        },
+    )
+
+
+def make_merit_view_controls() -> html.Div:
+    """Mode toggle + per-mode selectors that render above the Plotly canvas
+    in the Merit tab.
+
+    All sub-rows are rendered eagerly so callbacks can flip ``display`` on
+    the relevant containers without re-creating the DOM (avoids losing the
+    Plotly graph wrapper between mode switches).
+    """
+    label_style = {
+        "fontSize": "10px",
+        "fontWeight": "700",
+        "textTransform": "uppercase",
+        "letterSpacing": "0.06em",
+        "color": COLORS["text_muted"],
+        "marginRight": "6px",
+    }
+
+    # One pre-rendered frozen-slider row per possible sweep axis. Each row is
+    # toggled visible by the merit-frozen-slider-config callback when the
+    # corresponding axis is active and not selected as X or Y.
+    frozen_rows = []
+    for i in range(MAX_SWEEP_AXES):
+        frozen_rows.append(
+            html.Div(
+                id={"type": "merit-frozen-slider-row", "index": i},
+                style={"display": "none"},
+                children=[
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "8px",
+                            "padding": "2px 0",
+                        },
+                        children=[
+                            html.Span(
+                                id={"type": "merit-frozen-slider-label", "index": i},
+                                style={
+                                    "width": "150px",
+                                    "flexShrink": "0",
+                                    "fontSize": "11px",
+                                    "color": COLORS["text_muted"],
+                                    "whiteSpace": "nowrap",
+                                    "overflow": "hidden",
+                                    "textOverflow": "ellipsis",
+                                },
+                                children="",
+                            ),
+                            dcc.Slider(
+                                id={"type": "merit-frozen-slider", "index": i},
+                                min=0, max=1, step=None, value=0,
+                                marks={},
+                                tooltip={"placement": "bottom",
+                                         "always_visible": False},
+                                updatemode="drag",
+                                included=False,
+                            ),
+                            html.Span(
+                                id={"type": "merit-frozen-slider-value", "index": i},
+                                style={
+                                    "fontSize": "11px",
+                                    "color": COLORS["accent"],
+                                    "minWidth": "70px",
+                                    "textAlign": "right",
+                                },
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        )
+
+    return html.Div(
+        id="merit-view-controls-container",
+        style={
+            "display": "none",
+            "padding": "6px 16px 6px",
+            "borderBottom": f"1px solid {COLORS['border']}",
+            "background": COLORS["bg"],
+        },
+        children=[
+            # Row 1: mode toggle (always visible when the container shows).
+            html.Div(
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "8px",
+                    "marginBottom": "6px",
+                },
+                children=[
+                    html.Span("Mode", style=label_style),
+                    _merit_mode_button("Heatmap", "heatmap", True),
+                    _merit_mode_button("Pareto", "pareto", False),
+                ],
+            ),
+            # Row 2: heatmap controls — X/Y axis dropdowns.
+            html.Div(
+                id="merit-heatmap-controls",
+                style={"display": "block"},
+                children=[
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "8px",
+                            "marginBottom": "4px",
+                        },
+                        children=[
+                            html.Span("X", style=label_style),
+                            html.Div(
+                                style={"width": "180px", "flexShrink": "0"},
+                                children=dcc.Dropdown(
+                                    id="merit-x-axis-dropdown",
+                                    options=[],
+                                    value=None,
+                                    clearable=False,
+                                    searchable=False,
+                                    style={"fontSize": "11px"},
+                                ),
+                            ),
+                            html.Span("Y", style={**label_style, "marginLeft": "12px"}),
+                            html.Div(
+                                style={"width": "180px", "flexShrink": "0"},
+                                children=dcc.Dropdown(
+                                    id="merit-y-axis-dropdown",
+                                    options=[],
+                                    value=None,
+                                    clearable=False,
+                                    searchable=False,
+                                    style={"fontSize": "11px"},
+                                ),
+                            ),
+                        ],
+                    ),
+                    html.Div(
+                        id="merit-frozen-sliders-container",
+                        style={"display": "block"},
+                        children=frozen_rows,
+                    ),
+                ],
+            ),
+            # Row 3: pareto controls — color-by dropdown.
+            html.Div(
+                id="merit-pareto-controls",
+                style={"display": "none"},
+                children=[
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "8px",
+                        },
+                        children=[
+                            html.Span("Color by", style=label_style),
+                            html.Div(
+                                style={"width": "220px", "flexShrink": "0"},
+                                children=dcc.Dropdown(
+                                    id="merit-color-by-dropdown",
+                                    options=[
+                                        {"label": "FoM", "value": "fom"},
+                                        {"label": "None", "value": "none"},
+                                    ],
+                                    value="fom",
+                                    clearable=False,
+                                    searchable=False,
+                                    style={"fontSize": "11px"},
+                                ),
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        ],
     )
 
 
