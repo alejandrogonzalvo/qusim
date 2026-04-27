@@ -1,6 +1,8 @@
 #include "report.h"
 
+#include <errno.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "config.h"
 #include "device.h"
@@ -127,7 +129,8 @@ void report_save_as_json(
         fputs(json_string, file);
         fclose(file);
     } else {
-        error("Error saving report to %s\n", filename);
+        fprintf(stderr, "[%s:%d] Warning: could not save report to %s (%s)\n",
+                __FILE__, __LINE__, filename, strerror(errno));
     }
 }
 
