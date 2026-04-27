@@ -12,15 +12,15 @@
 #   2. cloudflared installed (https://pkg.cloudflare.com or the .deb release).
 #   3. Cloudflare named tunnel set up. First time only:
 #        cloudflared tunnel login                       # browser auth
-#        cloudflared tunnel create qusim-dse            # writes ~/.cloudflared/<UUID>.json
-#        cloudflared tunnel route dns qusim-dse qusim.gonzalvo.dev
+#        cloudflared tunnel create upv-dse              # writes ~/.cloudflared/<UUID>.json
+#        cloudflared tunnel route dns upv-dse upv-dse.gonzalvo.dev
 #      Or copy ~/.cloudflared/ from a machine that already has it.
 #
 # Environment overrides:
 #   QUSIM_HOST       (default: 127.0.0.1) bind address for the Dash app
 #   QUSIM_PORT       (default: 8050)      bind port for the Dash app
-#   TUNNEL_NAME      (default: qusim-dse) name passed to `cloudflared tunnel run`
-#   PUBLIC_URL       (default: derived from config.yml) URL printed for sharing
+#   TUNNEL_NAME      (default: upv-dse)   name passed to `cloudflared tunnel run`
+#   PUBLIC_URL       (default: https://upv-dse.gonzalvo.dev) URL printed for sharing
 #   SKIP_TUNNEL=1    start the app without the tunnel
 #   SKIP_APP=1       start only the tunnel (assume app is already running)
 
@@ -34,7 +34,10 @@ cd "$PROJECT_ROOT"
 
 QUSIM_HOST="${QUSIM_HOST:-127.0.0.1}"
 QUSIM_PORT="${QUSIM_PORT:-8050}"
-TUNNEL_NAME="${TUNNEL_NAME:-qusim-dse}"
+TUNNEL_NAME="${TUNNEL_NAME:-upv-dse}"
+TUNNEL_UUID="${TUNNEL_UUID:-ac904953-2386-4224-870b-d30ac8e94e37}"
+TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-upv-dse.gonzalvo.dev}"
+DEFAULT_PUBLIC_URL="https://$TUNNEL_HOSTNAME"
 LOG_DIR="${LOG_DIR:-/tmp/qusim-serve}"
 mkdir -p "$LOG_DIR"
 APP_LOG="$LOG_DIR/app.log"
@@ -77,10 +80,10 @@ if [[ "${SKIP_TUNNEL:-0}" != "1" ]]; then
     echo "        Run: cloudflared tunnel login" >&2
     exit 1
   fi
-  if ! cloudflared tunnel list 2>/dev/null | grep -q "[[:space:]]$TUNNEL_NAME[[:space:]]"; then
-    echo "[serve] ERROR: tunnel '$TUNNEL_NAME' not found in your account." >&2
+  if [[ ! -f "$HOME/.cloudflared/$TUNNEL_UUID.json" ]]; then
+    echo "[serve] ERROR: credentials file ~/.cloudflared/$TUNNEL_UUID.json missing." >&2
     echo "        Run: cloudflared tunnel create $TUNNEL_NAME" >&2
-    echo "        Then: cloudflared tunnel route dns $TUNNEL_NAME <your.hostname>" >&2
+    echo "        Then: cloudflared tunnel route dns $TUNNEL_NAME $TUNNEL_HOSTNAME" >&2
     exit 1
   fi
 fi
@@ -109,19 +112,21 @@ fi
 
 # --- Start the tunnel ---------------------------------------------------------
 if [[ "${SKIP_TUNNEL:-0}" != "1" ]]; then
-  # Try to derive a friendly URL from ~/.cloudflared/config.yml so we can print it.
-  derived_url=""
-  if [[ -f "$HOME/.cloudflared/config.yml" ]]; then
-    host=$(grep -E '^[[:space:]]*-[[:space:]]*hostname:' "$HOME/.cloudflared/config.yml" \
-             | head -1 | sed -E 's/.*hostname:[[:space:]]*//')
-    if [[ -n "$host" ]]; then
-      derived_url="https://$host"
-    fi
-  fi
-  PUBLIC_URL="${PUBLIC_URL:-${derived_url:-(check your tunnel config for the hostname)}}"
+  PUBLIC_URL="${PUBLIC_URL:-$DEFAULT_PUBLIC_URL}"
 
-  echo "[serve] starting cloudflared tunnel '$TUNNEL_NAME' (log: $TUNNEL_LOG)"
-  cloudflared tunnel run "$TUNNEL_NAME" > "$TUNNEL_LOG" 2>&1 &
+  # Generate a self-contained config so we don't depend on ~/.cloudflared/config.yml.
+  TUNNEL_CONFIG="$LOG_DIR/cloudflared-config.yml"
+  cat > "$TUNNEL_CONFIG" <<EOF
+tunnel: $TUNNEL_UUID
+credentials-file: $HOME/.cloudflared/$TUNNEL_UUID.json
+ingress:
+  - hostname: $TUNNEL_HOSTNAME
+    service: http://$QUSIM_HOST:$QUSIM_PORT
+  - service: http_status:404
+EOF
+
+  echo "[serve] starting cloudflared tunnel '$TUNNEL_NAME' ($TUNNEL_UUID, log: $TUNNEL_LOG)"
+  cloudflared --config "$TUNNEL_CONFIG" tunnel run "$TUNNEL_NAME" > "$TUNNEL_LOG" 2>&1 &
   TUNNEL_PID=$!
 
   # Wait until cloudflared logs at least one registered connection.
