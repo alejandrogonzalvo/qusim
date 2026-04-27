@@ -2889,7 +2889,10 @@ def on_merit_mode_change(_n_clicks, ids, current_mode):
             "transition": "all 0.15s ease",
         })
 
-    heatmap_style = {"display": "block"} if new_mode == "heatmap" else {"display": "none"}
+    # 3D mode reuses the same XY/frozen-slider controls as Heatmap — only
+    # the Pareto colour-by lives under its own panel.
+    heatmap_style = ({"display": "block"} if new_mode in ("heatmap", "3d")
+                     else {"display": "none"})
     pareto_style = {"display": "block"} if new_mode == "pareto" else {"display": "none"}
     return new_mode, heatmap_style, pareto_style, button_styles
 

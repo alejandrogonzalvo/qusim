@@ -1479,6 +1479,117 @@ def _pick_axis_scale(values: np.ndarray) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Merit view: shared 2-D grid construction (used by Heatmap and 3D modes)
+# ---------------------------------------------------------------------------
+
+
+def _build_merit_2d_grid(
+    bd, sweep_axes, fom_arr, num_arr, den_arr,
+    x_axis, y_axis, frozen_values,
+):
+    """Slice the FoM down to a regular ``(len(y_unique), len(x_unique))`` 2-D
+    grid by pinning the non-XY axes to the user-chosen frozen values.
+
+    Returns the tuple ``(x_axis, y_axis, x_unique, y_unique, z, num_grid,
+    den_grid, snapped, frozen_keys)`` on success or a ``go.Figure`` carrying
+    an empty-state message on failure (caller forwards it to the user).
+    """
+    n_rows = fom_arr.shape[0]
+
+    if x_axis not in sweep_axes:
+        x_axis = sweep_axes[0]
+    if y_axis not in sweep_axes or y_axis == x_axis:
+        y_axis = next((k for k in sweep_axes if k != x_axis), x_axis)
+
+    other_axes = [k for k in sweep_axes if k not in (x_axis, y_axis)]
+    frozen = dict(frozen_values or {})
+    # Default any missing frozen value to the median grid point so the slice
+    # is reproducible before the user touches a slider.
+    for k in other_axes:
+        if k not in frozen:
+            uvals = np.unique(bd.primitives[k][np.isfinite(bd.primitives[k])])
+            if uvals.size:
+                frozen[k] = float(uvals[uvals.size // 2])
+
+    mask, snapped = _frozen_mask(
+        bd.primitives,
+        {k: frozen[k] for k in other_axes if k in frozen},
+        n_rows,
+    )
+    if not mask.any():
+        return plot_empty("No sweep points match the selected frozen-axis values.")
+
+    x_col = bd.primitives[x_axis][mask]
+    y_col = bd.primitives[y_axis][mask]
+    fom_col = fom_arr[mask]
+    num_col = num_arr[mask]
+    den_col = den_arr[mask]
+
+    x_unique = np.unique(x_col[np.isfinite(x_col)])
+    y_unique = np.unique(y_col[np.isfinite(y_col)])
+    if x_unique.size == 0 or y_unique.size == 0:
+        return plot_empty("FoM landscape is empty for this slice.")
+
+    z = np.full((y_unique.size, x_unique.size), np.nan, dtype=float)
+    num_grid = np.full_like(z, np.nan)
+    den_grid = np.full_like(z, np.nan)
+    x_idx_map = {float(v): i for i, v in enumerate(x_unique)}
+    y_idx_map = {float(v): i for i, v in enumerate(y_unique)}
+    for xi, yi, fi, ni, di in zip(x_col, y_col, fom_col, num_col, den_col):
+        ix = x_idx_map.get(float(xi))
+        iy = y_idx_map.get(float(yi))
+        if ix is None or iy is None:
+            continue
+        z[iy, ix] = fi
+        num_grid[iy, ix] = ni
+        den_grid[iy, ix] = di
+
+    if not np.isfinite(z).any():
+        return plot_empty(
+            "FoM produced no finite values — check for divide-by-zero or constant expressions."
+        )
+
+    return (x_axis, y_axis, x_unique, y_unique, z,
+            num_grid, den_grid, snapped, list(other_axes))
+
+
+def _merit_grid_customdata(
+    n_y: int, n_x: int, num_grid: np.ndarray, den_grid: np.ndarray,
+    frozen_keys: list[str], snapped: dict[str, float],
+) -> np.ndarray:
+    """Stack per-cell ``(num, den, *frozen_values)`` into a Plotly customdata
+    cube of shape ``(n_y, n_x, 2 + len(frozen_keys))``.
+    """
+    customdata = np.empty((n_y, n_x, 2 + len(frozen_keys)), dtype=float)
+    customdata[:, :, 0] = num_grid
+    customdata[:, :, 1] = den_grid
+    for i, fk in enumerate(frozen_keys):
+        customdata[:, :, 2 + i] = snapped.get(fk, float("nan"))
+    return customdata
+
+
+def _merit_grid_hovertemplate(
+    x_axis: str, y_axis: str, fom_name: str,
+    frozen_keys: list[str], z_var: str = "z",
+) -> str:
+    """Hover template shared by Heatmap and Surface traces. ``z_var`` is the
+    Plotly variable holding the FoM value (``z`` for heatmap, surface).
+    """
+    lines = [
+        f"{_axis_label(x_axis)}: %{{x:.4g}}",
+        f"{_axis_label(y_axis)}: %{{y:.4g}}",
+        f"<b>{fom_name}: %{{{z_var}:.4g}}</b>",
+        "  numerator = %{customdata[0]:.4g}",
+        "  denominator = %{customdata[1]:.4g}",
+    ]
+    if frozen_keys:
+        lines.append("<i>frozen</i>")
+        for i, fk in enumerate(frozen_keys):
+            lines.append(f"  {_axis_label(fk)} = %{{customdata[{2 + i}]:.4g}}")
+    return "<br>".join(lines) + "<extra></extra>"
+
+
+# ---------------------------------------------------------------------------
 # Merit view: Heatmap mode
 # ---------------------------------------------------------------------------
 
@@ -1568,83 +1679,21 @@ def plot_merit_heatmap(
         return fig
 
     # --- ≥2-D heatmap ------------------------------------------------------
-    # Resolve X / Y to actual sweep axes, falling back if the caller picked
-    # something stale (e.g. left-over selection from a previous sweep).
-    if x_axis not in sweep_axes:
-        x_axis = sweep_axes[0]
-    if y_axis not in sweep_axes or y_axis == x_axis:
-        y_axis = next((k for k in sweep_axes if k != x_axis), x_axis)
-
-    other_axes = [k for k in sweep_axes if k not in (x_axis, y_axis)]
-    frozen = dict(frozen_values or {})
-    # Default any missing frozen value to the median grid point — reproducible
-    # and keeps the heatmap meaningful before the user touches a slider.
-    for k in other_axes:
-        if k not in frozen:
-            uvals = np.unique(bd.primitives[k][np.isfinite(bd.primitives[k])])
-            if uvals.size:
-                frozen[k] = float(uvals[uvals.size // 2])
-
-    mask, snapped = _frozen_mask(bd.primitives, {k: frozen[k] for k in other_axes if k in frozen}, n_rows)
-    if not mask.any():
-        return plot_empty(
-            "No sweep points match the selected frozen-axis values."
-        )
-
-    x_col = bd.primitives[x_axis][mask]
-    y_col = bd.primitives[y_axis][mask]
-    fom_col = fom_arr[mask]
-    num_col = num_arr[mask]
-    den_col = den_arr[mask]
-
-    x_unique = np.unique(x_col[np.isfinite(x_col)])
-    y_unique = np.unique(y_col[np.isfinite(y_col)])
-    if x_unique.size == 0 or y_unique.size == 0:
-        return plot_empty("FoM landscape is empty for this slice.")
-
-    z = np.full((y_unique.size, x_unique.size), np.nan, dtype=float)
-    num_grid = np.full_like(z, np.nan)
-    den_grid = np.full_like(z, np.nan)
-    x_idx_map = {float(v): i for i, v in enumerate(x_unique)}
-    y_idx_map = {float(v): i for i, v in enumerate(y_unique)}
-    for xi, yi, fi, ni, di in zip(x_col, y_col, fom_col, num_col, den_col):
-        ix = x_idx_map.get(float(xi))
-        iy = y_idx_map.get(float(yi))
-        if ix is None or iy is None:
-            continue
-        z[iy, ix] = fi
-        num_grid[iy, ix] = ni
-        den_grid[iy, ix] = di
-
+    grid = _build_merit_2d_grid(
+        bd, sweep_axes, fom_arr, num_arr, den_arr,
+        x_axis, y_axis, frozen_values,
+    )
+    if isinstance(grid, go.Figure):
+        return grid
+    x_axis, y_axis, x_unique, y_unique, z, num_grid, den_grid, snapped, frozen_keys = grid
     finite_z = z[np.isfinite(z)]
-    if finite_z.size == 0:
-        return plot_empty(
-            "FoM produced no finite values — check for divide-by-zero or constant expressions."
-        )
 
-    # Customdata: per-cell num + den + frozen values (echoed in hover).
-    frozen_keys = list(other_axes)
-    customdata = np.empty((y_unique.size, x_unique.size, 2 + len(frozen_keys)),
-                          dtype=float)
-    customdata[:, :, 0] = num_grid
-    customdata[:, :, 1] = den_grid
-    for fi, fk in enumerate(frozen_keys):
-        customdata[:, :, 2 + fi] = snapped.get(fk, float("nan"))
-
-    hover_lines = [
-        f"{_axis_label(x_axis)}: %{{x:.4g}}",
-        f"{_axis_label(y_axis)}: %{{y:.4g}}",
-        f"<b>{fom_name}: %{{z:.4g}}</b>",
-        "  numerator = %{customdata[0]:.4g}",
-        "  denominator = %{customdata[1]:.4g}",
-    ]
-    if frozen_keys:
-        hover_lines.append("<i>frozen</i>")
-        for i, fk in enumerate(frozen_keys):
-            hover_lines.append(
-                f"  {_axis_label(fk)} = %{{customdata[{2 + i}]:.4g}}"
-            )
-    hovertemplate = "<br>".join(hover_lines) + "<extra></extra>"
+    customdata = _merit_grid_customdata(
+        y_unique.size, x_unique.size, num_grid, den_grid, frozen_keys, snapped,
+    )
+    hovertemplate = _merit_grid_hovertemplate(
+        x_axis, y_axis, fom_name, frozen_keys, z_var="z",
+    )
 
     fig = go.Figure()
     fig.add_trace(go.Heatmap(
@@ -1706,6 +1755,203 @@ def plot_merit_heatmap(
                         font_color=_TEXT_COLOR, align="left"),
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Merit view: 3D surface mode — same XY/frozen-slider mechanics as Heatmap
+# but renders the FoM as both height and colour, with optional iso-FoM
+# threshold lines projected onto the surface.
+# ---------------------------------------------------------------------------
+
+
+def plot_merit_surface(
+    sweep_data: dict,
+    fom_config,
+    x_axis: str | None = None,
+    y_axis: str | None = None,
+    frozen_values: dict[str, float] | None = None,
+    thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
+) -> go.Figure:
+    """Render the FoM landscape as a Plotly Surface where Z = colour = FoM.
+
+    Shares the XY-axis selection and frozen-slider mechanics with the
+    Heatmap mode; only the trace type differs.
+    """
+    if (sweep_data is not None
+            and not (sweep_data.get("metric_keys") or [])):
+        return plot_empty(
+            "Add at least one sweep axis to view the FoM surface."
+        )
+
+    bd, fom_config, _resolved, err = _build_merit_breakdown(sweep_data, fom_config)
+    if err is not None:
+        return err
+
+    sweep_axes = list(bd.sweep_axes)
+    if not sweep_axes:
+        return plot_empty("Add at least one sweep axis to view the FoM surface.")
+
+    fom_arr = np.asarray(bd.fom, dtype=float)
+    num_arr = np.asarray(bd.numerator, dtype=float)
+    den_arr = np.asarray(bd.denominator, dtype=float)
+    fom_name = fom_config.name or "Figure of Merit"
+
+    # 1-D fallback: a true surface needs two axes — degrade to the same
+    # line-plot the Heatmap mode shows so the view stays usable.
+    if len(sweep_axes) == 1:
+        return plot_merit_heatmap(
+            sweep_data, fom_config,
+            x_axis=x_axis, y_axis=y_axis,
+            frozen_values=frozen_values,
+            thresholds=thresholds, threshold_colors=threshold_colors,
+        )
+
+    grid = _build_merit_2d_grid(
+        bd, sweep_axes, fom_arr, num_arr, den_arr,
+        x_axis, y_axis, frozen_values,
+    )
+    if isinstance(grid, go.Figure):
+        return grid
+    x_axis, y_axis, x_unique, y_unique, z, num_grid, den_grid, snapped, frozen_keys = grid
+    finite_z = z[np.isfinite(z)]
+    zmin = float(finite_z.min())
+    zmax = float(finite_z.max())
+
+    customdata = _merit_grid_customdata(
+        y_unique.size, x_unique.size, num_grid, den_grid, frozen_keys, snapped,
+    )
+    hovertemplate = _merit_grid_hovertemplate(
+        x_axis, y_axis, fom_name, frozen_keys, z_var="z",
+    )
+
+    # Surface contours: project FoM iso-lines onto the surface itself so the
+    # height-colour duality stays readable. ``usecolormap=True`` keeps the
+    # projected lines aligned with the Viridis ramp.
+    contour_z_cfg = dict(
+        show=True,
+        usecolormap=True,
+        highlightcolor="#404040",
+        project=dict(z=True),
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Surface(
+        x=x_unique, y=y_unique, z=z,
+        surfacecolor=z,
+        cmin=zmin, cmax=zmax,
+        colorscale=_MERIT_VIRIDIS,
+        colorbar=dict(
+            title=dict(text=fom_name, side="right",
+                       font=dict(size=11, color=_TEXT_MUTED)),
+            tickfont=dict(color=_TEXT_MUTED, size=10),
+            outlinewidth=0, thickness=14, len=0.85,
+        ),
+        contours=dict(z=contour_z_cfg),
+        customdata=customdata,
+        hovertemplate=hovertemplate,
+        showscale=True,
+        opacity=0.95,
+        lighting=dict(ambient=0.6, diffuse=0.6, specular=0.1, roughness=0.6),
+    ))
+
+    # Threshold iso-FoM rings: drawn as thin rims at z = threshold using
+    # Scatter3d traces so each gets its user-picked colour. Cells outside
+    # the data range are silently skipped.
+    if thresholds:
+        colors = threshold_colors or _THRESHOLD_COLORS
+        for i, t in enumerate(thresholds):
+            if t is None:
+                continue
+            t_f = float(t)
+            if t_f < zmin or t_f > zmax:
+                continue
+            color = colors[i % len(colors)]
+            rings = _surface_iso_segments(x_unique, y_unique, z, t_f)
+            if rings.size == 0:
+                continue
+            fig.add_trace(go.Scatter3d(
+                x=rings[:, 0], y=rings[:, 1], z=rings[:, 2],
+                mode="lines",
+                line=dict(color=color, width=4),
+                hoverinfo="skip",
+                showlegend=True,
+                name=f"FoM = {t_f:g}",
+            ))
+
+    fig.update_layout(
+        **_LAYOUT_BASE,
+        scene=dict(
+            xaxis=dict(
+                title=dict(text=_axis_label(x_axis), font=dict(size=11, color=_TEXT_MUTED)),
+                gridcolor=_GRID_COLOR, zerolinecolor=_GRID_COLOR,
+                tickfont=dict(size=10, color=_TEXT_MUTED),
+            ),
+            yaxis=dict(
+                title=dict(text=_axis_label(y_axis), font=dict(size=11, color=_TEXT_MUTED)),
+                gridcolor=_GRID_COLOR, zerolinecolor=_GRID_COLOR,
+                tickfont=dict(size=10, color=_TEXT_MUTED),
+            ),
+            zaxis=dict(
+                title=dict(text=fom_name, font=dict(size=11, color=_TEXT_MUTED)),
+                gridcolor=_GRID_COLOR, zerolinecolor=_GRID_COLOR,
+                tickfont=dict(size=10, color=_TEXT_MUTED),
+            ),
+            camera=dict(eye=dict(x=1.7, y=1.7, z=1.1)),
+        ),
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR,
+                        font_color=_TEXT_COLOR, align="left"),
+    )
+    return fig
+
+
+def _surface_iso_segments(
+    x_unique: np.ndarray, y_unique: np.ndarray, z: np.ndarray, level: float,
+) -> np.ndarray:
+    """Marching-squares-style segment extractor for one iso-level.
+
+    Returns an ``(N, 3)`` array of ``(x, y, level)`` triples ordered as
+    line-segment endpoints (Plotly's Scatter3d ``mode='lines'`` joins
+    consecutive points; we insert NaN rows between disjoint segments to
+    break the polyline).
+    """
+    pts: list[tuple[float, float, float]] = []
+    nan_break = (float("nan"), float("nan"), float("nan"))
+    ny, nx = z.shape
+    for j in range(ny - 1):
+        for i in range(nx - 1):
+            corners = [
+                (x_unique[i],     y_unique[j],     z[j,     i]),
+                (x_unique[i + 1], y_unique[j],     z[j,     i + 1]),
+                (x_unique[i + 1], y_unique[j + 1], z[j + 1, i + 1]),
+                (x_unique[i],     y_unique[j + 1], z[j + 1, i]),
+            ]
+            # Skip cells with any NaN — can't infer a crossing.
+            if any(not np.isfinite(c[2]) for c in corners):
+                continue
+            crossings: list[tuple[float, float]] = []
+            for k in range(4):
+                a = corners[k]
+                b = corners[(k + 1) % 4]
+                za = a[2] - level
+                zb = b[2] - level
+                if za == 0 and zb == 0:
+                    continue
+                if (za > 0) != (zb > 0):
+                    # Linear interpolation along the cell edge.
+                    t = za / (za - zb)
+                    cx = a[0] + t * (b[0] - a[0])
+                    cy = a[1] + t * (b[1] - a[1])
+                    crossings.append((cx, cy))
+            # Either 2 (single segment) or 4 (saddle — emit both pairs).
+            if len(crossings) >= 2:
+                for k in range(0, len(crossings) - 1, 2):
+                    pts.append((crossings[k][0], crossings[k][1], level))
+                    pts.append((crossings[k + 1][0], crossings[k + 1][1], level))
+                    pts.append(nan_break)
+    if not pts:
+        return np.empty((0, 3), dtype=float)
+    return np.asarray(pts, dtype=float)
 
 
 # ---------------------------------------------------------------------------
@@ -2022,6 +2268,14 @@ def plot_merit(
         return plot_merit_pareto(
             sweep_data, fom_config,
             color_by=color_by,
+            thresholds=thresholds,
+            threshold_colors=threshold_colors,
+        )
+    if m in ("3d", "surface", "3d_surface"):
+        return plot_merit_surface(
+            sweep_data, fom_config,
+            x_axis=x_axis, y_axis=y_axis,
+            frozen_values=frozen_values,
             thresholds=thresholds,
             threshold_colors=threshold_colors,
         )

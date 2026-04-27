@@ -1138,6 +1138,7 @@ def make_merit_view_controls() -> html.Div:
                 children=[
                     html.Span("Mode", style=label_style),
                     _merit_mode_button("Heatmap", "heatmap", True),
+                    _merit_mode_button("3D", "3d", False),
                     _merit_mode_button("Pareto", "pareto", False),
                 ],
             ),

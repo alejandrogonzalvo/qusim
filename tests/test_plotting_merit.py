@@ -19,9 +19,11 @@ from gui.plotting import (
     _frozen_mask,
     _pareto_front_mask,
     _snap_to_grid,
+    _surface_iso_segments,
     plot_merit,
     plot_merit_heatmap,
     plot_merit_pareto,
+    plot_merit_surface,
 )
 
 
@@ -295,3 +297,91 @@ class TestPlotMeritDispatcher:
         fig = plot_merit(None, fom_fid_per_time)
         ann = [a.text for a in (fig.layout.annotations or [])]
         assert any("No sweep loaded" in t for t in ann)
+
+    def test_3d_mode_routes_to_surface(self, sweep_3d, fom_fid_per_time):
+        fig = plot_merit(
+            sweep_3d, fom_fid_per_time, mode="3d",
+            x_axis="t1", y_axis="t2", frozen_values={"cores": 4.0},
+        )
+        assert any(t.type == "surface" for t in fig.data)
+
+
+# ---------------------------------------------------------------------------
+# 3D Surface mode + iso-segment helper
+# ---------------------------------------------------------------------------
+
+
+class TestSurfaceIsoSegments:
+    def test_no_crossings_returns_empty(self):
+        # All cells flat at z=0 — no iso-line at z=1 inside the grid.
+        z = np.zeros((3, 3))
+        out = _surface_iso_segments(np.arange(3.0), np.arange(3.0), z, 1.0)
+        assert out.shape == (0, 3)
+
+    def test_simple_diagonal_ramp_produces_segments(self):
+        # z = x + y → iso-line at level=2.0 crosses several cells.
+        x = np.array([0.0, 1.0, 2.0])
+        y = np.array([0.0, 1.0, 2.0])
+        z = np.add.outer(y, x)  # shape (3, 3): z[j,i] = y[j]+x[i]
+        out = _surface_iso_segments(x, y, z, 2.0)
+        assert out.shape[0] > 0
+        # All non-NaN points must sit at z=level.
+        finite = out[np.isfinite(out[:, 2])]
+        assert np.allclose(finite[:, 2], 2.0)
+
+    def test_skips_nan_cells(self):
+        z = np.zeros((3, 3))
+        z[1, 1] = np.nan
+        # Without NaN handling this would crash; we just want a clean result.
+        out = _surface_iso_segments(np.arange(3.0), np.arange(3.0), z, 0.5)
+        assert out.dtype == float
+
+
+class TestPlotMeritSurface:
+    def test_empty_axes_shows_message(self, fom_fid_per_time):
+        sweep = {"metric_keys": [], "axes": [], "grid": [], "shape": ()}
+        fig = plot_merit_surface(sweep, fom_fid_per_time)
+        assert len(fig.data) == 0
+        ann = [a.text for a in (fig.layout.annotations or [])]
+        assert any("Add at least one sweep axis" in t for t in ann)
+
+    def test_two_axis_produces_surface_trace(self, sweep_3d, fom_fid_per_time):
+        fig = plot_merit_surface(
+            sweep_3d, fom_fid_per_time,
+            x_axis="t1", y_axis="t2", frozen_values={"cores": 4.0},
+        )
+        assert fig.data[0].type == "surface"
+        # Surface uses the FoM as both height and colour: surfacecolor must
+        # match the z grid, not e.g. the input-axis value.
+        z = np.asarray(fig.data[0].z)
+        sc = np.asarray(fig.data[0].surfacecolor)
+        assert z.shape == sc.shape
+        assert np.allclose(z[np.isfinite(z)], sc[np.isfinite(sc)])
+
+    def test_threshold_iso_lines_added_as_scatter3d(
+        self, sweep_3d, fom_fid_per_time,
+    ):
+        fig = plot_merit_surface(
+            sweep_3d, fom_fid_per_time,
+            x_axis="t1", y_axis="t2", frozen_values={"cores": 4.0},
+            thresholds=[0.0025, 0.003, 999.0],  # third out of range
+            threshold_colors=["#d73027", "#fc8d59", "#fee08b"],
+        )
+        rings = [t for t in fig.data if t.type == "scatter3d"]
+        assert len(rings) == 2
+
+    def test_one_axis_falls_back_to_line(self, fom_fid_per_time):
+        sweep = {
+            "metric_keys": ["t1"],
+            "axes": [[10.0, 20.0, 30.0]],
+            "grid": [
+                {"overall_fidelity": 0.6, "total_circuit_time_ns": 100.0},
+                {"overall_fidelity": 0.7, "total_circuit_time_ns": 110.0},
+                {"overall_fidelity": 0.8, "total_circuit_time_ns": 120.0},
+            ],
+            "shape": (3,),
+        }
+        fig = plot_merit_surface(sweep, fom_fid_per_time)
+        # Degrades to a 2-D line (no surface trace possible with 1 axis).
+        assert all(t.type != "surface" for t in fig.data)
+        assert any(t.type == "scatter" for t in fig.data)
