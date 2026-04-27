@@ -53,7 +53,16 @@ if [[ "$LOCAL" == "$REMOTE" ]]; then
   exit 0
 fi
 
-log "new commits on origin/main: $LOCAL → $REMOTE"
+# Only act when origin is strictly ahead. If we're ahead (unpushed local
+# commits) or diverged, do nothing — pulling those cases would either be
+# a no-op (and uselessly bounce the app) or destructive.
+behind_count=$(git rev-list --count HEAD..origin/main)
+if [[ "$behind_count" -eq 0 ]]; then
+  # Local is ahead of, or has diverged from, origin. Silent no-op.
+  exit 0
+fi
+
+log "origin/main has $behind_count new commit(s): $LOCAL → $REMOTE"
 
 # Refuse to pull if the working tree has uncommitted changes that could
 # block a fast-forward (the supervisor isn't running interactively, so
