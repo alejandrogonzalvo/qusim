@@ -63,8 +63,11 @@ class QusimResult:
     routing_fidelity_grid: np.ndarray  
     """Floating point progression tracking compilation-introduced physical routing errors isolated across time. Shape: `(num_layers, num_qubits)`"""
 
-    coherence_fidelity_grid: np.ndarray    
+    coherence_fidelity_grid: np.ndarray
     """Floating point exponential temporal decay matrix modeling phase and relaxation drops. Shape: `(num_layers, num_qubits)`"""
+
+    sparse_swaps: np.ndarray = None  # type: ignore[assignment]
+    """SABRE-injected SWAP events as ``[layer, vq1, vq2]`` rows. Shape: ``(S, 3)`` (or ``(0, 3)`` if no router pass ran). Re-used by ``estimate_fidelity_from_cache`` to charge intra-core SWAP cost on hot-path noise sweeps."""
 
     def get_qubit_fidelity_over_time(self, qubit: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -442,16 +445,18 @@ def map_circuit(
         total_epr_pairs=raw_dict["total_epr_pairs"],
         total_network_distance=raw_dict["total_network_distance"],
         teleportations_per_slice=raw_dict["teleportations_per_slice"],
-        
+
         algorithmic_fidelity=fidelity_dict["algorithmic_fidelity"],
         routing_fidelity=fidelity_dict["routing_fidelity"],
         coherence_fidelity=fidelity_dict["coherence_fidelity"],
         overall_fidelity=fidelity_dict["overall_fidelity"],
         total_circuit_time_ns=fidelity_dict["total_circuit_time_ns"],
-        
+
         algorithmic_fidelity_grid=fidelity_dict["algorithmic_fidelity_grid"],
         routing_fidelity_grid=fidelity_dict["routing_fidelity_grid"],
         coherence_fidelity_grid=fidelity_dict["coherence_fidelity_grid"],
+
+        sparse_swaps=sparse_swaps_arr,
     )
 
 

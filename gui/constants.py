@@ -151,12 +151,21 @@ SWEEPABLE_METRICS: List[MetricDef] = [
     ),
     MetricDef(
         key="num_qubits",
-        label="Qubits",
+        label="Physical Qubits",
         slider_min=4, slider_max=256,
         slider_default_low=4, slider_default_high=20,
         num_steps=15, log_scale=False, unit="",
         is_cold_path=True,
-        description="Number of logical qubits in the circuit",
+        description="Number of physical qubits available on the device (topology size)",
+    ),
+    MetricDef(
+        key="num_logical_qubits",
+        label="Logical Qubits",
+        slider_min=2, slider_max=256,
+        slider_default_low=2, slider_default_high=20,
+        num_steps=15, log_scale=False, unit="",
+        is_cold_path=True,
+        description="Number of logical qubits in the algorithm circuit (capped by physical qubits)",
     ),
     MetricDef(
         key="num_cores",
@@ -166,6 +175,18 @@ SWEEPABLE_METRICS: List[MetricDef] = [
         num_steps=8, log_scale=False, unit="",
         is_cold_path=True,
         description="Number of processor cores in the multi-core architecture",
+    ),
+    MetricDef(
+        key="communication_qubits",
+        label="Comm Qubits",
+        slider_min=1, slider_max=16,
+        slider_default_low=1, slider_default_high=2,
+        num_steps=4, log_scale=False, unit="",
+        is_cold_path=True,
+        description=(
+            "Number of qubits per core dedicated to inter-core communication "
+            "(EPR endpoints). Capped at floor(sqrt(qubits_per_core))."
+        ),
     ),
 ]
 
@@ -192,6 +213,8 @@ NOISE_DEFAULTS = {
     "classical_link_width": 0,
     "classical_clock_freq_hz": 200e6,
     "classical_routing_cycles": 2,
+    "communication_qubits": 1,
+    "num_logical_qubits": 16,
 }
 
 # Circuit types available in the dropdown
@@ -376,4 +399,5 @@ ANALYSIS_TABS: list[dict] = [
     {"value": "pareto", "label": "Pareto"},
     {"value": "correlation", "label": "Corr."},
     {"value": "merit", "label": "Merit"},
+    {"value": "topology", "label": "Topology"},
 ]

@@ -25,6 +25,23 @@ def _utc_now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _strip_for_save(facet: dict) -> dict:
+    """Drop fields that aren't JSON-serializable from a facet dict.
+
+    ``per_qubit_data["cells"]`` is keyed by tuple cell indices and holds
+    numpy ndarrays — neither survives ``json.dumps``. Per-cell grids are
+    also large (~MB-scale) and cheaply regenerable from a fresh sweep, so
+    we omit them and keep only the lightweight axis metadata that the
+    topology view needs to recreate the slider scaffolding on load.
+    """
+    out = dict(facet)
+    pq = out.get("per_qubit_data")
+    if isinstance(pq, dict) and "cells" in pq:
+        pq = {k: v for k, v in pq.items() if k != "cells"}
+        out["per_qubit_data"] = pq
+    return out
+
+
 def collect_session(
     controls: dict,
     view: dict,
@@ -48,8 +65,14 @@ def collect_session(
             "metric_keys", "xs", "ys", "zs", "axes", "shape",
             "grid", "facets", "facet_keys",
         ):
-            if k in sweep_data:
-                sweep_block[k] = sweep_data[k]
+            if k not in sweep_data:
+                continue
+            v = sweep_data[k]
+            # Strip unserializable per-cell grids inside each facet so
+            # faceted sweeps round-trip through ``json.dumps``.
+            if k == "facets" and isinstance(v, list):
+                v = [_strip_for_save(f) if isinstance(f, dict) else f for f in v]
+            sweep_block[k] = v
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -201,19 +224,27 @@ def build_controls_dict(
     cfg_routing_algorithm: str,
     cfg_seed: int,
     cfg_dynamic_decoupling: list,
-    cfg_max_cold: int | None,
-    cfg_max_hot: int | None,
-    cfg_max_workers: int | None,
-    cfg_output_metric: str,
-    cfg_threshold_enable: list,
-    num_thresholds: int,
-    threshold_values: list,
-    threshold_colors: list,
-    noise_values: dict,
-    hot_reload: list,
+    cfg_communication_qubits: int = 1,
+    cfg_num_logical_qubits: int | None = None,
+    cfg_max_cold: int | None = None,
+    cfg_max_hot: int | None = None,
+    cfg_max_workers: int | None = None,
+    cfg_output_metric: str = "overall_fidelity",
+    cfg_threshold_enable: list | None = None,
+    num_thresholds: int = 3,
+    threshold_values: list | None = None,
+    threshold_colors: list | None = None,
+    noise_values: dict | None = None,
+    hot_reload: list | None = None,
     fom_config: dict | None = None,
 ) -> dict:
     """Assemble the schema-shaped ``controls`` dict from raw callback values."""
+    cfg_threshold_enable = cfg_threshold_enable or []
+    threshold_values = threshold_values or []
+    threshold_colors = threshold_colors or []
+    noise_values = noise_values or {}
+    hot_reload = hot_reload or []
+
     axes = []
     for i in range(int(num_metrics or 0)):
         key = dropdown_vals[i]
@@ -231,6 +262,11 @@ def build_controls_dict(
         "circuit": {
             "num_qubits": cfg_num_qubits,
             "num_cores": cfg_num_cores,
+            "communication_qubits": int(cfg_communication_qubits or 1),
+            "num_logical_qubits": int(
+                cfg_num_logical_qubits if cfg_num_logical_qubits is not None
+                else (cfg_num_qubits or 16)
+            ),
             "seed": cfg_seed,
             "circuit_type": cfg_circuit_type,
             "topology_type": cfg_topology,

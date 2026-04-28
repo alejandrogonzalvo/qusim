@@ -35,12 +35,14 @@ from gui.components import (
     _linear_marks,
     _log_marks,
     _tooltip_cfg,
+    build_topology_elements,
     make_add_metric_button,
     make_fixed_config_panel,
     make_merit_controls,
     make_merit_view_controls,
     make_performance_panel,
     make_metric_selector,
+    make_topology_view_panel,
     make_view_tab_bar,
 )
 from gui.constants import (
@@ -129,7 +131,7 @@ app = dash.Dash(
     __name__,
     external_stylesheets=[dbc.themes.FLATLY],
     assets_folder=os.path.join(os.path.dirname(__file__), "assets"),
-    title="qusim DSE",
+    title="Quadris · DSE Explorer",
     update_title=None,
     suppress_callback_exceptions=True,
 )
@@ -205,7 +207,234 @@ def _slim_sweep_for_browser(data: dict) -> dict:
             slim[k] = data[k]
     if "facet_keys" in data:
         slim["facet_keys"] = data["facet_keys"]
+    # Light per-axis metadata for the topology-view sliders (axis keys + which
+    # ones are cold).  The heavy ``cold_config``/``fixed_noise`` snapshots
+    # stay server-side under the same token.
+    pq = data.get("per_qubit_data")
+    if isinstance(pq, dict):
+        slim["per_qubit_meta"] = {
+            "axis_keys": list(pq.get("axis_keys", [])),
+            "axis_values": [list(v) for v in pq.get("axis_values", [])],
+            "shape": list(pq.get("shape", [])),
+        }
     return slim
+
+
+def _facet_options(sweep_data: dict | None) -> list[dict]:
+    """Build dropdown options for the topology facet selector.
+
+    Returns one option per facet of a faceted sweep (label = the facet's
+    human-readable categorical value, e.g. "HQA + Sabre"). Empty list for
+    non-faceted sweeps so the caller can hide the row.
+    """
+    if not isinstance(sweep_data, dict):
+        return []
+    facets = sweep_data.get("facets")
+    if not facets:
+        return []
+    facet_keys = sweep_data.get("facet_keys") or []
+    opts: list[dict] = []
+    for i, fc in enumerate(facets):
+        label_dict = fc.get("label") or {}
+        # Build "Routing: HQA + Sabre · Circuit: QFT" style label.
+        parts: list[str] = []
+        for k in facet_keys:
+            v = label_dict.get(k)
+            if v is None:
+                continue
+            cat_def = CAT_METRIC_BY_KEY.get(k)
+            disp = v
+            if cat_def:
+                disp = next(
+                    (o["label"] for o in cat_def.options if o["value"] == v), v
+                )
+            parts.append(str(disp))
+        opts.append({"label": " · ".join(parts) or f"Facet {i}", "value": i})
+    return opts
+
+
+def _facet_per_qubit_data(
+    sweep_data: dict | None, facet_idx: int | None,
+) -> dict | None:
+    """Return the per_qubit_data dict for the selected facet (or top-level).
+
+    Faceted sweeps stash per_qubit_data inside each facet entry; non-faceted
+    sweeps keep it at the top level.
+    """
+    if not isinstance(sweep_data, dict):
+        return None
+    facets = sweep_data.get("facets")
+    if facets:
+        i = int(facet_idx or 0)
+        if i < 0 or i >= len(facets):
+            i = 0
+        return facets[i].get("per_qubit_data")
+    return sweep_data.get("per_qubit_data")
+
+
+_PER_CELL_CACHE_MAX = 256
+_per_cell_cache: "OrderedDict[tuple, dict]" = OrderedDict()
+_per_cell_cache_lock = threading.Lock()
+
+
+def _per_cell_cache_key(
+    sweep_store: dict | None, facet_idx: int | None, cell_idx: tuple,
+) -> tuple | None:
+    """Build a cache key from the sweep token + facet + cell index.
+
+    Returns None when there is no token (e.g. no sweep loaded yet) so the
+    caller can fall back to direct computation without caching.
+    """
+    if not isinstance(sweep_store, dict):
+        return None
+    token = sweep_store.get("token")
+    if not token:
+        return None
+    return (token, facet_idx, tuple(cell_idx))
+
+
+def _per_cell_cache_get(key: tuple) -> dict | None:
+    with _per_cell_cache_lock:
+        hit = _per_cell_cache.get(key)
+        if hit is not None:
+            _per_cell_cache.move_to_end(key)
+        return hit
+
+
+def _per_cell_cache_put(key: tuple, value: dict) -> None:
+    with _per_cell_cache_lock:
+        _per_cell_cache[key] = value
+        _per_cell_cache.move_to_end(key)
+        while len(_per_cell_cache) > _PER_CELL_CACHE_MAX:
+            _per_cell_cache.popitem(last=False)
+
+
+def _compute_per_qubit_for_cell(
+    sweep_data: dict, cell_idx: tuple[int, ...],
+    facet_idx: int | None = None,
+) -> dict | None:
+    """Build per-qubit fidelity grids + placements for a single sweep cell.
+
+    Reads the cold-config / fixed-noise snapshot from the sweep result and
+    re-runs the engine for the requested cell.  ``cold`` axes hit the
+    engine's cache after the first hit; ``hot`` axes only re-evaluate the
+    Rust hot path (~ms).
+    """
+    import math
+    meta = _facet_per_qubit_data(sweep_data, facet_idx)
+    if not meta or "cold_config" not in meta or "fixed_noise" not in meta:
+        return None
+    cold_config = meta["cold_config"]
+    fixed_noise = meta["fixed_noise"]
+    axis_keys = meta["axis_keys"]
+    axis_values = meta["axis_values"]
+    shape = meta.get("shape", [len(v) for v in axis_values])
+
+    # Fast path: the sweep retained per-cell per-qubit grids when run with
+    # ``keep_per_qubit_grids=True``.  Look them up directly so scrubbing
+    # the topology slider never re-enters run_cold/run_hot.
+    cells = meta.get("cells")
+    if cells:
+        # Clamp the index using the same logic as the slow path so a cell
+        # past the axis tail still resolves to the last cell.
+        safe_lookup = []
+        for d, sz in enumerate(shape):
+            i = int(cell_idx[d]) if d < len(cell_idx) else 0
+            safe_lookup.append(max(0, min(i, max(0, sz - 1))))
+        cached_cell = cells.get(tuple(safe_lookup))
+        if cached_cell is not None:
+            out = dict(cached_cell)
+            out.setdefault(
+                "num_logical_qubits",
+                int(out.get("num_physical", cold_config.get("num_qubits", 0))),
+            )
+            out["cell_idx"] = tuple(safe_lookup)
+            return out
+
+    # Clamp cell_idx to valid range per axis.
+    safe_idx = []
+    for d, sz in enumerate(shape):
+        i = int(cell_idx[d]) if d < len(cell_idx) else 0
+        safe_idx.append(max(0, min(i, max(0, sz - 1))))
+
+    # Apply swept overrides to cold cfg / hot noise.
+    cfg = dict(cold_config)
+    hot_noise = dict(fixed_noise)
+    for d, key in enumerate(axis_keys):
+        v = axis_values[d][safe_idx[d]]
+        if key in DSEEngine.COLD_PATH_KEYS:
+            cfg[key] = int(v) if key in DSEEngine.INTEGER_KEYS else v
+        else:
+            hot_noise[key] = v
+    cfg["num_cores"] = min(int(cfg["num_cores"]), int(cfg["num_qubits"]))
+    if "communication_qubits" in cfg:
+        qpc = max(1, int(cfg["num_qubits"]) // max(1, int(cfg["num_cores"])))
+        cfg["communication_qubits"] = max(
+            1, min(int(cfg["communication_qubits"] or 1), math.isqrt(qpc))
+        )
+    if "num_logical_qubits" in cfg:
+        cfg["num_logical_qubits"] = max(
+            2, min(int(cfg["num_logical_qubits"]), int(cfg["num_qubits"]))
+        )
+
+    cached = _engine.run_cold(**cfg, noise=hot_noise)
+    full = _engine.run_hot(cached, hot_noise)
+    return {
+        "algorithmic_fidelity_grid": full.get("algorithmic_fidelity_grid"),
+        "routing_fidelity_grid": full.get("routing_fidelity_grid"),
+        "coherence_fidelity_grid": full.get("coherence_fidelity_grid"),
+        "placements": cached.placements,
+        "num_physical": int(cfg["num_qubits"]),
+        "num_cores": int(cfg["num_cores"]),
+        "num_logical_qubits": int(cfg.get("num_logical_qubits", cfg["num_qubits"])),
+        "communication_qubits": int(cfg.get("communication_qubits", 1)),
+        "topology_type": cfg.get("topology_type", "ring"),
+        "intracore_topology": cfg.get("intracore_topology", "all_to_all"),
+        "cell_idx": tuple(safe_idx),
+    }
+
+
+_BASE_FID_KEYS = (
+    "algorithmic_fidelity",
+    "routing_fidelity",
+    "coherence_fidelity",
+)
+
+
+def _per_logical_fidelity(
+    cell_data: dict, metric_key: str = "routing_fidelity",
+) -> np.ndarray:
+    """Geomean fidelity per logical qubit across all DAG layers.
+
+    Indexed by logical qubit so the result is independent of which physical
+    layout the routing algorithm chose (HQA's placements live in the
+    num_qubits coupling-map space, TeleSABRE's in the slack-expanded device
+    space — both have the same logical qubit count).  The topology view
+    projects this onto the per-core "data qubit" slots in id order.
+
+    ``metric_key="overall_fidelity"`` returns the elementwise product of
+    the algorithmic / routing / coherence grids before the geomean,
+    matching the scalar overall fidelity definition.
+    """
+    n_log_default = max(1, int(cell_data.get("num_logical_qubits", 1)))
+    if metric_key == "overall_fidelity":
+        grids = [cell_data.get(f"{k}_grid") for k in _BASE_FID_KEYS]
+        grids = [g for g in grids if g is not None]
+        if not grids:
+            return np.ones(n_log_default)
+        arr = np.ones_like(np.asarray(grids[0], dtype=np.float64))
+        for g in grids:
+            arr = arr * np.asarray(g, dtype=np.float64)
+    else:
+        grid = cell_data.get(f"{metric_key}_grid")
+        if grid is None:
+            return np.ones(n_log_default)
+        arr = np.asarray(grid, dtype=np.float64)
+    if arr.ndim != 2 or arr.size == 0:
+        return np.ones(n_log_default)
+    EPS = 1e-12
+    arr = np.clip(arr, EPS, 1.0)
+    return np.exp(np.log(arr).mean(axis=0))
 
 # Per-user progress state — keyed by browser session id (sid).
 # Sweeps are serialised by ``sweep_lock``, but multiple users may poll
@@ -287,20 +516,16 @@ def _topbar() -> html.Div:
         },
         children=[
             html.Div(
-                style={"display": "flex", "alignItems": "center", "gap": "10px"},
+                className="quadris-lockup",
                 children=[
-                    html.Span(
-                        "qusim",
-                        style={
-                            "fontSize": "18px",
-                            "fontWeight": "700",
-                            "color": COLORS["accent"],
-                        },
+                    html.Img(
+                        src="/assets/quadris-mark.svg",
+                        className="quadris-mark",
+                        style={"width": "22px", "height": "22px"},
+                        alt="Quadris",
                     ),
-                    html.Span(
-                        "DSE Explorer",
-                        style={"fontSize": "14px", "color": COLORS["text_muted"]},
-                    ),
+                    html.Span("quadris", className="quadris-wordmark"),
+                    html.Span("DSE Explorer", className="quadris-submark"),
                 ],
             ),
             html.Div(
@@ -382,18 +607,9 @@ def _topbar() -> html.Div:
                     html.Button(
                         "▶  Run",
                         id="run-btn",
+                        className="run-btn",
                         n_clicks=0,
-                        style={
-                            "background": COLORS["accent"],
-                            "color": "#fff",
-                            "border": "none",
-                            "borderRadius": "6px",
-                            "padding": "6px 20px",
-                            "fontWeight": "600",
-                            "fontSize": "13px",
-                            "cursor": "pointer",
-                            "display": "none",
-                        },
+                        style={"display": "none"},
                     ),
                 ],
             ),
@@ -538,6 +754,7 @@ def _center_panel() -> html.Div:
                             },
                         },
                     ),
+                    make_topology_view_panel(),
                     html.Div(
                         id="sweep-progress-overlay",
                         style={"display": "none"},
@@ -642,59 +859,42 @@ def _right_panel() -> html.Div:
             "minWidth": "250px",
             "background": COLORS["bg"],
             "borderLeft": f"1px solid {COLORS['border']}",
-            "padding": "14px 12px 0",
             "display": "flex",
             "flexDirection": "column",
             "overflow": "hidden",
         },
         children=[
             html.Div(
-                "Configuration",
-                style={
-                    "fontSize": "11px",
-                    "fontWeight": "700",
-                    "textTransform": "uppercase",
-                    "letterSpacing": "0.08em",
-                    "color": COLORS["accent"],
-                    "marginBottom": "8px",
-                    "paddingBottom": "6px",
-                    "borderBottom": f"1px solid {COLORS['border']}",
-                },
+                style={"padding": "14px 12px 0"},
+                children=[
+                    html.Div(
+                        "Configuration",
+                        style={
+                            "fontSize": "11px",
+                            "fontWeight": "700",
+                            "textTransform": "uppercase",
+                            "letterSpacing": "0.08em",
+                            "color": COLORS["accent"],
+                            "marginBottom": "8px",
+                            "paddingBottom": "6px",
+                            "borderBottom": f"1px solid {COLORS['border']}",
+                        },
+                    ),
+                ],
             ),
             html.Div(
                 id="fixed-config-container",
                 className="config-scroll",
                 style={
-                    "flex": "1 1 60%",
+                    "flex": "1 1 auto",
                     "overflow": "auto",
                     "minHeight": "80px",
-                    "paddingBottom": "8px",
+                    "padding": "0 12px 12px",
                 },
                 children=[make_fixed_config_panel()],
             ),
-            html.Div(
-                id="right-panel-divider",
-                title="Drag to resize",
-                style={
-                    "height": "6px",
-                    "flexShrink": "0",
-                    "margin": "4px -12px",
-                    "background": COLORS["border"],
-                    "cursor": "row-resize",
-                    "userSelect": "none",
-                },
-            ),
-            html.Div(
-                id="performance-container",
-                className="config-scroll",
-                style={
-                    "flex": "1 1 40%",
-                    "overflow": "auto",
-                    "minHeight": "60px",
-                    "paddingBottom": "12px",
-                },
-                children=[make_performance_panel()],
-            ),
+            # Sweep Budget — panel-level footer, always visible across tabs.
+            make_performance_panel(),
         ],
     )
 
@@ -978,7 +1178,12 @@ from gui.constants import SWEEPABLE_METRICS as _SM
 
 @app.callback(
     [Output(f"noise-row-{m.key}", "style") for m in _SM]
-    + [Output("cfg-row-num-qubits", "style"), Output("cfg-row-num-cores", "style")]
+    + [
+        Output("cfg-row-num-qubits", "style"),
+        Output("cfg-row-num-cores", "style"),
+        Output("cfg-row-communication-qubits", "style"),
+        Output("cfg-row-num-logical-qubits", "style"),
+    ]
     + [Output(f"cfg-row-cat-{cat.key}", "style") for cat in CATEGORICAL_METRICS],
     *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
     Input("num-metrics-store", "data"),
@@ -996,10 +1201,12 @@ def toggle_noise_rows(*args):
     ]
     qubits_style = {"display": "none"} if "num_qubits" in swept else {}
     cores_style = {"display": "none"} if "num_cores" in swept else {}
+    comm_style = {"display": "none"} if "communication_qubits" in swept else {}
+    logi_style = {"display": "none"} if "num_logical_qubits" in swept else {}
     cat_styles = [
         {"display": "none"} if cat.key in swept else {} for cat in CATEGORICAL_METRICS
     ]
-    return noise_styles + [qubits_style, cores_style] + cat_styles
+    return noise_styles + [qubits_style, cores_style, comm_style, logi_style] + cat_styles
 
 
 # ---------------------------------------------------------------------------
@@ -1225,6 +1432,8 @@ _SIM_INPUTS = [
     Input("cfg-routing-algorithm", "value"),
     Input("cfg-num-qubits", "value"),
     Input("cfg-num-cores", "value"),
+    Input("cfg-communication-qubits", "value"),
+    Input("cfg-num-logical-qubits", "value"),
     Input("cfg-seed", "value"),
     Input("cfg-dynamic-decoupling", "value"),
     Input("cfg-max-cold", "value"),
@@ -1304,6 +1513,8 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     State("cfg-circuit-type", "value"),
     State("cfg-num-qubits", "value"),
     State("cfg-num-cores", "value"),
+    State("cfg-communication-qubits", "value"),
+    State("cfg-num-logical-qubits", "value"),
     State("cfg-topology", "value"),
     State("cfg-intracore-topology", "value"),
     State("cfg-placement", "value"),
@@ -1348,6 +1559,8 @@ def run_sweep(
     circuit_type = all_args[idx]; idx += 1
     num_qubits = all_args[idx]; idx += 1
     num_cores = all_args[idx]; idx += 1
+    communication_qubits = all_args[idx]; idx += 1
+    num_logical_qubits = all_args[idx]; idx += 1
     topology = all_args[idx]; idx += 1
     intracore_topology = all_args[idx]; idx += 1
     placement = all_args[idx]; idx += 1
@@ -1431,10 +1644,14 @@ def run_sweep(
                 _ERROR_BANNER_HIDDEN_STYLE,
             )
 
+        _phys = int(num_qubits or 16)
+        _logi = int(num_logical_qubits) if num_logical_qubits else _phys
         cold_config = {
             "circuit_type": circuit_type or "qft",
-            "num_qubits": int(num_qubits or 16),
+            "num_qubits": _phys,
+            "num_logical_qubits": max(2, min(_logi, _phys)),
             "num_cores": int(num_cores or 4),
+            "communication_qubits": int(communication_qubits or 1),
             "topology_type": topology or "ring",
             "placement_policy": placement or "random",
             "seed": int(seed or 42),
@@ -1469,6 +1686,7 @@ def run_sweep(
                 cold_config=cold_config,
                 progress_callback=_update_progress,
                 parallel=True,
+                keep_per_qubit_grids=True,
                 max_workers=int(max_workers) if max_workers else None,
                 max_cold=int(max_cold) if max_cold else None,
                 max_hot=int(max_hot) if max_hot else None,
@@ -1573,6 +1791,7 @@ def run_sweep(
                     cold_config=fc,
                     progress_callback=_faceted_progress,
                     parallel=True,
+                    keep_per_qubit_grids=True,
                     max_workers=int(max_workers) if max_workers else None,
                     max_cold=int(max_cold) if max_cold else None,
                     max_hot=int(max_hot) if max_hot else None,
@@ -1849,6 +2068,31 @@ def replot_on_output_change(
 # Callbacks: update range labels and reconfigure sliders when dropdown changes
 # ---------------------------------------------------------------------------
 
+
+def _arch_clamped_max(
+    metric_key: str | None,
+    slider_min: float,
+    slider_max: float,
+    num_qubits: float | int | None,
+    num_cores: float | int | None,
+) -> float:
+    """Cap a sweep slider's max to the architectural limit, if any.
+
+    Currently only ``communication_qubits`` has an architectural cap:
+    ``floor(sqrt(qubits_per_core))``.  The engine clamps anyway, but
+    capping the *slider* prevents the user from spending sweep budget on
+    cells that all collapse onto the clamp.
+    """
+    import math as _math
+    if metric_key != "communication_qubits":
+        return slider_max
+    nq = int(num_qubits) if num_qubits else 16
+    nc = max(1, int(num_cores) if num_cores else 1)
+    qpc = max(1, nq // nc)
+    cap = max(1, _math.isqrt(qpc))
+    return float(min(slider_max, max(slider_min, float(cap))))
+
+
 for _idx in range(MAX_METRICS):
 
     @app.callback(
@@ -1889,38 +2133,95 @@ for _idx in range(MAX_METRICS):
         Output(f"metric-slider-{_idx}", "tooltip"),
         Input(f"metric-dropdown-{_idx}", "value"),
         State("suppress-cascade", "data"),
+        State("cfg-num-qubits", "value"),
+        State("cfg-num-cores", "value"),
         prevent_initial_call=True,
     )
-    def _reconfigure_slider(metric_key, suppress, _i=_idx):
+    def _reconfigure_slider(metric_key, suppress, num_qubits, num_cores, _i=_idx):
         no = dash.no_update
         if not metric_key:
             return (no, no, no, no, no, no)
         m = METRIC_BY_KEY.get(metric_key)
         if m is None:
             return (no, no, no, no, no, no)
+        # Clamp the registry max to the architectural limit when the metric
+        # has one (comm_qubits is bounded by floor(sqrt(qubits/cores))).
+        # Without this the user can sweep [1, 16] but values >= clamp all
+        # collapse to the clamp inside the engine, wasting cells.
+        smin, smax = float(m.slider_min), float(m.slider_max)
+        smax = _arch_clamped_max(metric_key, smin, smax, num_qubits, num_cores)
         marks = (
-            _log_marks(m.slider_min, m.slider_max, m.unit)
+            _log_marks(smin, smax, m.unit)
             if m.log_scale
-            else _linear_marks(m.slider_min, m.slider_max, unit=m.unit)
+            else _linear_marks(smin, smax, unit=m.unit)
         )
         if m.is_cold_path:
             step = 2 if m.key == "num_qubits" else 1
         else:
-            step = (m.slider_max - m.slider_min) / 200
+            step = (smax - smin) / 200
         # Preserve the slider value when the dropdown change came from a
         # session load (suppress=True); the load callback already wrote the
         # restored value and we'd otherwise clobber it with defaults.
         # ``_toggle_slider_checklist`` owns the suppress-cascade reset — one
         # writer per dropdown trigger is enough.
-        value = no if suppress else [m.slider_default_low, m.slider_default_high]
+        if suppress:
+            value = no
+        else:
+            lo = max(smin, min(float(m.slider_default_low), smax))
+            hi = max(lo, min(float(m.slider_default_high), smax))
+            value = [lo, hi]
         return (
-            m.slider_min,
-            m.slider_max,
+            smin,
+            smax,
             step,
             marks,
             value,
             _tooltip_cfg(m.log_scale, m.unit, always_visible=True),
         )
+
+    # Re-clamp the slider's max when the architecture changes.  Only fires
+    # for axes whose current metric has an architectural cap (currently:
+    # comm_qubits, capped by floor(sqrt(qubits/cores))).  Preserves the
+    # user's range — only clamps the value if it now exceeds the cap.
+    @app.callback(
+        Output(f"metric-slider-{_idx}", "max", allow_duplicate=True),
+        Output(f"metric-slider-{_idx}", "marks", allow_duplicate=True),
+        Output(f"metric-slider-{_idx}", "value", allow_duplicate=True),
+        Input("cfg-num-qubits", "value"),
+        Input("cfg-num-cores", "value"),
+        State(f"metric-dropdown-{_idx}", "value"),
+        State(f"metric-slider-{_idx}", "value"),
+        State(f"metric-slider-{_idx}", "max"),
+        prevent_initial_call=True,
+    )
+    def _reclamp_axis_to_arch(
+        num_qubits, num_cores, metric_key, current_value, current_max,
+        _i=_idx,
+    ):
+        no = dash.no_update
+        if not metric_key:
+            return (no, no, no)
+        m = METRIC_BY_KEY.get(metric_key)
+        if m is None:
+            return (no, no, no)
+        smin = float(m.slider_min)
+        new_max = _arch_clamped_max(metric_key, smin, float(m.slider_max), num_qubits, num_cores)
+        if current_max is not None and abs(float(current_max) - new_max) < 1e-9:
+            # No-op: cap unchanged for the current architecture.
+            return (no, no, no)
+        marks = (
+            _log_marks(smin, new_max, m.unit)
+            if m.log_scale
+            else _linear_marks(smin, new_max, unit=m.unit)
+        )
+        if isinstance(current_value, (list, tuple)) and len(current_value) == 2:
+            lo = max(smin, min(float(current_value[0]), new_max))
+            hi = max(lo, min(float(current_value[1]), new_max))
+            new_value = [lo, hi]
+        else:
+            new_value = no
+        return (new_max, marks, new_value)
+
 
 # ---------------------------------------------------------------------------
 # Callback: toggle slider / checklist when dropdown selects categorical
@@ -2118,6 +2419,8 @@ def export_csv(n_clicks, sweep_store):
     State("cfg-circuit-type", "value"),
     State("cfg-num-qubits", "value"),
     State("cfg-num-cores", "value"),
+    State("cfg-communication-qubits", "value"),
+    State("cfg-num-logical-qubits", "value"),
     State("cfg-topology", "value"),
     State("cfg-intracore-topology", "value"),
     State("cfg-placement", "value"),
@@ -2160,6 +2463,8 @@ def on_save_session(n_clicks, *all_args):
     cfg_circuit_type = all_args[idx]; idx += 1
     cfg_num_qubits = all_args[idx]; idx += 1
     cfg_num_cores = all_args[idx]; idx += 1
+    cfg_communication_qubits = all_args[idx]; idx += 1
+    cfg_num_logical_qubits = all_args[idx]; idx += 1
     cfg_topology = all_args[idx]; idx += 1
     cfg_intracore_topology = all_args[idx]; idx += 1
     cfg_placement = all_args[idx]; idx += 1
@@ -2198,6 +2503,8 @@ def on_save_session(n_clicks, *all_args):
         cfg_circuit_type=cfg_circuit_type,
         cfg_num_qubits=cfg_num_qubits,
         cfg_num_cores=cfg_num_cores,
+        cfg_communication_qubits=cfg_communication_qubits,
+        cfg_num_logical_qubits=cfg_num_logical_qubits,
         cfg_topology=cfg_topology,
         cfg_intracore_topology=cfg_intracore_topology,
         cfg_placement=cfg_placement,
@@ -2249,6 +2556,8 @@ _CFG_OUTPUTS = [
     Output("cfg-circuit-type", "value", allow_duplicate=True),
     Output("cfg-num-qubits", "value", allow_duplicate=True),
     Output("cfg-num-cores", "value", allow_duplicate=True),
+    Output("cfg-communication-qubits", "value", allow_duplicate=True),
+    Output("cfg-num-logical-qubits", "value", allow_duplicate=True),
     Output("cfg-topology", "value", allow_duplicate=True),
     Output("cfg-intracore-topology", "value", allow_duplicate=True),
     Output("cfg-placement", "value", allow_duplicate=True),
@@ -2345,6 +2654,8 @@ def on_load_session(contents, filename):
         circuit["circuit_type"],
         circuit["num_qubits"],
         circuit["num_cores"],
+        int(circuit.get("communication_qubits", 1) or 1),
+        int(circuit.get("num_logical_qubits", circuit["num_qubits"]) or circuit["num_qubits"]),
         circuit["topology_type"],
         circuit["intracore_topology"],
         circuit["placement"],
@@ -2522,15 +2833,7 @@ for _ci in range(5):
 app.clientside_callback(
     """function(hotReload) {
         var on = hotReload && hotReload.indexOf("on") !== -1;
-        return {"background": on ? "transparent" : "#5B8DEF",
-                "color": on ? "transparent" : "#fff",
-                "border": "none",
-                "borderRadius": "6px",
-                "padding": "6px 20px",
-                "fontWeight": "600",
-                "fontSize": "13px",
-                "cursor": on ? "default" : "pointer",
-                "display": on ? "none" : "inline-block"};
+        return {"display": on ? "none" : "inline-flex"};
     }""",
     Output("run-btn", "style"),
     Input("hot-reload-toggle", "value"),
@@ -3135,6 +3438,710 @@ app.clientside_callback(
     Input("session-loaded-tick", "data"),
     prevent_initial_call=True,
 )
+
+
+# ---------------------------------------------------------------------------
+# Callback: chevron toggle for OUTPUT / SWEEP BUDGET collapsible sections
+# ---------------------------------------------------------------------------
+
+
+def _make_section_toggle(section_id: str, default_open: bool = True) -> None:
+    """Wire a header click → body display + chevron flip for one section."""
+    body_id = f"{section_id}-body"
+    chevron_id = f"{section_id}-chevron"
+    header_id = f"{section_id}-header"
+
+    @app.callback(
+        Output(body_id, "style"),
+        Output(chevron_id, "children"),
+        Input(header_id, "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _toggle(n_clicks: int | None):
+        # n_clicks-based parity: even = initial state, odd = toggled.
+        is_open = default_open if not n_clicks else (
+            (n_clicks % 2 == 0) if default_open else (n_clicks % 2 == 1)
+        )
+        if is_open:
+            return {"display": "block", "padding": "0 14px 12px"}, "▾"
+        return {"display": "none", "padding": "0 14px 12px"}, "▸"
+
+
+_make_section_toggle("sweep-budget-section", default_open=False)
+
+
+# Sweep Budget summary strip — shown in the always-visible footer header.
+# Format: "<cold> cold · <hot> hot · <workers>w" (e.g. "64 cold · 5,000 hot · 1w").
+app.clientside_callback(
+    """function(cold, hot, workers) {
+        var fmt = function(n) {
+            if (n === null || n === undefined || isNaN(n)) return "—";
+            return Number(n).toLocaleString();
+        };
+        var c = (cold === null || cold === undefined) ? "—" : Number(cold);
+        var h = (hot  === null || hot  === undefined) ? "—" : Number(hot);
+        var w = (workers === null || workers === undefined) ? "—" : Number(workers);
+        return fmt(c) + " cold · " + fmt(h) + " hot · " + w + "w";
+    }""",
+    Output("sweep-budget-summary", "children"),
+    Input("cfg-max-cold", "value"),
+    Input("cfg-max-hot", "value"),
+    Input("cfg-max-workers", "value"),
+    prevent_initial_call=False,
+)
+
+
+# ---------------------------------------------------------------------------
+# Bidirectional sync: slider value <-> editable value-chip input
+# ---------------------------------------------------------------------------
+# Each `slider_row()` renders a slider with id `X` and an input with id
+# `X-input`. The input shows the current value (formatted, parseable) and
+# can be edited; the slider updates as the user drags. Clientside sync
+# keeps both in step. Loops are avoided by writing only the non-triggered
+# output and trusting Dash's value-equality dedup on the trigger side.
+
+_SLIDER_INPUT_PAIRS: list[tuple[str, bool]] = []
+
+
+def _bind_slider_input(slider_id: str, log_scale: bool = False) -> None:
+    """Wire two-way sync between a slider and its `<id>-input` chip."""
+    input_id = f"{slider_id}-input"
+    if log_scale:
+        # Slider position is the log10 exponent. Input shows the real value.
+        slider_to_input = (
+            "function(sv) { "
+            "  if (sv === null || sv === undefined || isNaN(sv)) "
+            "    return window.dash_clientside.no_update; "
+            "  var v = Math.pow(10, sv); "
+            "  if (v < 1e-3 || v >= 1e6) return v.toExponential(2); "
+            "  if (v < 1) return v.toPrecision(3); "
+            "  if (Math.abs(v - Math.round(v)) < 1e-9) return String(Math.round(v)); "
+            "  return v.toPrecision(4); "
+            "}"
+        )
+        input_to_slider = (
+            "function(iv) { "
+            "  if (iv === null || iv === undefined || iv === '') "
+            "    return window.dash_clientside.no_update; "
+            "  var n = parseFloat(iv); "
+            "  if (!isFinite(n) || n <= 0) return window.dash_clientside.no_update; "
+            "  return Math.log10(n); "
+            "}"
+        )
+    else:
+        slider_to_input = (
+            "function(sv) { "
+            "  if (sv === null || sv === undefined || isNaN(sv)) "
+            "    return window.dash_clientside.no_update; "
+            "  if (Math.abs(sv - Math.round(sv)) < 1e-9) return String(Math.round(sv)); "
+            "  return String(Number(sv.toPrecision(6))); "
+            "}"
+        )
+        input_to_slider = (
+            "function(iv) { "
+            "  if (iv === null || iv === undefined || iv === '') "
+            "    return window.dash_clientside.no_update; "
+            "  var n = parseFloat(iv); "
+            "  if (!isFinite(n)) return window.dash_clientside.no_update; "
+            "  return n; "
+            "}"
+        )
+
+    app.clientside_callback(
+        slider_to_input,
+        Output(input_id, "value", allow_duplicate=True),
+        Input(slider_id, "value"),
+        prevent_initial_call=True,
+    )
+    app.clientside_callback(
+        input_to_slider,
+        Output(slider_id, "value", allow_duplicate=True),
+        Input(input_id, "value"),
+        prevent_initial_call=True,
+    )
+    _SLIDER_INPUT_PAIRS.append((slider_id, log_scale))
+
+
+# Right-panel sliders that get a value-chip input.
+from gui.constants import SWEEPABLE_METRICS as _SWEEPABLE_METRICS
+
+_bind_slider_input("cfg-num-logical-qubits", log_scale=False)
+_bind_slider_input("cfg-num-qubits", log_scale=False)
+_bind_slider_input("cfg-num-cores", log_scale=False)
+_bind_slider_input("cfg-communication-qubits", log_scale=False)
+for _m in _SWEEPABLE_METRICS:
+    _bind_slider_input(f"noise-{_m.key}", log_scale=_m.log_scale)
+
+
+# ---------------------------------------------------------------------------
+# Callback: dynamic max for cfg-num-logical-qubits = cfg-num-qubits (physical)
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("cfg-num-logical-qubits", "max"),
+    Output("cfg-num-logical-qubits", "marks"),
+    Output("cfg-num-logical-qubits", "value", allow_duplicate=True),
+    Input("cfg-num-qubits", "value"),
+    State("cfg-num-logical-qubits", "value"),
+    prevent_initial_call=True,
+)
+def _clamp_logical_to_physical(num_qubits, current_logical):
+    from gui.components import _minmax_marks
+    phys = int(num_qubits) if num_qubits else 16
+    phys = max(2, phys)
+    cur = int(current_logical) if current_logical else phys
+    clamped = max(2, min(cur, phys))
+    return phys, _minmax_marks(2, phys, log_scale=False), clamped
+
+
+# ---------------------------------------------------------------------------
+# Callback: dynamic max for cfg-communication-qubits = floor(sqrt(N/Cores))
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("cfg-communication-qubits", "max"),
+    Output("cfg-communication-qubits", "marks"),
+    Output("cfg-communication-qubits", "value", allow_duplicate=True),
+    Input("cfg-num-qubits", "value"),
+    Input("cfg-num-cores", "value"),
+    State("cfg-communication-qubits", "value"),
+    prevent_initial_call=True,
+)
+def _update_comm_qubits_bound(num_qubits, num_cores, current):
+    import math
+    from gui.components import _minmax_marks
+    nq = int(num_qubits) if num_qubits else 16
+    nc = max(1, int(num_cores) if num_cores else 1)
+    qpc = max(1, nq // nc)
+    new_max = max(1, math.isqrt(qpc))
+    cur = int(current) if current else 1
+    clamped = max(1, min(cur, new_max))
+    return new_max, _minmax_marks(1, new_max, log_scale=False), clamped
+
+
+# ---------------------------------------------------------------------------
+# Callback: Topology view — toggle visibility against the main Plotly graph
+# ---------------------------------------------------------------------------
+
+
+_TOPOLOGY_HIDDEN_STYLE = {
+    "display": "none",
+    "position": "absolute",
+    "top": "0", "left": "0", "right": "0", "bottom": "0",
+    "background": COLORS["bg"],
+    "zIndex": 5,
+}
+_TOPOLOGY_VISIBLE_STYLE = {**_TOPOLOGY_HIDDEN_STYLE, "display": "block"}
+
+
+@app.callback(
+    Output("topology-view-container", "style"),
+    Output("main-plot", "style"),
+    Input("view-type-store", "data"),
+    prevent_initial_call=False,
+)
+def _toggle_topology_view(view_type):
+    main_style_visible = {"flex": "1", "minHeight": "0", "height": "100%"}
+    main_style_hidden = {**main_style_visible, "visibility": "hidden"}
+    if view_type == "topology":
+        return _TOPOLOGY_VISIBLE_STYLE, main_style_hidden
+    return _TOPOLOGY_HIDDEN_STYLE, main_style_visible
+
+
+# ---------------------------------------------------------------------------
+# Callback: Topology view — initialise per-axis sliders from sweep result
+# ---------------------------------------------------------------------------
+
+
+def _human_axis_value(axis_key: str, raw_val) -> str:
+    """Format a swept axis value for the slider read-out."""
+    metric = METRIC_BY_KEY.get(axis_key)
+    if metric is None:
+        return str(raw_val)
+    try:
+        v = float(raw_val)
+    except (TypeError, ValueError):
+        return str(raw_val)
+    unit = metric.unit
+    if metric.is_cold_path or not metric.log_scale:
+        if v == int(v):
+            return f"{int(v)}{(' ' + unit) if unit else ''}"
+        return f"{v:.3f}{(' ' + unit) if unit else ''}"
+    # Hot-path log axes have already been materialised by ``np.logspace``
+    # — values are physical magnitudes, not exponents.
+    if unit == "ns":
+        if v >= 1e6:
+            return f"{v/1e6:.2f} ms"
+        if v >= 1e3:
+            return f"{v/1e3:.2f} µs"
+        return f"{v:.0f} ns"
+    if unit == "Hz":
+        if v >= 1e9:
+            return f"{v/1e9:.2f} GHz"
+        if v >= 1e6:
+            return f"{v/1e6:.2f} MHz"
+        return f"{v:.0f} Hz"
+    return f"{v:.3g}"
+
+
+_FACET_ROW_HIDDEN = {"display": "none"}
+_FACET_ROW_VISIBLE = {
+    "display": "flex",
+    "alignItems": "center",
+    "gap": "10px",
+    "marginBottom": "10px",
+}
+
+
+@app.callback(
+    Output("topology-sweep-controls", "style"),
+    Output("topology-facet-row", "style"),
+    Output("topology-facet-label", "children"),
+    Output("topology-facet-selector", "options"),
+    Output("topology-facet-selector", "value"),
+    *[Output({"type": "topology-axis-row", "index": i}, "style") for i in range(MAX_METRICS)],
+    *[Output({"type": "topology-axis-slider", "index": i}, "max") for i in range(MAX_METRICS)],
+    *[Output({"type": "topology-axis-slider", "index": i}, "value") for i in range(MAX_METRICS)],
+    *[Output({"type": "topology-axis-slider", "index": i}, "marks") for i in range(MAX_METRICS)],
+    *[Output({"type": "topology-axis-label", "index": i}, "children") for i in range(MAX_METRICS)],
+    Input("sweep-result-store", "data"),
+    Input("num-metrics-store", "data"),
+    prevent_initial_call=False,
+)
+def _init_topology_sliders(sweep_store, num_metrics):
+    """Reveal one slider per active sweep axis after a sweep.
+
+    Visible count is clamped to ``num_metrics`` (the live left-sidebar
+    axis count) so axes the user has just removed disappear from the
+    topology panel even before the next sweep runs.  Adding axes keeps
+    the new row hidden until the next sweep populates data for it.
+    """
+    panel_hidden = {"display": "none"}
+    panel_visible = {
+        "display": "block",
+        "position": "absolute", "top": "8px", "left": "8px", "zIndex": 10,
+        "background": COLORS["surface"],
+        "border": f"1px solid {COLORS['border']}",
+        "borderRadius": "6px",
+        "padding": "8px 10px",
+        "minWidth": "320px", "maxWidth": "420px", "fontSize": "11px",
+    }
+
+    full = _get_sweep(sweep_store) if sweep_store else None
+    facet_opts = _facet_options(full)
+    facet_keys = (full.get("facet_keys") if isinstance(full, dict) else None) or []
+    facet_label = ""
+    if facet_keys:
+        cat_def = CAT_METRIC_BY_KEY.get(facet_keys[0])
+        facet_label = cat_def.label if cat_def else facet_keys[0]
+    # Facets store per_qubit_data inside each entry; non-faceted sweeps keep
+    # it at the top level.  Use facet 0 as the canonical source for axis
+    # metadata since all facets share the same numeric sweep grid.
+    pq = _facet_per_qubit_data(full, 0 if facet_opts else None)
+    if not pq or not pq.get("axis_keys"):
+        return (
+            panel_hidden,
+            _FACET_ROW_HIDDEN, "", [], None,
+            *([{"display": "none"}] * MAX_METRICS),
+            *([1] * MAX_METRICS),
+            *([0] * MAX_METRICS),
+            *([{}] * MAX_METRICS),
+            *([""] * MAX_METRICS),
+        )
+
+    axis_keys = pq["axis_keys"]
+    axis_values = pq.get("axis_values", [])
+    shape = pq.get("shape", [len(v) for v in axis_values])
+    mark_style = {"fontSize": "10px", "color": COLORS["text_muted"]}
+    visible = min(len(axis_keys), int(num_metrics or len(axis_keys)))
+    row_styles: list = []
+    maxes: list = []
+    values: list = []
+    marks_out: list = []
+    labels: list = []
+    for d in range(MAX_METRICS):
+        if d < visible:
+            row_styles.append({})
+            sz = max(1, int(shape[d]))
+            maxes.append(max(0, sz - 1))
+            values.append(0)
+            # End-marks formatted as actual axis magnitudes (e.g. "1 µs", "10 ms").
+            if sz > 1 and d < len(axis_values) and len(axis_values[d]) >= 2:
+                lo = _human_axis_value(axis_keys[d], axis_values[d][0])
+                hi = _human_axis_value(axis_keys[d], axis_values[d][-1])
+                marks_out.append({
+                    0: {"label": lo, "style": mark_style},
+                    sz - 1: {"label": hi, "style": mark_style},
+                })
+            elif sz == 1 and d < len(axis_values) and axis_values[d]:
+                only = _human_axis_value(axis_keys[d], axis_values[d][0])
+                marks_out.append({0: {"label": only, "style": mark_style}})
+            else:
+                marks_out.append({})
+            metric = METRIC_BY_KEY.get(axis_keys[d])
+            label = metric.label if metric else axis_keys[d]
+            cold_tag = " (cold)" if metric and metric.is_cold_path else ""
+            labels.append(f"{label}{cold_tag}")
+        else:
+            row_styles.append({"display": "none"})
+            maxes.append(1)
+            values.append(0)
+            marks_out.append({})
+            labels.append("")
+
+    facet_row_style = _FACET_ROW_VISIBLE if facet_opts else _FACET_ROW_HIDDEN
+    facet_default = facet_opts[0]["value"] if facet_opts else None
+    return (
+        panel_visible,
+        facet_row_style,
+        facet_label,
+        facet_opts,
+        facet_default,
+        *row_styles,
+        *maxes,
+        *values,
+        *marks_out,
+        *labels,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Callback: keep the per-axis value read-outs in sync with the slider value
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    *[Output({"type": "topology-axis-value", "index": i}, "children") for i in range(MAX_METRICS)],
+    *[Input({"type": "topology-axis-slider", "index": i}, "value") for i in range(MAX_METRICS)],
+    Input("topology-facet-selector", "value"),
+    State("sweep-result-store", "data"),
+    prevent_initial_call=False,
+)
+def _topology_axis_value_labels(*args):
+    slider_vals = list(args[:MAX_METRICS])
+    facet_idx = args[MAX_METRICS]
+    sweep_store = args[MAX_METRICS + 1]
+    full = _get_sweep(sweep_store) if sweep_store else None
+    pq = _facet_per_qubit_data(full, facet_idx)
+    if not pq or not pq.get("axis_keys"):
+        return [""] * MAX_METRICS
+    axis_keys = pq["axis_keys"]
+    axis_values = pq.get("axis_values", [])
+    out: list[str] = []
+    for d in range(MAX_METRICS):
+        if d < len(axis_keys) and d < len(axis_values):
+            i = int(slider_vals[d] or 0)
+            i = max(0, min(i, len(axis_values[d]) - 1))
+            raw = axis_values[d][i]
+            out.append(_human_axis_value(axis_keys[d], raw))
+        else:
+            out.append("")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Callback: Topology view — rebuild Cytoscape elements (structure + overlay)
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("topology-cyto", "elements"),
+    Input("cfg-num-qubits", "value"),
+    Input("cfg-num-cores", "value"),
+    Input("cfg-communication-qubits", "value"),
+    Input("cfg-topology", "value"),
+    Input("cfg-intracore-topology", "value"),
+    Input("topology-overlay-metric", "value"),
+    Input("topology-facet-selector", "value"),
+    Input({"type": "topology-axis-slider", "index": ALL}, "value"),
+    Input("sweep-result-store", "data"),
+    prevent_initial_call=False,
+)
+def _rebuild_topology_graph(
+    num_qubits, num_cores, comm_qubits, topology, intracore_topology,
+    overlay_metric, facet_idx, axis_slider_vals, sweep_store,
+):
+    def _build_default_elements() -> list:
+        return build_topology_elements(
+            num_cores=num_cores or 1,
+            num_qubits=num_qubits or 16,
+            communication_qubits=comm_qubits or 1,
+            topology=topology or "ring",
+            intracore_topology=intracore_topology or "all_to_all",
+        )
+
+    def _clear_fidelity(els: list) -> list:
+        # Cytoscape diff-merges node data on element updates, so a previous
+        # overlay's ``fidelity`` field can persist on a node that we no
+        # longer want coloured.  Setting the field to ``None`` makes the
+        # ``node[fidelity]`` stylesheet selector miss, falling back to the
+        # default ``.data`` grey.
+        for el in els:
+            d = el.get("data", {})
+            if d.get("qtype") == "data":
+                d["fidelity"] = None
+                d["fid_algorithmic"] = None
+                d["fid_routing"] = None
+                d["fid_coherence"] = None
+                d["fid_overall"] = None
+                d["logical_qubit"] = None
+        return els
+
+    full = _get_sweep(sweep_store) if sweep_store else None
+    pq = _facet_per_qubit_data(full, facet_idx)
+
+    if not pq or not pq.get("axis_keys"):
+        # No active sweep cell: graph follows the live right-sidebar config.
+        return _clear_fidelity(_build_default_elements())
+
+    cell_idx = tuple(int(v or 0) for v in axis_slider_vals[: len(pq["axis_keys"])])
+
+    # Memoize per (sweep token, facet, cell_idx). The sweep already paid the
+    # compile cost for every cell during the run; keeping the per-qubit
+    # output here means scrubbing through the same cells never re-enters
+    # the engine. LRU eviction caps memory at _PER_CELL_CACHE_MAX entries.
+    cache_key = _per_cell_cache_key(sweep_store, facet_idx, cell_idx)
+    cell = _per_cell_cache_get(cache_key) if cache_key is not None else None
+    if cell is None:
+        try:
+            cell = _compute_per_qubit_for_cell(full, cell_idx, facet_idx=facet_idx)
+        except Exception:
+            cell = None
+        if cell is not None and cache_key is not None:
+            _per_cell_cache_put(cache_key, cell)
+    if cell is None:
+        return _clear_fidelity(_build_default_elements())
+
+    # When a sweep cell is in scope, the architecture has to follow the
+    # *cell's* cold config, not the right-sidebar — otherwise scrubbing a
+    # cold-path axis (comm_qubits, num_cores, …) leaves the graph stuck on
+    # the right-panel snapshot. The cell already carries the post-clamp
+    # values that the engine actually used for compilation.
+    elements = build_topology_elements(
+        num_cores=int(cell.get("num_cores", num_cores or 1)),
+        num_qubits=int(cell.get("num_physical", num_qubits or 16)),
+        communication_qubits=int(cell.get("communication_qubits", comm_qubits or 1)),
+        topology=cell.get("topology_type", topology or "ring"),
+        intracore_topology=cell.get(
+            "intracore_topology", intracore_topology or "all_to_all"
+        ),
+    )
+
+    # Always clear first so a shrinking ``nlog`` (e.g. switching to a facet
+    # whose num_logical_qubits is smaller) doesn't leave the tail
+    # half-coloured.
+    _clear_fidelity(elements)
+
+    # Apply per-logical fidelity to the live structure's data-qubit slots
+    # (in id order).  We tolerate a structural mismatch — colour as many
+    # data slots as we have logical-qubit fidelities for, leave the rest
+    # at the default.  All four metrics are stashed on each coloured node
+    # so the hover panel shows the full breakdown.
+    metric = overlay_metric or "overall_fidelity"
+    fid_alg = _per_logical_fidelity(cell, "algorithmic_fidelity")
+    fid_rt = _per_logical_fidelity(cell, "routing_fidelity")
+    fid_coh = _per_logical_fidelity(cell, "coherence_fidelity")
+    fid_overall = _per_logical_fidelity(cell, "overall_fidelity")
+    metric_to_arr = {
+        "algorithmic_fidelity": fid_alg,
+        "routing_fidelity": fid_rt,
+        "coherence_fidelity": fid_coh,
+        "overall_fidelity": fid_overall,
+    }
+    selected = metric_to_arr.get(metric, fid_overall)
+    nlog = min(int(cell.get("num_logical_qubits", 0)), len(selected))
+
+    data_count = 0
+    for el in elements:
+        d = el.get("data", {})
+        nid = d.get("id")
+        if not nid or "source" in d:
+            continue
+        if d.get("qtype") != "data":
+            continue
+        if data_count < nlog:
+            d["fidelity"] = float(selected[data_count])
+            d["fid_algorithmic"] = float(fid_alg[data_count])
+            d["fid_routing"] = float(fid_rt[data_count])
+            d["fid_coherence"] = float(fid_coh[data_count])
+            d["fid_overall"] = float(fid_overall[data_count])
+            d["logical_qubit"] = data_count
+        data_count += 1
+    return elements
+
+
+# ---------------------------------------------------------------------------
+# Callback: Topology view — Re-layout button re-heats the cose simulation
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("topology-cyto", "layout"),
+    Input("topology-view-relayout", "n_clicks"),
+    Input("view-type-store", "data"),
+    Input("topology-cyto", "elements"),
+    prevent_initial_call=False,
+)
+def _relayout_topology(n_clicks, view_type, _elements):
+    # Re-apply preset layout (uses the explicit per-node positions) when:
+    #   - the user clicks "Re-layout"
+    #   - the user switches into the Topology view (a layout running on a
+    #     0×0 hidden canvas leaves nodes bunched in the corner)
+    #   - the graph elements changed (node count etc.) AND the view is active
+    trig = ctx.triggered_id
+    if trig is None:
+        raise dash.exceptions.PreventUpdate
+    if trig == "topology-cyto" and view_type != "topology":
+        raise dash.exceptions.PreventUpdate
+    if trig == "view-type-store" and view_type != "topology":
+        raise dash.exceptions.PreventUpdate
+    return {
+        "name": "preset",
+        "fit": True,
+        "padding": 40,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Clientside: after switching into the Topology view, call cy.fit() once the
+# cose layout has settled.  Without this, the layout runs while the canvas was
+# hidden (0×0) and the resulting graph clusters in the corner at zoom=1.
+# ---------------------------------------------------------------------------
+
+
+app.clientside_callback(
+    """function(view_type, _elements) {
+        if (view_type !== 'topology') {
+            return window.dash_clientside.no_update;
+        }
+        const fit = (attempt) => {
+            const cyEl = document.getElementById('topology-cyto');
+            const cy = cyEl && cyEl._cyreg ? cyEl._cyreg.cy : null;
+            if (!cy && attempt < 30) {
+                setTimeout(() => fit(attempt + 1), 100);
+                return;
+            }
+            if (!cy) { return; }
+            try {
+                cy.resize();
+                cy.fit(undefined, 30);
+            } catch (e) { /* ignore */ }
+        };
+        // Fit once the layout pass completes (cose with numIter=1500 finishes
+        // synchronously after a tick, but we re-fit a couple of times to
+        // catch any post-layout reflow).
+        setTimeout(() => fit(0), 50);
+        setTimeout(() => fit(0), 600);
+        setTimeout(() => fit(0), 1500);
+        return window.dash_clientside.no_update;
+    }""",
+    Output("topology-cyto", "id"),  # dummy output (id never changes)
+    Input("view-type-store", "data"),
+    Input("topology-cyto", "elements"),
+    prevent_initial_call=True,
+)
+
+
+# ---------------------------------------------------------------------------
+# Callback: Topology view — fidelity-overlay colour legend visibility/title
+# ---------------------------------------------------------------------------
+
+
+_OVERLAY_METRIC_LABELS = {
+    "overall_fidelity": "Overall fidelity",
+    "algorithmic_fidelity": "Algorithmic fidelity",
+    "routing_fidelity": "Routing fidelity",
+    "coherence_fidelity": "Coherence fidelity",
+}
+
+
+@app.callback(
+    Output("topology-view-legend", "style"),
+    Output("topology-legend-title", "children"),
+    Input("topology-overlay-metric", "value"),
+    State("topology-view-legend", "style"),
+    prevent_initial_call=False,
+)
+def _topology_legend_title(overlay_metric, current_style):
+    base = dict(current_style or {})
+    base["display"] = "block"
+    title = _OVERLAY_METRIC_LABELS.get(overlay_metric or "overall_fidelity", "Fidelity")
+    return base, title
+
+
+# ---------------------------------------------------------------------------
+# Callback: Topology view — hover info readout
+# ---------------------------------------------------------------------------
+
+
+def _fmt_fid(value: float | None) -> str:
+    if value is None:
+        return "—"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if v >= 0.9999:
+        return "1.000"
+    if v < 1e-4:
+        return f"{v:.2e}"
+    return f"{v:.4f}"
+
+
+@app.callback(
+    Output("topology-view-hover", "children"),
+    Input("topology-cyto", "mouseoverNodeData"),
+    prevent_initial_call=False,
+)
+def _topology_hover_label(node_data):
+    if not node_data:
+        return "Hover a node to inspect."
+    core = node_data.get("core", "?")
+    qtype = node_data.get("qtype", "?")
+    label = node_data.get("label", "")
+    descriptor = "comm" if qtype == "comm" else "data"
+    head = f"core c{core}  ·  {descriptor} qubit {label}"
+
+    if qtype != "data" or "fid_overall" not in node_data:
+        return head
+
+    rows = [
+        ("Overall",     node_data.get("fid_overall")),
+        ("Algorithmic", node_data.get("fid_algorithmic")),
+        ("Routing",     node_data.get("fid_routing")),
+        ("Coherence",   node_data.get("fid_coherence")),
+    ]
+    metric_lines = [
+        html.Div(
+            style={"display": "flex", "gap": "8px"},
+            children=[
+                html.Span(name, style={
+                    "width": "82px",
+                    "color": COLORS["text_muted"],
+                }),
+                html.Span(_fmt_fid(val), style={
+                    "color": COLORS["text"],
+                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                }),
+            ],
+        )
+        for name, val in rows
+    ]
+    logical_q = node_data.get("logical_qubit")
+    sub_head = (
+        f"logical q{logical_q}" if logical_q is not None else "fidelity (cell)"
+    )
+    return [
+        html.Div(head, style={"fontWeight": "600", "marginBottom": "2px"}),
+        html.Div(sub_head, style={
+            "color": COLORS["text_muted"],
+            "marginBottom": "4px",
+            "fontSize": "10px",
+        }),
+        *metric_lines,
+    ]
 
 
 # ---------------------------------------------------------------------------

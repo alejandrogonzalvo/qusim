@@ -171,13 +171,96 @@ def _transpile_circuit(circ: qiskit.QuantumCircuit, seed: int) -> qiskit.Quantum
 # Topology builders  (all-to-all intra-core, configurable inter-core)
 # ---------------------------------------------------------------------------
 
+def inter_core_neighbors(num_cores: int, inter_topology: str) -> list[list[int]]:
+    """Per-core list of unique neighbouring core indices."""
+    import math
+    if num_cores < 2:
+        return [[] for _ in range(num_cores)]
+    nbrs: list[list[int]] = [[] for _ in range(num_cores)]
+    inter = (inter_topology or "ring").lower()
+    if inter == "ring":
+        for c in range(num_cores):
+            nbrs[c].append((c + 1) % num_cores)
+            if num_cores > 2:
+                nbrs[c].append((c - 1) % num_cores)
+    elif inter == "linear":
+        for c in range(num_cores):
+            if c + 1 < num_cores:
+                nbrs[c].append(c + 1)
+            if c - 1 >= 0:
+                nbrs[c].append(c - 1)
+    elif inter == "all_to_all":
+        for c in range(num_cores):
+            for c2 in range(num_cores):
+                if c2 != c:
+                    nbrs[c].append(c2)
+    elif inter == "grid":
+        side = math.ceil(math.sqrt(num_cores))
+        for c in range(num_cores):
+            row, col = divmod(c, side)
+            if col + 1 < side and c + 1 < num_cores:
+                nbrs[c].append(c + 1)
+            if col > 0 and c - 1 >= 0:
+                nbrs[c].append(c - 1)
+            if c + side < num_cores:
+                nbrs[c].append(c + side)
+            if c - side >= 0:
+                nbrs[c].append(c - side)
+    else:
+        for c in range(num_cores):
+            nbrs[c].append((c + 1) % num_cores)
+            if num_cores > 2:
+                nbrs[c].append((c - 1) % num_cores)
+    return [sorted(set(n)) for n in nbrs]
+
+
+def inter_core_edges(
+    num_cores: int,
+    communication_qubits: int,
+    inter_topology: str,
+) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+    """Comm-qubit-to-comm-qubit edges across the multi-core fabric.
+
+    Each comm qubit on core ``c`` connects to **every** comm qubit on each
+    of ``c``'s neighbouring cores (defined by ``inter_topology``).  With
+    ``K`` comm qubits per core, each unordered pair of neighbouring cores
+    therefore contributes ``K × K`` inter-core edges — a full bipartite
+    sub-graph between the two cores' comm-qubit sets.
+
+    Returns
+    -------
+    list of ``((core_a, comm_idx_a), (core_b, comm_idx_b))`` edges.
+    """
+    if num_cores < 2 or communication_qubits < 1:
+        return []
+    K = int(communication_qubits)
+    nbrs = inter_core_neighbors(num_cores, inter_topology)
+    edges: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    for c in range(num_cores):
+        for c2 in nbrs[c]:
+            if c2 <= c:
+                continue
+            for ki in range(K):
+                for kj in range(K):
+                    edges.append(((c, ki), (c2, kj)))
+    return edges
+
+
 def _build_topology(
     num_qubits: int,
     num_cores: int,
     topology_type: str,
     intracore_topology: str = "all_to_all",
+    communication_qubits: int = 1,
 ) -> tuple[CouplingMap, dict[int, int]]:
     """Build full_coupling_map and core_mapping for the given topology.
+
+    The last ``communication_qubits`` qubits of each core are designated as
+    EPR endpoints.  Inter-core edges follow :func:`inter_core_edges`: each
+    comm qubit on core ``c`` is connected to every comm qubit on each of
+    ``c``'s inter-topology neighbours (full ``K × K`` bipartite per
+    neighbour pair) — modelling a photonic-switch network where any comm
+    qubit on one side can be entangled with any comm qubit on the other.
 
     Qubits are distributed across cores so that physical count == logical
     count exactly.  With 7 qubits and 3 cores the sizes are [3, 2, 2].
@@ -207,26 +290,14 @@ def _build_topology(
         offset += size
 
     if num_cores > 1:
-        if topology_type == "ring":
-            for c in range(num_cores):
-                next_c = (c + 1) % num_cores
-                cm.add_edge(core_offsets[c], core_offsets[next_c])
-                cm.add_edge(core_offsets[next_c], core_offsets[c])
-
-        elif topology_type == "all_to_all":
-            for c1 in range(num_cores):
-                for c2 in range(c1 + 1, num_cores):
-                    p1 = core_offsets[c1] + core_sizes[c1] - 1
-                    p2 = core_offsets[c2]
-                    cm.add_edge(p1, p2)
-                    cm.add_edge(p2, p1)
-
-        elif topology_type == "linear":
-            for c in range(num_cores - 1):
-                p1 = core_offsets[c] + core_sizes[c] - 1
-                p2 = core_offsets[c + 1]
-                cm.add_edge(p1, p2)
-                cm.add_edge(p2, p1)
+        # Clamp K to leave at least one data qubit in the smallest core.
+        smallest = min(core_sizes)
+        K = max(1, min(int(communication_qubits or 1), max(1, smallest - 1)))
+        for (a_core, a_k), (b_core, b_k) in inter_core_edges(num_cores, K, topology_type):
+            p_a = core_offsets[a_core] + core_sizes[a_core] - K + a_k
+            p_b = core_offsets[b_core] + core_sizes[b_core] - K + b_k
+            cm.add_edge(p_a, p_b)
+            cm.add_edge(p_b, p_a)
 
     return cm, core_mapping
 
@@ -325,6 +396,74 @@ def _strip_for_grid(result: dict) -> dict:
     return {k: result[k] for k in _RESULT_SCALAR_KEYS if k in result}
 
 
+# Per-qubit grids exposed to the topology view (and any other consumer that
+# wants per-physical-qubit overlays).  Kept separate from the scalar grid so
+# the structured-dtype memory layout is unchanged for sweep cells that don't
+# need this data.
+_PER_QUBIT_GRID_KEYS: tuple[str, ...] = (
+    "algorithmic_fidelity_grid",
+    "routing_fidelity_grid",
+    "coherence_fidelity_grid",
+)
+
+
+def _extract_per_qubit(result: dict, cached: "CachedMapping | None", *,
+                       cold_cfg: dict | None = None) -> dict:
+    """Bundle per-qubit ndarrays + the cold-config bits the topology view
+    needs to redraw the device structure for this cell.
+
+    Output keys match what ``_compute_per_qubit_for_cell`` produces in
+    ``gui/app.py`` so the topology view can consume either with the same
+    accessor logic.
+    """
+    out: dict = {}
+    for k in _PER_QUBIT_GRID_KEYS:
+        v = result.get(k)
+        if v is not None:
+            out[k] = v
+    if cached is not None:
+        out["placements"] = getattr(cached, "placements", None)
+    if cold_cfg is not None:
+        # Only the bits that drive the topology view's graph layout — keeps
+        # this dict small and serialisable.
+        if "num_qubits" in cold_cfg:
+            out["num_physical"] = int(cold_cfg["num_qubits"])
+        for k in (
+            "num_cores", "communication_qubits",
+            "num_logical_qubits", "topology_type", "intracore_topology",
+        ):
+            if k in cold_cfg:
+                out[k] = cold_cfg[k]
+    return out
+
+
+def _resolve_cell_cold_cfg(
+    cold_config: dict, swept: dict[str, float],
+) -> dict:
+    """Apply a cell's swept overrides + standard clamps to a cold_config.
+
+    Mirrors the clamp logic in ``DSEEngine._eval_point`` and
+    ``_eval_cold_batch`` so the captured per-cell cold cfg matches what
+    the engine actually compiled with.
+    """
+    import math as _math
+    cfg = dict(cold_config)
+    for k, v in swept.items():
+        if k in DSEEngine.COLD_PATH_KEYS:
+            cfg[k] = int(v) if k in DSEEngine.INTEGER_KEYS else v
+    cfg["num_cores"] = min(int(cfg.get("num_cores", 1)), int(cfg.get("num_qubits", 1)))
+    if "communication_qubits" in cfg:
+        qpc = max(1, int(cfg["num_qubits"]) // max(1, int(cfg["num_cores"])))
+        cfg["communication_qubits"] = max(
+            1, min(int(cfg["communication_qubits"] or 1), _math.isqrt(qpc))
+        )
+    if "num_logical_qubits" in cfg:
+        cfg["num_logical_qubits"] = max(
+            2, min(int(cfg["num_logical_qubits"]), int(cfg["num_qubits"]))
+        )
+    return cfg
+
+
 def _result_to_row(result: dict) -> tuple:
     """Pack a stripped result dict into the tuple order of ``_RESULT_DTYPE``."""
     return tuple(result.get(k, 0.0) for k in _RESULT_SCALAR_KEYS)
@@ -390,10 +529,16 @@ class SweepResult:
               with dtype ``_RESULT_DTYPE``. Each cell is a ``numpy.void`` row
               holding the scalar result fields. ``to_sweep_data`` converts
               cells back to plain dicts for the browser payload.
+        per_qubit_data: optional ``{idx_tuple: {alg_grid, rt_grid, coh_grid,
+              placements, num_physical, num_logical, num_cores,
+              communication_qubits, topology_type, intracore_topology}}``.
+              Populated when the sweep was run with
+              ``keep_per_qubit_grids=True``.  Heavy — kept server-side only.
     """
     metric_keys: list[str]
     axes: list[np.ndarray]
     grid: np.ndarray  # dtype=_RESULT_DTYPE, shape matches axis lengths
+    per_qubit_data: dict | None = None
 
     @property
     def ndim(self) -> int:
@@ -454,6 +599,9 @@ class SweepResult:
                 # flat dict-list form; callers rely on ``for r in grid``.
                 sd["grid"] = [cell(v) for v in self.grid.ravel()]
 
+        if self.per_qubit_data is not None:
+            sd["per_qubit_data"] = self.per_qubit_data
+
         return sd
 
 
@@ -485,12 +633,31 @@ class DSEEngine:
         noise: Optional[dict] = None,
         intracore_topology: str = "all_to_all",
         routing_algorithm: str = "hqa_sabre",
+        communication_qubits: int = 1,
+        num_logical_qubits: Optional[int] = None,
     ) -> CachedMapping:
         """
         Full circuit transpilation + mapping. Returns a CachedMapping that
         can be reused for many hot-path fidelity evaluations.
+
+        ``num_qubits`` is the physical device size (drives topology /
+        coupling map).  ``num_logical_qubits`` is the algorithm size used
+        to build the circuit; defaults to ``num_qubits`` when omitted, and
+        is clamped to ``[2, num_qubits]``.
+
+        ``communication_qubits`` carves the last K qubits of each core out
+        as EPR endpoints; the inter-core coupling map is built from
+        per-comm-qubit pairings so K controls how many parallel
+        teleportation slots exist between neighbouring cores.
         """
-        config_key = (circuit_type, num_qubits, num_cores, topology_type, intracore_topology, placement_policy, seed, routing_algorithm)
+        if num_logical_qubits is None:
+            num_logical_qubits = num_qubits
+        num_logical_qubits = max(2, min(int(num_logical_qubits), int(num_qubits)))
+        config_key = (
+            circuit_type, num_qubits, num_cores, topology_type, intracore_topology,
+            placement_policy, seed, routing_algorithm, int(communication_qubits or 1),
+            int(num_logical_qubits),
+        )
         if self._cache is not None and self._cache.config_key == config_key:
             return self._cache
 
@@ -498,16 +665,19 @@ class DSEEngine:
             return self._run_cold_telesabre(
                 circuit_type, num_qubits, num_cores, topology_type,
                 intracore_topology, seed, noise, config_key,
+                num_logical_qubits=num_logical_qubits,
+                communication_qubits=communication_qubits,
             )
 
         t0 = time.time()
 
-        circ = _build_circuit(circuit_type, num_qubits, seed)
+        circ = _build_circuit(circuit_type, num_logical_qubits, seed)
         transp = _transpile_circuit(circ, seed)
 
         full_coupling_map, core_mapping = _build_topology(
             num_qubits, num_cores, topology_type,
             intracore_topology=intracore_topology,
+            communication_qubits=communication_qubits,
         )
 
         actual_qubits = transp.num_qubits
@@ -551,13 +721,19 @@ class DSEEngine:
         num_cores_actual = max(core_mapping.values()) + 1 if core_mapping else 1
         dist_mat = _compute_distance_matrix(full_coupling_map, core_mapping, num_cores_actual)
 
-        # sparse_swaps were computed inside map_circuit but not exposed.
-        # Re-derive them from the orchestrator output embedded in result.placements:
-        # Since map_circuit returns a QusimResult without exposing sparse_swaps,
-        # we use a zero-length array here and call the orchestrator separately.
-        # This is acceptable because the hot path calls estimate_hardware_fidelity
-        # which already incorporates swap overhead via placements.
-        sparse_swaps = np.zeros((0, 3), dtype=np.int32)
+        # SABRE-injected swaps are emitted by ``map_circuit`` and now exposed
+        # on ``QusimResult.sparse_swaps``.  These represent intra-core SWAP
+        # gates and MUST be passed to the hot-path noise estimator —
+        # ``extract_inter_core_communications`` only sees inter-core changes
+        # in the placements diff and therefore never charges intra-core
+        # SWAPs on its own.  Without this, HQA's swap cost is silently
+        # dropped while TeleSABRE's is correctly counted, making the two
+        # algorithms structurally incomparable on the noise sweep.
+        sparse_swaps = (
+            result.sparse_swaps
+            if getattr(result, "sparse_swaps", None) is not None
+            else np.zeros((0, 3), dtype=np.int32)
+        )
 
         cold_time = time.time() - t0
 
@@ -590,6 +766,8 @@ class DSEEngine:
         seed: int,
         noise: Optional[dict],
         config_key: tuple,
+        num_logical_qubits: Optional[int] = None,
+        communication_qubits: int = 1,
     ) -> CachedMapping:
         """Cold path using TeleSABRE routing. Writes QASM + device JSON to
         temp files, calls telesabre_map_and_estimate, and caches the resulting
@@ -603,7 +781,11 @@ class DSEEngine:
         t0 = time.time()
         merged = _merge_noise(noise or {})
 
-        circ = _build_circuit(circuit_type, num_qubits, seed)
+        if num_logical_qubits is None:
+            num_logical_qubits = num_qubits
+        num_logical_qubits = max(2, min(int(num_logical_qubits), int(num_qubits)))
+
+        circ = _build_circuit(circuit_type, num_logical_qubits, seed)
         transp = _transpile_circuit(circ, seed)
 
         # Write QASM to temp file
@@ -616,7 +798,8 @@ class DSEEngine:
 
         # Build and write TeleSABRE device JSON
         device_json = _build_telesabre_device_json(
-            num_qubits, num_cores, topology_type, intracore_topology
+            num_qubits, num_cores, topology_type, intracore_topology,
+            communication_qubits=communication_qubits,
         )
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
@@ -671,7 +854,8 @@ class DSEEngine:
 
         # Real inter-core distances so routing fidelity is non-trivial
         full_coupling_map, core_mapping = _build_topology(
-            num_qubits, num_cores, topology_type, intracore_topology=intracore_topology
+            num_qubits, num_cores, topology_type, intracore_topology=intracore_topology,
+            communication_qubits=communication_qubits,
         )
         num_cores_actual = max(core_mapping.values()) + 1 if core_mapping else 1
         dist_mat = _compute_distance_matrix(full_coupling_map, core_mapping, num_cores_actual)
@@ -766,7 +950,8 @@ class DSEEngine:
                 r["total_network_distance"] = cached.total_network_distance
             # Strip per-qubit ``*_grid`` ndarrays before they cross the
             # process-pool pickle boundary or enter the sweep grid. The
-            # sweep UI never reads them back.
+            # sweep UI never reads them back; the topology view recomputes
+            # on demand via ``run_hot`` when needed.
             all_results.extend(_strip_for_grid(r) for r in chunk_results)
 
         return all_results
@@ -774,10 +959,10 @@ class DSEEngine:
     # -- Sweep methods -------------------------------------------------------
 
     COLD_PATH_KEYS = frozenset({
-        "num_qubits", "num_cores",
+        "num_qubits", "num_cores", "communication_qubits", "num_logical_qubits",
         "circuit_type", "topology_type", "intracore_topology", "routing_algorithm",
     })
-    INTEGER_KEYS = frozenset({"num_qubits", "num_cores", "classical_link_width", "classical_routing_cycles"})
+    INTEGER_KEYS = frozenset({"num_qubits", "num_cores", "communication_qubits", "num_logical_qubits", "classical_link_width", "classical_routing_cycles"})
 
     def _memory_capped_max_hot(self, max_hot: int | None) -> tuple[int, int]:
         """Clamp a requested ``max_hot`` to what current RAM can hold.
@@ -931,6 +1116,7 @@ class DSEEngine:
         per-qubit ``*_grid`` ndarrays are dropped here (see
         ``_strip_for_grid``).
         """
+        import math as _math
         cfg = dict(cold_config)
         hot_noise = dict(noise)
         for k, v in swept.items():
@@ -939,8 +1125,26 @@ class DSEEngine:
             else:
                 hot_noise[k] = v
         cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
+        # Clamp communication_qubits to [1, floor(sqrt(qubits_per_core))] so the
+        # same value flowing in from a sweep axis can't outrun a smaller
+        # qubits_per_core for the current cell.
+        if "communication_qubits" in cfg:
+            qpc = max(1, int(cfg["num_qubits"]) // max(1, int(cfg["num_cores"])))
+            cfg["communication_qubits"] = max(
+                1, min(int(cfg["communication_qubits"] or 1), _math.isqrt(qpc))
+            )
+        # Clamp num_logical_qubits ≤ num_qubits when sweeping physical or
+        # logical drops below 2.
+        if "num_logical_qubits" in cfg:
+            cfg["num_logical_qubits"] = max(
+                2, min(int(cfg["num_logical_qubits"]), int(cfg["num_qubits"]))
+            )
         cached = self.run_cold(**cfg, noise=hot_noise)
-        return _strip_for_grid(self.run_hot(cached, hot_noise))
+        # Return the full dict (per-qubit grids included) so callers that
+        # need them can capture before stripping.  ``_result_to_row`` reads
+        # only the scalar keys it knows about, so feeding it a full dict is
+        # equivalent to the previously-stripped one.
+        return self.run_hot(cached, hot_noise)
 
     @staticmethod
     def _mem_budget_mb() -> int:
@@ -1286,6 +1490,7 @@ class DSEEngine:
         max_workers: int | None = None,
         max_cold: int | None = None,
         max_hot: int | None = None,
+        keep_per_qubit_grids: bool = False,
     ) -> SweepResult:
         """N-dimensional sweep over arbitrary axes.
 
@@ -1294,6 +1499,11 @@ class DSEEngine:
         sweep_axes : list of (metric_key, low, high) tuples
         max_cold : override for cold compilation budget
         max_hot : override for total hot-path point budget
+        keep_per_qubit_grids : populate ``SweepResult.per_qubit_data`` with
+            per-cell per-qubit fidelity grids + placements + effective cold
+            config so the topology view can colour nodes / replot the device
+            for any cell without re-running the engine.  Adds memory cost
+            roughly proportional to ``num_cells × num_layers × num_qubits``.
         """
         from itertools import islice
 
@@ -1348,6 +1558,23 @@ class DSEEngine:
                     out[k] = 0.0
             return out
 
+        # Collect per-cell per-qubit grids during the sweep when requested,
+        # so the topology view can scrub cells without paying the cold
+        # compile a second time.  Memory ≈ num_cells × num_layers ×
+        # num_qubits × 4 grids × 8 bytes (~13 MB for 32×100×128×4).
+        per_qubit_cells: dict[tuple, dict] = {}
+
+        def _capture(idx: tuple, full_res: dict, cell_swept: dict) -> None:
+            if not keep_per_qubit_grids:
+                return
+            cell_cfg = (
+                _resolve_cell_cold_cfg(cold_config, cell_swept)
+                if cold_config is not None else None
+            )
+            per_qubit_cells[tuple(idx)] = _extract_per_qubit(
+                full_res, cached=None, cold_cfg=cell_cfg,
+            )
+
         if parallel and has_cold and cold_config is not None:
             def _indexed_iter():
                 for idx in np.ndindex(shape):
@@ -1358,14 +1585,16 @@ class DSEEngine:
                 progress_callback, max_workers,
             )
             for idx in np.ndindex(shape):
-                grid[idx] = _result_to_row(rmap[idx])
+                full_res = rmap[idx]
+                grid[idx] = _result_to_row(full_res)
+                _capture(idx, full_res, _make_swept(idx))
         elif has_cold and cold_config is not None:
             count = 0
             for idx in np.ndindex(shape):
                 swept = _make_swept(idx)
-                grid[idx] = _result_to_row(
-                    self._eval_point(cold_config, fixed_noise, swept)
-                )
+                full_res = self._eval_point(cold_config, fixed_noise, swept)
+                grid[idx] = _result_to_row(full_res)
+                _capture(idx, full_res, swept)
                 count += 1
                 if progress_callback is not None:
                     progress_callback(SweepProgress(
@@ -1390,7 +1619,9 @@ class DSEEngine:
 
                 chunk_results = self.run_hot_batch(cached, noise_dicts)
                 for i, idx in enumerate(chunk_indices):
-                    grid[idx] = _result_to_row(chunk_results[i])
+                    full_res = chunk_results[i]
+                    grid[idx] = _result_to_row(full_res)
+                    _capture(idx, full_res, _make_swept(idx))
                     completed += 1
                     if progress_callback is not None:
                         progress_callback(SweepProgress(
@@ -1400,7 +1631,27 @@ class DSEEngine:
                         ))
                 del noise_dicts, chunk_results
 
-        return SweepResult(metric_keys=keys, axes=axes, grid=grid)
+        # Snapshot the engine inputs so the topology view's overlay can
+        # rebuild any cell on demand via run_cold/run_hot without
+        # requiring callers to keep the original config around.
+        per_qubit_meta: dict | None = None
+        if keep_per_qubit_grids:
+            per_qubit_meta = {
+                "cold_config": dict(cold_config) if cold_config else None,
+                "fixed_noise": dict(fixed_noise) if fixed_noise else None,
+                "axis_keys": list(keys),
+                "axis_values": [ax.tolist() for ax in axes],
+                "shape": list(shape),
+                # Per-cell per-qubit grids captured during the sweep so the
+                # topology view does an O(1) lookup instead of paying the
+                # cold compile a second time per slider move.
+                "cells": per_qubit_cells,
+            }
+
+        return SweepResult(
+            metric_keys=keys, axes=axes, grid=grid,
+            per_qubit_data=per_qubit_meta,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1437,11 +1688,21 @@ def _eval_cold_batch(
     engine = DSEEngine()
 
     # Apply cold-path overrides from the first swept dict (all share the same cold keys)
+    import math as _math
     cfg = dict(cold_config)
     for k, v in swept_list[0].items():
         if k in DSEEngine.COLD_PATH_KEYS:
             cfg[k] = int(v)
     cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
+    if "communication_qubits" in cfg:
+        qpc = max(1, int(cfg["num_qubits"]) // max(1, int(cfg["num_cores"])))
+        cfg["communication_qubits"] = max(
+            1, min(int(cfg["communication_qubits"] or 1), _math.isqrt(qpc))
+        )
+    if "num_logical_qubits" in cfg:
+        cfg["num_logical_qubits"] = max(
+            2, min(int(cfg["num_logical_qubits"]), int(cfg["num_qubits"]))
+        )
 
     # Build the noise dicts for each swept point
     noise_dicts = []
@@ -1528,6 +1789,7 @@ def _build_telesabre_device_json(
     num_cores: int,
     topology_type: str,
     intracore_topology: str,
+    communication_qubits: int = 1,
 ) -> dict:
     """Build a TeleSABRE-format device JSON dict from DSE topology parameters.
 
@@ -1588,26 +1850,16 @@ def _build_telesabre_device_json(
             for q in range(size - 1):
                 intra_edges.append([off + q, off + q + 1])
 
-    # Inter-core edges (connect last qubit of core A to first qubit of core B)
+    # Inter-core edges: every comm qubit connects to every comm qubit on
+    # each neighbouring core (full K×K bipartite per neighbour pair).
+    # Comm qubits live in the last K slots of each core.
     inter_edges = []
     if num_cores > 1:
-        if topology_type == "ring":
-            for c in range(num_cores):
-                nxt = (c + 1) % num_cores
-                p1 = offsets[c] + qubits_per_core - 1
-                p2 = offsets[nxt]
-                inter_edges.append([p1, p2])
-        elif topology_type == "all_to_all":
-            for c1 in range(num_cores):
-                for c2 in range(c1 + 1, num_cores):
-                    p1 = offsets[c1] + qubits_per_core - 1
-                    p2 = offsets[c2]
-                    inter_edges.append([p1, p2])
-        else:  # linear
-            for c in range(num_cores - 1):
-                p1 = offsets[c] + qubits_per_core - 1
-                p2 = offsets[c + 1]
-                inter_edges.append([p1, p2])
+        K = max(1, min(int(communication_qubits or 1), max(1, qubits_per_core - 1)))
+        for (a_core, a_k), (b_core, b_k) in inter_core_edges(num_cores, K, topology_type):
+            p1 = offsets[a_core] + qubits_per_core - K + a_k
+            p2 = offsets[b_core] + qubits_per_core - K + b_k
+            inter_edges.append([p1, p2])
 
     # Simple grid node positions
     side = math.isqrt(total_qubits)

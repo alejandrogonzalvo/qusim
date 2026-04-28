@@ -5,6 +5,7 @@ Reusable Dash UI component factories for the DSE GUI.
 import os
 
 import dash_bootstrap_components as dbc
+import dash_cytoscape as cyto
 from dash import dcc, html
 
 from .constants import (
@@ -46,6 +47,13 @@ COLORS = {
     "accent2": "#555555",
     "text": "#2B2B2B",
     "text_muted": "#888888",
+    # Brand accent — "Instrument Teal". Used sparingly: Run CTA,
+    # active config-tab underline, axis chip, focus halo.
+    "brand": "#0F5E6B",
+    "brand_hover": "#0B4A54",
+    "brand_press": "#083842",
+    "brand_wash": "#E8F1F2",
+    "brand_wash2": "#D3E4E6",
 }
 
 # Banner / inline feedback palettes. Each entry carries its own bg / border /
@@ -150,6 +158,108 @@ def _linear_marks(slider_min: float, slider_max: float, n: int = 5, unit: str = 
     return marks
 
 
+def _minmax_marks(slider_min: float, slider_max: float, log_scale: bool, unit: str = "") -> dict:
+    """Return ONLY the two endpoint marks — drops intermediate noise.
+
+    Used by all right-panel sliders so the user reads the exact value from
+    the inline value-chip input, not from a forest of mid-axis tick labels.
+    """
+    if log_scale:
+        return {
+            str(int(slider_min)): {"label": _fmt_log_mark(int(slider_min), unit), "style": _MARK_STYLE},
+            str(int(slider_max)): {"label": _fmt_log_mark(int(slider_max), unit), "style": _MARK_STYLE},
+        }
+    def _fmt(v: float) -> str:
+        return str(int(v)) if v == int(v) else f"{v:g}"
+    return {
+        str(round(float(slider_min), 6)): {"label": _fmt(slider_min), "style": _MARK_STYLE},
+        str(round(float(slider_max), 6)): {"label": _fmt(slider_max), "style": _MARK_STYLE},
+    }
+
+
+def _format_value_for_input(value: float, log_scale: bool) -> str:
+    """Display string for the value-chip input next to a slider.
+
+    Mirrors ``_fmt_value`` but keeps the result parseable: scientific or
+    plain decimal, no units, no separators.
+    """
+    if value is None:
+        return ""
+    if log_scale:
+        return _fmt_value(value, True)
+    if float(value) == int(value):
+        return str(int(value))
+    return f"{value:g}"
+
+
+def slider_row(
+    label: str,
+    slider_id: str,
+    *,
+    min: float,
+    max: float,
+    value: float,
+    step: float = 1,
+    log_scale: bool = False,
+    unit: str = "",
+    tooltip: str = "",
+    tooltip_visible: bool = False,
+    row_id: str | None = None,
+    row_style: dict | None = None,
+) -> html.Div:
+    """Build a slider with a label-row + editable value-chip + min/max marks.
+
+    The input has id ``f"{slider_id}-input"``. A bidirectional sync
+    callback (registered in ``app.py``) keeps slider and input in step.
+    """
+    input_id = f"{slider_id}-input"
+    display = _format_value_for_input(value, log_scale)
+    header = html.Div(
+        style={
+            "display": "flex",
+            "justifyContent": "space-between",
+            "alignItems": "baseline",
+            "marginBottom": "4px",
+            "gap": "8px",
+        },
+        children=[
+            html.Span(
+                label,
+                title=tooltip,
+                style={
+                    "fontSize": "12px",
+                    "color": COLORS["text"],
+                    "cursor": "help" if tooltip else "default",
+                },
+            ),
+            dcc.Input(
+                id=input_id,
+                type="text",
+                value=display,
+                debounce=True,
+                spellCheck=False,
+                className="slider-value-chip",
+            ),
+        ],
+    )
+    slider = dcc.Slider(
+        id=slider_id,
+        min=min,
+        max=max,
+        step=step,
+        value=value,
+        marks=_minmax_marks(min, max, log_scale, unit),
+        tooltip=_tooltip_cfg(log_scale, unit, always_visible=tooltip_visible),
+        updatemode="drag",
+        className="dse-slider",
+    )
+    children: list = [header, slider, html.Div(style={"height": "10px"})]
+    div_kwargs: dict = {"children": children, "style": row_style or {}}
+    if row_id is not None:
+        div_kwargs["id"] = row_id
+    return html.Div(**div_kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Tooltip helpers  (uses window.dccFunctions defined in assets/tooltip_transforms.js)
 # ---------------------------------------------------------------------------
@@ -228,14 +338,8 @@ def make_metric_selector(index: int) -> html.Div:
                 },
                 children=[
                     html.Span(
-                        f"Metric {index + 1}",
-                        style={
-                            "color": COLORS["text_muted"],
-                            "fontSize": "11px",
-                            "fontWeight": "600",
-                            "textTransform": "uppercase",
-                            "letterSpacing": "0.05em",
-                        },
+                        f"Axis {index + 1}",
+                        className="axis-chip",
                     ),
                     html.Button(
                         "×",
@@ -395,6 +499,74 @@ def _section_header(title: str, tooltip: str | None = None) -> html.Div:
     )
 
 
+def _inline_toggle_row(label: str, checklist_id: str, tooltip: str = "") -> html.Div:
+    """Single-line row: label (+ help icon) on the left, checkbox on the right.
+
+    The checkbox is the existing ``dcc.Checklist`` with one option whose
+    ``label`` is empty — just the box itself sits flush right.
+    """
+    global _tooltip_counter
+    title_children: list = [
+        html.Span(
+            label,
+            style={"fontSize": "13px", "color": COLORS["text"]},
+        ),
+    ]
+    extras: list = []
+    if tooltip:
+        _tooltip_counter += 1
+        target_id = f"help-icon-{_tooltip_counter}"
+        title_children.append(
+            html.Span(
+                "?",
+                id=target_id,
+                className="help-icon",
+                style={"marginLeft": "6px"},
+            )
+        )
+        extras.append(
+            dbc.Tooltip(
+                tooltip,
+                target=target_id,
+                placement="top",
+                style={
+                    "fontSize": "11px",
+                    "maxWidth": "240px",
+                    "textTransform": "none",
+                    "letterSpacing": "normal",
+                    "fontWeight": "400",
+                },
+            )
+        )
+    return html.Div(
+        style={
+            "display": "flex",
+            "alignItems": "center",
+            "justifyContent": "space-between",
+            "gap": "8px",
+            "padding": "6px 0",
+            "marginBottom": "6px",
+        },
+        children=[
+            html.Div(
+                style={"display": "flex", "alignItems": "center"},
+                children=title_children,
+            ),
+            dcc.Checklist(
+                id=checklist_id,
+                options=[{"label": "", "value": "yes"}],
+                value=[],
+                style={
+                    "margin": "0",
+                    "lineHeight": "1",
+                },
+                inputStyle={"margin": "0", "cursor": "pointer"},
+            ),
+            *extras,
+        ],
+    )
+
+
 def _label(text: str, tooltip: str = "") -> html.Div:
     return html.Div(
         text,
@@ -423,8 +595,8 @@ _CONFIG_TAB_STYLE = {
 
 _CONFIG_TAB_ACTIVE_STYLE = {
     **_CONFIG_TAB_STYLE,
-    "color": COLORS["accent"],
-    "borderBottom": f"2px solid {COLORS['accent']}",
+    "color": COLORS["brand"],
+    "borderBottom": f"2px solid {COLORS['brand']}",
 }
 
 
@@ -439,55 +611,28 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
 
     swept_keys = swept_keys or set()
 
-    # --- Circuit/Topology tab content ---
+    # Initial dynamic upper bound for communication_qubits.  Recomputed live by
+    # a callback whenever Qubits / Cores changes.
+    _initial_qpc = max(1, 16 // 1)
+    _initial_comm_max = max(1, math.isqrt(_initial_qpc))
+
+    # --- Circuit tab content ---
     circuit_content = html.Div(
         [
-            html.Div(
-                id="cfg-row-num-qubits",
-                style={"display": "none"} if "num_qubits" in swept_keys else {},
-                children=[
-                    _label("Qubits"),
-                    dcc.Slider(
-                        id="cfg-num-qubits",
-                        min=int(METRIC_BY_KEY["num_qubits"].slider_min),
-                        max=int(METRIC_BY_KEY["num_qubits"].slider_max),
-                        step=2,
-                        value=16,
-                        marks=_linear_marks(
-                            METRIC_BY_KEY["num_qubits"].slider_min,
-                            METRIC_BY_KEY["num_qubits"].slider_max,
-                        ),
-                        tooltip=_tooltip_cfg(False, "", always_visible=False),
-                        updatemode="drag",
-                        className="dse-slider",
-                    ),
-                    html.Div(style={"height": "10px"}),
-                ],
-            ),
-            html.Div(
-                id="cfg-row-num-cores",
-                style={"display": "none"} if "num_cores" in swept_keys else {},
-                children=[
-                    _label("Cores"),
-                    dcc.Slider(
-                        id="cfg-num-cores",
-                        min=int(METRIC_BY_KEY["num_cores"].slider_min),
-                        max=int(METRIC_BY_KEY["num_cores"].slider_max),
-                        step=1,
-                        value=1,
-                        marks={
-                            str(i): str(i)
-                            for i in range(
-                                int(METRIC_BY_KEY["num_cores"].slider_min),
-                                int(METRIC_BY_KEY["num_cores"].slider_max) + 1,
-                            )
-                        },
-                        tooltip=_tooltip_cfg(False, "", always_visible=False),
-                        updatemode="drag",
-                        className="dse-slider",
-                    ),
-                    html.Div(style={"height": "10px"}),
-                ],
+            slider_row(
+                label="Logical qubits",
+                slider_id="cfg-num-logical-qubits",
+                min=int(METRIC_BY_KEY["num_logical_qubits"].slider_min),
+                max=16,  # initial cap = default physical qubits; live-updated
+                step=1,
+                value=16,
+                log_scale=False,
+                tooltip=(
+                    "Number of qubits used by the algorithm circuit. "
+                    "Must be ≤ Physical qubits (set in the Topology tab)."
+                ),
+                row_id="cfg-row-num-logical-qubits",
+                row_style=({"display": "none"} if "num_logical_qubits" in swept_keys else {}),
             ),
             _label("Seed"),
             dcc.Input(
@@ -525,34 +670,6 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                 ],
             ),
             html.Div(
-                id="cfg-row-cat-topology_type",
-                children=[
-                    _label("Inter-core topology"),
-                    dcc.Dropdown(
-                        id="cfg-topology",
-                        options=TOPOLOGY_TYPES,
-                        value="ring",
-                        clearable=False,
-                        className="dse-dropdown",
-                        style={"marginBottom": "10px"},
-                    ),
-                ],
-            ),
-            html.Div(
-                id="cfg-row-cat-intracore_topology",
-                children=[
-                    _label("Intra-core topology"),
-                    dcc.Dropdown(
-                        id="cfg-intracore-topology",
-                        options=INTRACORE_TOPOLOGY_TYPES,
-                        value="all_to_all",
-                        clearable=False,
-                        className="dse-dropdown",
-                        style={"marginBottom": "10px"},
-                    ),
-                ],
-            ),
-            html.Div(
                 id="cfg-row-cat-placement",
                 children=[
                     _label("Placement"),
@@ -580,16 +697,92 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                     ),
                 ],
             ),
-            _label("Dynamic decoupling"),
-            dcc.Checklist(
-                id="cfg-dynamic-decoupling",
-                options=[{"label": " Enable", "value": "yes"}],
-                value=[],
-                style={
-                    "color": COLORS["text"],
-                    "fontSize": "13px",
-                    "marginBottom": "12px",
-                },
+            _inline_toggle_row(
+                label="Dynamic decoupling",
+                checklist_id="cfg-dynamic-decoupling",
+                tooltip=(
+                    "Insert idle-qubit refocusing pulses (CPMG / XY-4) "
+                    "during routing waits to suppress dephasing. Trades a "
+                    "small gate budget for higher coherence-limited fidelity "
+                    "on long algorithms."
+                ),
+            ),
+        ],
+        style={"paddingTop": "8px"},
+    )
+
+    # --- Topology tab content ---
+    topology_content = html.Div(
+        [
+            slider_row(
+                label="Physical qubits",
+                slider_id="cfg-num-qubits",
+                min=int(METRIC_BY_KEY["num_qubits"].slider_min),
+                max=int(METRIC_BY_KEY["num_qubits"].slider_max),
+                step=2,
+                value=16,
+                log_scale=False,
+                tooltip=(
+                    "Total physical qubits on the device. Caps the "
+                    "Logical qubits available to the algorithm."
+                ),
+                row_id="cfg-row-num-qubits",
+                row_style=({"display": "none"} if "num_qubits" in swept_keys else {}),
+            ),
+            slider_row(
+                label="Cores",
+                slider_id="cfg-num-cores",
+                min=int(METRIC_BY_KEY["num_cores"].slider_min),
+                max=int(METRIC_BY_KEY["num_cores"].slider_max),
+                step=1,
+                value=1,
+                log_scale=False,
+                row_id="cfg-row-num-cores",
+                row_style=({"display": "none"} if "num_cores" in swept_keys else {}),
+            ),
+            slider_row(
+                label="Communication qubits",
+                slider_id="cfg-communication-qubits",
+                min=1,
+                max=_initial_comm_max,
+                step=1,
+                value=1,
+                log_scale=False,
+                tooltip=(
+                    "Number of qubits per core dedicated to inter-core "
+                    "communication (EPR endpoints). "
+                    "Capped at floor(sqrt(qubits_per_core))."
+                ),
+                row_id="cfg-row-communication-qubits",
+                row_style=({"display": "none"} if "communication_qubits" in swept_keys else {}),
+            ),
+            html.Div(
+                id="cfg-row-cat-topology_type",
+                children=[
+                    _label("Inter-core topology"),
+                    dcc.Dropdown(
+                        id="cfg-topology",
+                        options=TOPOLOGY_TYPES,
+                        value="ring",
+                        clearable=False,
+                        className="dse-dropdown",
+                        style={"marginBottom": "10px"},
+                    ),
+                ],
+            ),
+            html.Div(
+                id="cfg-row-cat-intracore_topology",
+                children=[
+                    _label("Intra-core topology"),
+                    dcc.Dropdown(
+                        id="cfg-intracore-topology",
+                        options=INTRACORE_TOPOLOGY_TYPES,
+                        value="all_to_all",
+                        clearable=False,
+                        className="dse-dropdown",
+                        style={"marginBottom": "10px"},
+                    ),
+                ],
             ),
         ],
         style={"paddingTop": "8px"},
@@ -598,11 +791,6 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     # --- Noise tab content ---
     noise_controls = []
     for m in SWEEPABLE_METRICS:
-        marks = (
-            _log_marks(m.slider_min, m.slider_max, m.unit)
-            if m.log_scale
-            else _linear_marks(m.slider_min, m.slider_max, unit=m.unit)
-        )
         default_val = NOISE_DEFAULTS.get(m.key)
         if default_val is not None:
             default_slider = math.log10(default_val) if m.log_scale else default_val
@@ -610,54 +798,25 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             default_slider = m.slider_default_low
         hidden = m.is_cold_path or m.key in swept_keys
         noise_controls.append(
-            html.Div(
-                id=f"noise-row-{m.key}",
-                style={"display": "none"} if hidden else {},
-                children=[
-                    _label(m.label, m.description),
-                    dcc.Slider(
-                        id=f"noise-{m.key}",
-                        min=m.slider_min,
-                        max=m.slider_max,
-                        step=(m.slider_max - m.slider_min) / 200,
-                        value=default_slider,
-                        marks=marks,
-                        tooltip=_tooltip_cfg(m.log_scale, m.unit),
-                        updatemode="drag",
-                        className="dse-slider",
-                    ),
-                    html.Div(style={"height": "12px"}),
-                ],
+            slider_row(
+                label=m.label,
+                slider_id=f"noise-{m.key}",
+                min=m.slider_min,
+                max=m.slider_max,
+                step=(m.slider_max - m.slider_min) / 200,
+                value=default_slider,
+                log_scale=m.log_scale,
+                unit=m.unit,
+                tooltip=m.description,
+                row_id=f"noise-row-{m.key}",
+                row_style=({"display": "none"} if hidden else {}),
             )
         )
 
     noise_content = html.Div(noise_controls, style={"paddingTop": "8px"})
 
-    # --- Thresholds tab content ---
-    threshold_content = html.Div(
-        [
-            _section_header("Output (Y-axis)"),
-            dcc.Dropdown(
-                id="cfg-output-metric",
-                options=OUTPUT_METRICS,
-                value="overall_fidelity",
-                clearable=False,
-                className="dse-dropdown",
-                style={"marginBottom": "12px"},
-            ),
-            _section_header("Iso-levels"),
-            dcc.Checklist(
-                id="cfg-threshold-enable",
-                options=[{"label": " Show on non-3D views", "value": "yes"}],
-                value=[],
-                style={
-                    "color": COLORS["text"],
-                    "fontSize": "12px",
-                    "marginBottom": "8px",
-                },
-            ),
-            *_make_threshold_inputs(),
-        ],
+    output_content = html.Div(
+        children=_output_tab_children(),
         style={"paddingTop": "8px"},
     )
 
@@ -676,6 +835,13 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                         selected_style=_CONFIG_TAB_ACTIVE_STYLE,
                     ),
                     dcc.Tab(
+                        label="Topology",
+                        value="topology",
+                        children=[topology_content],
+                        style=_CONFIG_TAB_STYLE,
+                        selected_style=_CONFIG_TAB_ACTIVE_STYLE,
+                    ),
+                    dcc.Tab(
                         label="Noise",
                         value="noise",
                         children=[noise_content],
@@ -683,9 +849,9 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                         selected_style=_CONFIG_TAB_ACTIVE_STYLE,
                     ),
                     dcc.Tab(
-                        label="Thresholds",
-                        value="thresholds",
-                        children=[threshold_content],
+                        label="Output",
+                        value="output",
+                        children=[output_content],
                         style=_CONFIG_TAB_STYLE,
                         selected_style=_CONFIG_TAB_ACTIVE_STYLE,
                     ),
@@ -697,115 +863,281 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     )
 
 
-def make_performance_panel() -> html.Div:
-    """Sweep budget / parallelism controls.
+def _output_tab_children() -> list:
+    """Children for the Output config tab: Y-axis metric + iso-levels.
 
-    Rendered in the lower half of the right sidebar so the Circuit / Noise /
-    Thresholds tabs above don't have to share horizontal room with a fourth
-    tab.
+    Same component IDs as the legacy ``make_output_panel`` so existing
+    threshold/iso-line callbacks keep working. The collapsible header is
+    dropped — the tab itself is the affordance now.
     """
+    return [
+        _label("Output (Y-axis)"),
+        dcc.Dropdown(
+            id="cfg-output-metric",
+            options=OUTPUT_METRICS,
+            value="overall_fidelity",
+            clearable=False,
+            className="dse-dropdown",
+            style={"marginBottom": "10px"},
+        ),
+        _label("Iso-levels"),
+        dcc.Checklist(
+            id="cfg-threshold-enable",
+            options=[{"label": " Show on non-3D views", "value": "yes"}],
+            value=[],
+            style={
+                "color": COLORS["text"],
+                "fontSize": "12px",
+                "marginBottom": "8px",
+            },
+        ),
+        *_make_threshold_inputs(),
+    ]
+
+
+def _collapsible_header(title: str, section_id: str, tooltip: str | None = None) -> html.Div:
+    """Header row with a chevron toggle for a collapsible bottom section."""
+    label = [
+        html.Span(
+            id=f"{section_id}-chevron",
+            children="▾",
+            style={
+                "fontSize": "10px",
+                "color": COLORS["text_muted"],
+                "marginRight": "6px",
+                "display": "inline-block",
+                "width": "10px",
+            },
+        ),
+        html.Span(title),
+    ]
+    if tooltip:
+        global _tooltip_counter
+        _tooltip_counter += 1
+        target_id = f"help-icon-{_tooltip_counter}"
+        label.append(
+            html.Span(
+                "?",
+                id=target_id,
+                className="help-icon",
+                style={"marginLeft": "6px"},
+            )
+        )
+        return html.Div(
+            id=f"{section_id}-header",
+            n_clicks=0,
+            style={
+                "fontSize": "10px",
+                "fontWeight": "700",
+                "textTransform": "uppercase",
+                "letterSpacing": "0.08em",
+                "color": COLORS["text_muted"],
+                "display": "flex",
+                "alignItems": "center",
+                "padding": "6px 0 4px",
+                "cursor": "pointer",
+                "userSelect": "none",
+                "borderTop": f"1px solid {COLORS['border']}",
+            },
+            children=[
+                *label,
+                dbc.Tooltip(
+                    tooltip,
+                    target=target_id,
+                    placement="top",
+                    style={
+                        "fontSize": "11px",
+                        "maxWidth": "240px",
+                        "textTransform": "none",
+                        "letterSpacing": "normal",
+                        "fontWeight": "400",
+                    },
+                ),
+            ],
+        )
+    return html.Div(
+        id=f"{section_id}-header",
+        n_clicks=0,
+        style={
+            "fontSize": "10px",
+            "fontWeight": "700",
+            "textTransform": "uppercase",
+            "letterSpacing": "0.08em",
+            "color": COLORS["text_muted"],
+            "display": "flex",
+            "alignItems": "center",
+            "padding": "6px 0 4px",
+            "cursor": "pointer",
+            "userSelect": "none",
+            "borderTop": f"1px solid {COLORS['border']}",
+        },
+        children=label,
+    )
+
+
+
+def make_performance_panel() -> html.Div:
+    """Sweep Budget — panel-level collapsible footer.
+
+    Always visible at the bottom of the right sidebar across all config
+    tabs. Default-collapsed: shows a one-line summary strip (``64 cold ·
+    5,000 hot · 1w``); click expands the three inputs.
+    """
+    summary_default = (
+        f"{MAX_COLD_COMPILATIONS} cold · "
+        f"{MAX_TOTAL_POINTS_HOT:,} hot · {MAX_WORKERS_DEFAULT}w"
+    )
     return html.Div(
         id="performance-panel",
-        style={"paddingTop": "4px"},
+        style={
+            "borderTop": f"1px solid {COLORS['border']}",
+            "background": COLORS["surface"],
+            "flexShrink": "0",
+        },
         children=[
-            _section_header(
-                "Sweep Budget",
-                tooltip=(
-                    "Controls how many design points are evaluated. "
-                    "Cold compilations are expensive and only "
-                    "needed per unique structural (e.g. Qubits/Cores) combination. "
-                    "Hot evaluations are near-free (batched in Rust) and cover "
-                    "all noise parameter combinations. "
-                ),
-            ),
-            _label(
-                "Max cold compilations",
-                "Caps unique (qubits, cores) combos. Each takes ~1-10s.",
-            ),
-            dcc.Input(
-                id="cfg-max-cold",
-                type="number",
-                value=MAX_COLD_COMPILATIONS,
-                min=1,
-                max=1024,
-                step=1,
-                debounce=True,
-                className="dse-input",
+            html.Div(
+                id="sweep-budget-section-header",
+                n_clicks=0,
                 style={
                     "width": "100%",
-                    "background": COLORS["surface2"],
-                    "border": f"1px solid {COLORS['border']}",
-                    "color": COLORS["text"],
-                    "borderRadius": "6px",
-                    "padding": "6px 10px",
-                    "fontSize": "13px",
-                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
-                    "marginBottom": "10px",
-                    "outline": "none",
+                    "display": "flex",
+                    "alignItems": "center",
+                    "justifyContent": "space-between",
+                    "padding": "10px 14px",
+                    "cursor": "pointer",
+                    "userSelect": "none",
                 },
-            ),
-            _label(
-                "Max hot evaluations",
-                "Total grid points. Hot path is batched in Rust (~free).",
-            ),
-            dcc.Input(
-                id="cfg-max-hot",
-                type="number",
-                value=MAX_TOTAL_POINTS_HOT,
-                min=100,
-                max=100_000_000,
-                step=100,
-                debounce=True,
-                className="dse-input",
-                style={
-                    "width": "100%",
-                    "background": COLORS["surface2"],
-                    "border": f"1px solid {COLORS['border']}",
-                    "color": COLORS["text"],
-                    "borderRadius": "6px",
-                    "padding": "6px 10px",
-                    "fontSize": "13px",
-                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
-                    "marginBottom": "10px",
-                    "outline": "none",
-                },
-            ),
-            _label(
-                "Max workers",
-                "Parallel cold compilations. Each worker holds its own "
-                "copy of the routed circuit in RAM.",
-            ),
-            dcc.Input(
-                id="cfg-max-workers",
-                type="number",
-                value=MAX_WORKERS_DEFAULT,
-                min=1,
-                max=_WORKER_CAP,
-                step=1,
-                debounce=True,
-                className="dse-input",
-                style={
-                    "width": "100%",
-                    "background": COLORS["surface2"],
-                    "border": f"1px solid {COLORS['border']}",
-                    "color": COLORS["text"],
-                    "borderRadius": "6px",
-                    "padding": "6px 10px",
-                    "fontSize": "13px",
-                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
-                    "marginBottom": "10px",
-                    "outline": "none",
-                },
+                children=[
+                    html.Span(
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "6px",
+                            "fontSize": "10px",
+                            "fontWeight": "700",
+                            "letterSpacing": "0.08em",
+                            "textTransform": "uppercase",
+                            "color": COLORS["accent"],
+                        },
+                        children=[
+                            html.Span(
+                                id="sweep-budget-section-chevron",
+                                children="▸",
+                                style={
+                                    "fontSize": "9px",
+                                    "color": COLORS["text_muted"],
+                                    "display": "inline-block",
+                                    "width": "10px",
+                                },
+                            ),
+                            html.Span("Sweep Budget"),
+                        ],
+                    ),
+                    html.Span(
+                        id="sweep-budget-summary",
+                        children=summary_default,
+                        style={
+                            "fontSize": "10px",
+                            "color": COLORS["text_muted"],
+                            "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                        },
+                    ),
+                ],
             ),
             html.Div(
-                id="sweep-workers-warning",
-                style={"display": "none"},
-                children=[],
-            ),
-            html.Div(
-                id="sweep-budget-warning",
-                style={"display": "none"},
-                children=[],
+                id="sweep-budget-section-body",
+                style={"display": "none", "padding": "0 14px 12px"},
+                children=[
+                    _label(
+                        "Max cold compilations",
+                        "Caps unique (qubits, cores) combos. Each takes ~1-10s.",
+                    ),
+                    dcc.Input(
+                        id="cfg-max-cold",
+                        type="number",
+                        value=MAX_COLD_COMPILATIONS,
+                        min=1,
+                        max=1024,
+                        step=1,
+                        debounce=True,
+                        className="dse-input",
+                        style={
+                            "width": "100%",
+                            "background": COLORS["surface2"],
+                            "border": f"1px solid {COLORS['border']}",
+                            "color": COLORS["text"],
+                            "borderRadius": "6px",
+                            "padding": "6px 10px",
+                            "fontSize": "13px",
+                            "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                            "marginBottom": "10px",
+                            "outline": "none",
+                        },
+                    ),
+                    _label(
+                        "Max hot evaluations",
+                        "Total grid points. Hot path is batched in Rust (~free).",
+                    ),
+                    dcc.Input(
+                        id="cfg-max-hot",
+                        type="number",
+                        value=MAX_TOTAL_POINTS_HOT,
+                        min=100,
+                        max=100_000_000,
+                        step=100,
+                        debounce=True,
+                        className="dse-input",
+                        style={
+                            "width": "100%",
+                            "background": COLORS["surface2"],
+                            "border": f"1px solid {COLORS['border']}",
+                            "color": COLORS["text"],
+                            "borderRadius": "6px",
+                            "padding": "6px 10px",
+                            "fontSize": "13px",
+                            "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                            "marginBottom": "10px",
+                            "outline": "none",
+                        },
+                    ),
+                    _label(
+                        "Max workers",
+                        "Parallel cold compilations. Each worker holds its own "
+                        "copy of the routed circuit in RAM.",
+                    ),
+                    dcc.Input(
+                        id="cfg-max-workers",
+                        type="number",
+                        value=MAX_WORKERS_DEFAULT,
+                        min=1,
+                        max=_WORKER_CAP,
+                        step=1,
+                        debounce=True,
+                        className="dse-input",
+                        style={
+                            "width": "100%",
+                            "background": COLORS["surface2"],
+                            "border": f"1px solid {COLORS['border']}",
+                            "color": COLORS["text"],
+                            "borderRadius": "6px",
+                            "padding": "6px 10px",
+                            "fontSize": "13px",
+                            "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                            "marginBottom": "10px",
+                            "outline": "none",
+                        },
+                    ),
+                    html.Div(
+                        id="sweep-workers-warning",
+                        style={"display": "none"},
+                        children=[],
+                    ),
+                    html.Div(
+                        id="sweep-budget-warning",
+                        style={"display": "none"},
+                        children=[],
+                    ),
+                ],
             ),
         ],
     )
@@ -959,9 +1291,9 @@ def _tab_button(tab: dict, is_active: bool) -> html.Button:
         id={"type": "view-tab-btn", "index": tab["value"]},
         n_clicks=0,
         style={
-            "background": COLORS["accent"] if is_active else "transparent",
-            "color": "#fff" if is_active else COLORS["text_muted"],
-            "border": f"1px solid {COLORS['border']}",
+            "background": COLORS["brand_wash"] if is_active else "transparent",
+            "color": COLORS["brand"] if is_active else COLORS["text_muted"],
+            "border": f"1px solid {COLORS['brand'] if is_active else COLORS['border']}",
             "borderRadius": "4px",
             "padding": "4px 14px",
             "fontSize": "12px",
@@ -1012,9 +1344,12 @@ def make_view_tab_bar(num_metrics: int = 2, active: str | None = None) -> html.D
         id="view-tab-bar",
         style={
             "display": "flex",
+            "flexWrap": "wrap",
             "gap": "6px",
+            "rowGap": "4px",
             "marginBottom": "8px",
             "alignItems": "center",
+            "minWidth": "0",
         },
         children=children,
     )
@@ -1374,6 +1709,678 @@ def make_merit_controls() -> html.Div:
                     "textOverflow": "ellipsis",
                 },
                 children="",
+            ),
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Topology view (Cytoscape force-directed graph)
+# ---------------------------------------------------------------------------
+
+
+_NODE_SPACING = 55  # px between adjacent qubits inside a core
+_CORE_GAP = 2.0     # extra core-spacing factor (multiplier on core bounding box)
+
+
+def _local_qubit_positions(size: int, intracore: str) -> list[tuple[float, float]]:
+    """Per-core (x, y) layout for ``size`` qubits, centred at the origin.
+
+    Position pattern matches the intra-core topology so that drawing the
+    intra-core edges over these coordinates minimises crossings.
+    """
+    import math
+    if size <= 0:
+        return []
+    if size == 1:
+        return [(0.0, 0.0)]
+    intracore = (intracore or "all_to_all").lower()
+    if intracore == "linear":
+        return [((q - (size - 1) / 2) * _NODE_SPACING, 0.0) for q in range(size)]
+    if intracore == "ring":
+        r = _NODE_SPACING * size / (2 * math.pi)
+        # Start from -π/2 so the first node sits at the top of the ring.
+        return [
+            (r * math.cos(-math.pi / 2 + 2 * math.pi * q / size),
+             r * math.sin(-math.pi / 2 + 2 * math.pi * q / size))
+            for q in range(size)
+        ]
+    # grid (and the all_to_all fallback): fill row-by-row.
+    side = math.isqrt(size)
+    if side * side < size:
+        side += 1
+    pos = []
+    for q in range(size):
+        row, col = divmod(q, side)
+        x = (col - (side - 1) / 2) * _NODE_SPACING
+        y = (row - (side - 1) / 2) * _NODE_SPACING
+        pos.append((x, y))
+    return pos
+
+
+def _core_centres(num_cores: int, inter: str, core_box: float) -> list[tuple[float, float]]:
+    """(x, y) centre for each core, ``core_box`` apart."""
+    import math
+    if num_cores <= 1:
+        return [(0.0, 0.0)]
+    inter = (inter or "ring").lower()
+    if inter == "linear":
+        return [((c - (num_cores - 1) / 2) * core_box, 0.0) for c in range(num_cores)]
+    if inter == "grid":
+        side = math.isqrt(num_cores)
+        if side * side < num_cores:
+            side += 1
+        return [
+            (((c % side) - (side - 1) / 2) * core_box,
+             ((c // side) - (side - 1) / 2) * core_box)
+            for c in range(num_cores)
+        ]
+    # ring / all_to_all
+    r = max(core_box, num_cores * core_box / (2 * math.pi))
+    return [
+        (r * math.cos(-math.pi / 2 + 2 * math.pi * c / num_cores),
+         r * math.sin(-math.pi / 2 + 2 * math.pi * c / num_cores))
+        for c in range(num_cores)
+    ]
+
+
+def build_topology_elements(
+    num_cores: int,
+    num_qubits: int,
+    communication_qubits: int,
+    topology: str,
+    intracore_topology: str = "all_to_all",
+) -> list:
+    """Build the Cytoscape ``elements`` array for the multi-core topology view.
+
+    Nodes carry explicit ``position`` fields so the consumer can use a
+    ``preset`` Cytoscape layout — that gives a deterministic, low-crossing
+    drawing that honours the selected topology (grid intra-core renders as
+    an actual 2-D grid, ring as a circle, linear as a row, etc.) instead of
+    the lumpy clusters a force-directed solver produces.
+
+    Each core has ``qubits_per_core`` total qubits, of which
+    ``communication_qubits`` are dedicated to inter-core teleportation;
+    the rest are data qubits.  Intra-core edges follow ``intracore_topology``
+    over the per-core qubit list (data first, then comm — mirrors the
+    engine's ``_add_intracore_edges`` ordering).  Inter-core edges connect
+    communication qubits across cores per ``topology``.
+    """
+    import math
+
+    num_cores = max(1, int(num_cores or 1))
+    num_qubits = max(num_cores, int(num_qubits or num_cores))
+    qubits_per_core = max(1, num_qubits // num_cores)
+    comm_max = max(1, math.isqrt(qubits_per_core))
+    communication_qubits = max(1, min(int(communication_qubits or 1), comm_max))
+    # At least one data qubit per core (clamp comm so data >= 1).
+    if communication_qubits >= qubits_per_core:
+        communication_qubits = max(1, qubits_per_core - 1)
+    data_per_core = qubits_per_core - communication_qubits
+
+    # Per-core coordinates (centred at origin), then offset by core centres.
+    local_pos = _local_qubit_positions(qubits_per_core, intracore_topology)
+    if local_pos:
+        max_extent = max(max(abs(x), abs(y)) for x, y in local_pos)
+    else:
+        max_extent = _NODE_SPACING
+    core_box = max(_NODE_SPACING * 3, max_extent * 2 + _NODE_SPACING * _CORE_GAP)
+    cores_xy = _core_centres(num_cores, topology, core_box)
+
+    # Per-core rotation so the comm-qubit row faces the centroid of the
+    # core's inter-core neighbours — keeps the bundle of K×K bipartite
+    # links between cores visually clean instead of crossing through the
+    # data area.
+    from gui.dse_engine import inter_core_neighbors as _nbrs_for_view  # avoid cycle
+    _per_core_nbrs = _nbrs_for_view(num_cores, topology)
+    partners_per_core: list[list[int]] = list(_per_core_nbrs)
+
+    # The "natural" comm-qubit centroid in local coords — we rotate this
+    # vector to the target direction.  For all current intracore layouts
+    # (grid / linear / ring) the comm cells sit at the trailing end of the
+    # ordered list, which puts the default centroid in the lower half.
+    comm_local = local_pos[data_per_core:] if data_per_core < len(local_pos) else []
+    if comm_local and len(comm_local) > 0:
+        _cmx = sum(p[0] for p in comm_local) / len(comm_local)
+        _cmy = sum(p[1] for p in comm_local) / len(comm_local)
+        if abs(_cmx) > 1e-9 or abs(_cmy) > 1e-9:
+            default_angle = math.atan2(_cmy, _cmx)
+        else:
+            default_angle = math.pi / 2
+    else:
+        default_angle = math.pi / 2
+
+    snap_to_cardinal = (intracore_topology or "all_to_all").lower() == "grid"
+
+    def _rotated_positions(c: int) -> list[tuple[float, float]]:
+        if num_cores < 2 or not partners_per_core[c]:
+            return local_pos
+        cx, cy = cores_xy[c]
+        px = sum(cores_xy[p][0] for p in partners_per_core[c]) / len(partners_per_core[c])
+        py = sum(cores_xy[p][1] for p in partners_per_core[c]) / len(partners_per_core[c])
+        dx, dy = px - cx, py - cy
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            # Centroid coincides with this core — symmetric partners on
+            # opposite sides (e.g. linear interior cores).  Leave comm at
+            # the default location; per-qubit placement might do better
+            # but adds complexity for an edge case.
+            return local_pos
+        target = math.atan2(dy, dx)
+        rotation = target - default_angle
+        if snap_to_cardinal:
+            quarter = math.pi / 2
+            rotation = round(rotation / quarter) * quarter
+        cr, sr = math.cos(rotation), math.sin(rotation)
+        return [(cr * x - sr * y, sr * x + cr * y) for x, y in local_pos]
+
+    elements: list = []
+
+    # Nodes: data + comm qubits per core, with explicit positions.
+    for c in range(num_cores):
+        cx, cy = cores_xy[c]
+        positions_c = _rotated_positions(c)
+        for q in range(data_per_core):
+            lx, ly = positions_c[q]
+            elements.append({
+                "data": {
+                    "id": f"c{c}_d{q}",
+                    "label": f"c{c} d{q}",
+                    "core": c,
+                    "qtype": "data",
+                },
+                "position": {"x": cx + lx, "y": cy + ly},
+                "classes": "data",
+            })
+        for k in range(communication_qubits):
+            lx, ly = positions_c[data_per_core + k]
+            elements.append({
+                "data": {
+                    "id": f"c{c}_k{k}",
+                    "label": f"c{c} k{k}",
+                    "core": c,
+                    "qtype": "comm",
+                },
+                "position": {"x": cx + lx, "y": cy + ly},
+                "classes": "comm",
+            })
+
+    # Intra-core edges per the selected intracore_topology.  IDs ordered
+    # data-then-comm to match the engine's offset-based layout (any pattern
+    # other than all_to_all therefore connects the comm qubits at the end of
+    # the per-core list, which is what the routing/distance matrix sees).
+    intracore_topology = (intracore_topology or "all_to_all").lower()
+    for c in range(num_cores):
+        ids = (
+            [f"c{c}_d{q}" for q in range(data_per_core)]
+            + [f"c{c}_k{k}" for k in range(communication_qubits)]
+        )
+        size = len(ids)
+        if size < 2:
+            continue
+        if intracore_topology == "all_to_all":
+            for i in range(size):
+                for j in range(i + 1, size):
+                    elements.append({
+                        "data": {"source": ids[i], "target": ids[j]},
+                        "classes": "intra",
+                    })
+        elif intracore_topology == "linear":
+            for i in range(size - 1):
+                elements.append({
+                    "data": {"source": ids[i], "target": ids[i + 1]},
+                    "classes": "intra",
+                })
+        elif intracore_topology == "ring":
+            for i in range(size):
+                elements.append({
+                    "data": {"source": ids[i], "target": ids[(i + 1) % size]},
+                    "classes": "intra",
+                })
+        elif intracore_topology == "grid":
+            side = math.isqrt(size)
+            if side * side < size:
+                side += 1
+            for q in range(size):
+                row, col = divmod(q, side)
+                if col + 1 < side and q + 1 < size:
+                    elements.append({
+                        "data": {"source": ids[q], "target": ids[q + 1]},
+                        "classes": "intra",
+                    })
+                if q + side < size:
+                    elements.append({
+                        "data": {"source": ids[q], "target": ids[q + side]},
+                        "classes": "intra",
+                    })
+        else:
+            # Unknown: fall back to all_to_all.
+            for i in range(size):
+                for j in range(i + 1, size):
+                    elements.append({
+                        "data": {"source": ids[i], "target": ids[j]},
+                        "classes": "intra",
+                    })
+
+    if num_cores < 2 or communication_qubits == 0:
+        return elements
+
+    # Mirror the engine's coupling-map: every comm qubit on core c is
+    # connected to every comm qubit on each of c's inter-core neighbours
+    # (full K×K bipartite per neighbour pair).
+    from gui.dse_engine import inter_core_edges  # imported here to avoid cycles
+    for (a_core, a_k), (b_core, b_k) in inter_core_edges(
+        num_cores, communication_qubits, topology,
+    ):
+        elements.append({
+            "data": {
+                "source": f"c{a_core}_k{a_k}",
+                "target": f"c{b_core}_k{b_k}",
+            },
+            "classes": "inter",
+        })
+
+    return elements
+
+
+_TOPOLOGY_STYLESHEET = [
+    {
+        "selector": "node",
+        "style": {
+            "label": "data(label)",
+            "font-size": "8px",
+            "color": COLORS["text_muted"],
+            "text-valign": "center",
+            "text-halign": "center",
+            "text-margin-y": -10,
+            "text-opacity": 0,
+        },
+    },
+    {
+        "selector": ".data",
+        "style": {
+            "background-color": "#9ca3af",
+            "width": 12,
+            "height": 12,
+            "border-width": 1,
+            "border-color": "#6b7280",
+        },
+    },
+    {
+        "selector": ".comm",
+        "style": {
+            "background-color": "#3b82f6",
+            "width": 18,
+            "height": 18,
+            "border-width": 1.5,
+            "border-color": "#1d4ed8",
+        },
+    },
+    # When the fidelity overlay is active each node carries a ``fidelity``
+    # data field in [0, 1].  Two-stop selectors give a red→amber→green
+    # gradient that matches the on-screen legend; cytoscape ``mapData`` is
+    # linear so we split the range at 0.5 to get a true 3-colour ramp.
+    {
+        "selector": "node[fidelity][fidelity < 0.5]",
+        "style": {
+            "background-color": "mapData(fidelity, 0, 0.5, #b91c1c, #f59e0b)",
+            "border-color": "mapData(fidelity, 0, 0.5, #7f1d1d, #b45309)",
+        },
+    },
+    {
+        "selector": "node[fidelity][fidelity >= 0.5]",
+        "style": {
+            "background-color": "mapData(fidelity, 0.5, 1, #f59e0b, #15803d)",
+            "border-color": "mapData(fidelity, 0.5, 1, #b45309, #14532d)",
+        },
+    },
+    {
+        "selector": "edge",
+        "style": {
+            "curve-style": "straight",
+        },
+    },
+    {
+        "selector": ".intra",
+        "style": {
+            "line-color": "#d1d5db",
+            "width": 0.6,
+            "opacity": 0.4,
+        },
+    },
+    {
+        "selector": ".inter",
+        "style": {
+            "line-color": "#3b82f6",
+            "width": 1.6,
+            "opacity": 0.85,
+        },
+    },
+    {
+        "selector": "node:selected, .highlighted",
+        "style": {
+            "border-color": "#f59e0b",
+            "border-width": 3,
+            "text-opacity": 1,
+        },
+    },
+    {
+        "selector": ".dimmed",
+        "style": {
+            "opacity": 0.15,
+        },
+    },
+]
+
+
+def make_topology_view_panel() -> html.Div:
+    """Topology view container (Cytoscape).  Hidden unless the Topology view
+    tab is active.
+
+    Reads ``num_cores`` / ``num_qubits`` / ``communication_qubits`` /
+    ``topology`` from the right sidebar and renders an interactive
+    force-directed graph of the multi-core architecture.
+    """
+    return html.Div(
+        id="topology-view-container",
+        style={
+            "display": "none",
+            "position": "absolute",
+            "top": "0",
+            "left": "0",
+            "right": "0",
+            "bottom": "0",
+            "background": COLORS["bg"],
+            "zIndex": 5,
+        },
+        children=[
+            html.Div(
+                style={
+                    "position": "absolute",
+                    "top": "8px",
+                    "right": "8px",
+                    "zIndex": 10,
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "8px",
+                },
+                children=[
+                    html.Button(
+                        "Re-layout",
+                        id="topology-view-relayout",
+                        n_clicks=0,
+                        style={
+                            "background": COLORS["surface"],
+                            "border": f"1px solid {COLORS['border']}",
+                            "color": COLORS["text"],
+                            "borderRadius": "4px",
+                            "padding": "4px 12px",
+                            "fontSize": "11px",
+                            "cursor": "pointer",
+                        },
+                    ),
+                ],
+            ),
+            # Sweep navigation + fidelity-overlay controls.  The whole panel
+            # is hidden until a sweep with per_qubit metadata is loaded.
+            html.Div(
+                id="topology-sweep-controls",
+                style={
+                    "display": "none",
+                    "position": "absolute",
+                    "top": "8px",
+                    "left": "8px",
+                    "zIndex": 10,
+                    "background": COLORS["surface"],
+                    "border": f"1px solid {COLORS['border']}",
+                    "borderRadius": "6px",
+                    "padding": "14px 22px 18px",
+                    "width": "440px",
+                    "fontSize": "11px",
+                },
+                children=[
+                    # Facet selector — visible only when the sweep is faceted
+                    # (e.g. across routing algorithm).  Picks which slice of
+                    # the categorical product the topology view renders.
+                    html.Div(
+                        id="topology-facet-row",
+                        style={
+                            "display": "none",
+                            "alignItems": "center",
+                            "gap": "10px",
+                            "marginBottom": "10px",
+                        },
+                        children=[
+                            html.Span(
+                                id="topology-facet-label",
+                                children="Facet",
+                                style={
+                                    "fontSize": "10px",
+                                    "fontWeight": "700",
+                                    "textTransform": "uppercase",
+                                    "letterSpacing": "0.06em",
+                                    "color": COLORS["text_muted"],
+                                },
+                            ),
+                            dcc.Dropdown(
+                                id="topology-facet-selector",
+                                options=[],
+                                value=None,
+                                clearable=False,
+                                searchable=False,
+                                className="dse-dropdown",
+                                style={"width": "220px", "fontSize": "11px"},
+                            ),
+                        ],
+                    ),
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "10px",
+                            "marginBottom": "10px",
+                        },
+                        children=[
+                            html.Span(
+                                "Fidelity",
+                                style={
+                                    "fontSize": "10px",
+                                    "fontWeight": "700",
+                                    "textTransform": "uppercase",
+                                    "letterSpacing": "0.06em",
+                                    "color": COLORS["text_muted"],
+                                },
+                            ),
+                            dcc.Dropdown(
+                                id="topology-overlay-metric",
+                                options=[
+                                    {"label": "Overall", "value": "overall_fidelity"},
+                                    {"label": "Algorithmic", "value": "algorithmic_fidelity"},
+                                    {"label": "Routing", "value": "routing_fidelity"},
+                                    {"label": "Coherence", "value": "coherence_fidelity"},
+                                ],
+                                value="overall_fidelity",
+                                clearable=False,
+                                searchable=False,
+                                className="dse-dropdown",
+                                style={"width": "180px", "fontSize": "11px"},
+                            ),
+                        ],
+                    ),
+                    html.Div(
+                        id="topology-axis-sliders",
+                        children=[
+                            html.Div(
+                                id={"type": "topology-axis-row", "index": i},
+                                style={"display": "none"},
+                                children=[
+                                    html.Div(
+                                        style={
+                                            "padding": "12px 14px 26px",
+                                        },
+                                        children=[
+                                            html.Div(
+                                                style={
+                                                    "display": "flex",
+                                                    "alignItems": "baseline",
+                                                    "justifyContent": "space-between",
+                                                    "marginBottom": "10px",
+                                                },
+                                                children=[
+                                                    html.Span(
+                                                        id={"type": "topology-axis-label", "index": i},
+                                                        style={
+                                                            "fontSize": "11px",
+                                                            "fontWeight": "600",
+                                                            "color": COLORS["text_muted"],
+                                                            "textTransform": "uppercase",
+                                                            "letterSpacing": "0.05em",
+                                                        },
+                                                        children="",
+                                                    ),
+                                                    html.Span(
+                                                        id={"type": "topology-axis-value", "index": i},
+                                                        style={
+                                                            "fontSize": "11px",
+                                                            "color": COLORS["accent"],
+                                                            "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                                                        },
+                                                    ),
+                                                ],
+                                            ),
+                                            dcc.Slider(
+                                                id={"type": "topology-axis-slider", "index": i},
+                                                min=0, max=1, step=1, value=0,
+                                                marks={},
+                                                # No tooltip: the slider's
+                                                # value is the 0-based cell
+                                                # index, which is meaningless
+                                                # to the user.  The actual
+                                                # axis magnitude is shown by
+                                                # ``topology-axis-value`` on
+                                                # the row above.
+                                                updatemode="drag",
+                                                included=False,
+                                                className="dse-slider",
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                            )
+                            for i in range(MAX_SWEEP_AXES)
+                        ],
+                    ),
+                ],
+            ),
+            cyto.Cytoscape(
+                id="topology-cyto",
+                layout={
+                    "name": "preset",
+                    "fit": True,
+                    "padding": 40,
+                },
+                stylesheet=_TOPOLOGY_STYLESHEET,
+                elements=[],
+                style={
+                    "width": "100%",
+                    "height": "100%",
+                },
+                minZoom=0.2,
+                maxZoom=3.0,
+                wheelSensitivity=0.2,
+            ),
+            html.Div(
+                id="topology-view-hover",
+                style={
+                    "position": "absolute",
+                    "bottom": "32px",
+                    "left": "12px",
+                    "fontSize": "11px",
+                    "color": COLORS["text"],
+                    "background": COLORS["surface"],
+                    "padding": "8px 12px",
+                    "borderRadius": "6px",
+                    "border": f"1px solid {COLORS['border']}",
+                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                    "pointerEvents": "none",
+                    "minWidth": "240px",
+                    "lineHeight": "1.5",
+                },
+                children="Hover a node to inspect.",
+            ),
+            # Colour legend for the fidelity overlay — gradient bar with
+            # tick labels.  Hidden until the overlay is enabled.
+            html.Div(
+                id="topology-view-legend",
+                style={
+                    "display": "none",
+                    "position": "absolute",
+                    "bottom": "32px",
+                    "right": "12px",
+                    "background": COLORS["surface"],
+                    "border": f"1px solid {COLORS['border']}",
+                    "borderRadius": "6px",
+                    "padding": "8px 12px",
+                    "fontSize": "11px",
+                    "color": COLORS["text"],
+                    "pointerEvents": "none",
+                    "minWidth": "240px",
+                },
+                children=[
+                    html.Div(
+                        id="topology-legend-title",
+                        children="Overall fidelity",
+                        style={
+                            "fontSize": "10px",
+                            "fontWeight": "700",
+                            "textTransform": "uppercase",
+                            "letterSpacing": "0.06em",
+                            "color": COLORS["text_muted"],
+                            "marginBottom": "4px",
+                            "textAlign": "center",
+                        },
+                    ),
+                    html.Div(
+                        style={
+                            "height": "12px",
+                            "borderRadius": "3px",
+                            "background": "linear-gradient(to right, #b91c1c, #f59e0b, #15803d)",
+                            "border": f"1px solid {COLORS['border']}",
+                        },
+                    ),
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "justifyContent": "space-between",
+                            "marginTop": "3px",
+                            "fontSize": "10px",
+                            "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                            "color": COLORS["text_muted"],
+                        },
+                        children=[
+                            html.Span("0.0"),
+                            html.Span("0.25"),
+                            html.Span("0.5"),
+                            html.Span("0.75"),
+                            html.Span("1.0"),
+                        ],
+                    ),
+                ],
+            ),
+            html.Div(
+                # Future hook: user-uploaded coupling map will replace the
+                # synthetic elements built from the right-sidebar config.
+                style={
+                    "position": "absolute",
+                    "bottom": "8px",
+                    "left": "12px",
+                    "fontSize": "10px",
+                    "color": COLORS["text_muted"],
+                    "fontStyle": "italic",
+                },
+                children=(
+                    "Visualizing the current architecture. "
+                    "Custom coupling map upload coming soon."
+                ),
             ),
         ],
     )

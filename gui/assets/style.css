@@ -13,6 +13,17 @@
     --text:     #2B2B2B;
     --muted:    #888888;
     --radius:   5px;
+
+    /* Brand accent — "Instrument Teal".
+       Used sparingly: Run CTA, focus halo, active tab underline,
+       selected item highlight, slider track + thumb. Never for body
+       copy, never for large surfaces. */
+    --brand:        #0F5E6B;
+    --brand-hover:  #0B4A54;
+    --brand-press:  #083842;
+    --brand-wash:   #E8F1F2;
+    --brand-wash2:  #D3E4E6;
+    --brand-halo:   rgba(15, 94, 107, 0.15);
 }
 
 /* ── Base ───────────────────────────────────────────────────────── */
@@ -38,14 +49,14 @@ body {
 
 /* Active range */
 .dash-slider-range {
-    background: var(--accent) !important;
+    background: var(--brand) !important;
     height: 3px !important;
     border-radius: 2px !important;
 }
 
 /* Thumb / handle */
 .dash-slider-container [role="slider"] {
-    background: var(--accent) !important;
+    background: var(--brand) !important;
     border: 2px solid var(--bg) !important;
     width: 14px !important;
     height: 14px !important;
@@ -55,7 +66,7 @@ body {
 }
 .dash-slider-container [role="slider"]:hover,
 .dash-slider-container [role="slider"]:active {
-    box-shadow: 0 0 0 4px rgba(43, 43, 43, 0.12) !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 0 0 5px var(--brand-halo) !important;
     border-color: var(--bg) !important;
 }
 
@@ -81,8 +92,8 @@ body {
 
 /* ── Legacy rc-slider selectors (kept for Dash < 4 compat) ────── */
 .rc-slider-rail             { background: var(--border) !important; height: 3px !important; border-radius: 2px !important; }
-.rc-slider-track            { background: var(--accent) !important; height: 3px !important; border-radius: 2px !important; }
-.rc-slider-handle           { background: var(--accent) !important; border: 2px solid var(--bg) !important; width: 14px !important; height: 14px !important; margin-top: -6px !important; box-shadow: 0 1px 3px rgba(0,0,0,0.2) !important; opacity: 1 !important; }
+.rc-slider-track            { background: var(--brand) !important; height: 3px !important; border-radius: 2px !important; }
+.rc-slider-handle           { background: var(--brand) !important; border: 2px solid var(--bg) !important; width: 14px !important; height: 14px !important; margin-top: -6px !important; box-shadow: 0 1px 3px rgba(0,0,0,0.2) !important; opacity: 1 !important; }
 .rc-slider-tooltip           { z-index: 999 !important; }
 .rc-slider-tooltip-inner     { white-space: nowrap !important; max-width: none !important; }
 .rc-slider-tooltip-arrow     { display: none !important; }
@@ -108,6 +119,10 @@ body {
 }
 .dse-dropdown [class*="-control"]:hover {
     border-color: var(--accent2) !important;
+}
+.dse-dropdown [class*="-control"]--is-focused {
+    border-color: var(--brand) !important;
+    box-shadow: 0 0 0 3px var(--brand-halo) !important;
 }
 
 .dse-dropdown [class*="-singleValue"],
@@ -198,8 +213,8 @@ input[type="number"] { -moz-appearance: textfield; }
     font-size: 13px !important;
 }
 .dse-input:focus {
-    border-color: var(--accent) !important;
-    box-shadow: 0 0 0 2px rgba(43, 43, 43, 0.08) !important;
+    border-color: var(--brand) !important;
+    box-shadow: 0 0 0 3px var(--brand-halo) !important;
     outline: none !important;
 }
 
@@ -209,7 +224,7 @@ input[type="number"] { -moz-appearance: textfield; }
    ═══════════════════════════════════════════════════════════════════ */
 
 input[type="checkbox"] {
-    accent-color: var(--accent);
+    accent-color: var(--brand);
     width: 15px;
     height: 15px;
     cursor: pointer;
@@ -249,8 +264,8 @@ input[type="checkbox"] {
 
 .modebar { background: transparent !important; }
 .modebar-btn path { fill: var(--muted) !important; }
-.modebar-btn:hover path { fill: var(--accent) !important; }
-.modebar-btn.active path { fill: var(--accent) !important; }
+.modebar-btn:hover path { fill: var(--brand) !important; }
+.modebar-btn.active path { fill: var(--brand) !important; }
 
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -346,4 +361,135 @@ input[type="checkbox"] {
     margin-top: 0 !important;
     margin-bottom: 4px !important;
     box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.12) !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   QUADRIS BRAND  (topbar lockup + Run CTA + status pulse)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Topbar brand lockup: mark + wordmark + DSE Explorer sub-mark.    */
+.quadris-lockup {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.quadris-mark {
+    color: var(--brand);
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+.quadris-wordmark {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: -0.01em;
+    line-height: 1;
+}
+.quadris-submark {
+    font-size: 11px;
+    color: var(--muted);
+    margin-left: 4px;
+    padding-left: 10px;
+    border-left: 1px solid var(--border);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-weight: 600;
+    line-height: 1;
+}
+
+/* Primary Run CTA — fills with brand teal. */
+.run-btn {
+    background: var(--brand);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 7px 22px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.08s ease;
+}
+.run-btn:hover {
+    background: var(--brand-hover);
+    box-shadow: 0 0 0 4px var(--brand-halo);
+}
+.run-btn:active {
+    background: var(--brand-press);
+    transform: translateY(1px);
+    box-shadow: none;
+}
+.run-btn:disabled {
+    background: var(--brand-press);
+    cursor: progress;
+    box-shadow: none;
+    transform: none;
+}
+
+/* Live "running" pulse used in the status bar. */
+.quadris-pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--brand);
+    display: inline-block;
+    animation: quadris-pulse 1.2s ease-in-out infinite;
+}
+@keyframes quadris-pulse {
+    0%, 100% { opacity: 1;   transform: scale(1); }
+    50%      { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* "Axis N" chip used on metric cards in the sweep sidebar. */
+.axis-chip {
+    font-size: 9px;
+    font-weight: 700;
+    color: var(--brand);
+    background: var(--brand-wash);
+    padding: 3px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+    line-height: 1;
+}
+
+/* Editable value chip shown next to a slider's label.
+   Reads as a teal pill at rest; bevels into a proper input on focus. */
+.slider-value-chip {
+    width: 56px;
+    background: var(--brand-wash);
+    border: 1px solid transparent;
+    color: var(--brand);
+    font-weight: 600;
+    font-size: 11px;
+    font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-align: right;
+    outline: none;
+    box-sizing: border-box;
+    line-height: 1.4;
+    -moz-appearance: textfield;
+    transition: background 0.12s ease, border-color 0.12s ease,
+                box-shadow 0.12s ease;
+}
+.slider-value-chip::-webkit-inner-spin-button,
+.slider-value-chip::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+.slider-value-chip:hover {
+    background: var(--brand-wash2);
+}
+.slider-value-chip:focus {
+    background: var(--bg);
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-halo);
+    text-align: left;
 }
