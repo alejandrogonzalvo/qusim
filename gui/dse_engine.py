@@ -142,7 +142,17 @@ from .constants import (
 # Circuit builders
 # ---------------------------------------------------------------------------
 
-def _build_circuit(circuit_type: str, num_qubits: int, seed: int) -> qiskit.QuantumCircuit:
+def _build_circuit(
+    circuit_type: str,
+    num_qubits: int,
+    seed: int,
+    qasm_str: str | None = None,
+) -> qiskit.QuantumCircuit:
+    if circuit_type == "custom":
+        if not qasm_str:
+            raise ValueError("circuit_type='custom' requires a non-empty qasm_str")
+        from qiskit import qasm2
+        return qasm2.loads(qasm_str)
     if circuit_type == "qft":
         circ = QFT(num_qubits)
     elif circuit_type == "ghz":
@@ -437,6 +447,21 @@ def _extract_per_qubit(result: dict, cached: "CachedMapping | None", *,
     return out
 
 
+def _expand_qubits_alias(cfg: dict) -> None:
+    """Expand the virtual ``qubits`` cold-path key in-place.
+
+    ``qubits`` is a sweep alias for "physical qubits == logical qubits".
+    The engine itself only knows ``num_qubits`` and ``num_logical_qubits``,
+    so every place that consumes a swept cold cfg needs to translate
+    ``qubits`` -> both keys before running the cold path.
+    """
+    if "qubits" not in cfg:
+        return
+    n = int(cfg.pop("qubits"))
+    cfg["num_qubits"] = n
+    cfg["num_logical_qubits"] = n
+
+
 def _resolve_cell_cold_cfg(
     cold_config: dict, swept: dict[str, float],
 ) -> dict:
@@ -451,6 +476,7 @@ def _resolve_cell_cold_cfg(
     for k, v in swept.items():
         if k in DSEEngine.COLD_PATH_KEYS:
             cfg[k] = int(v) if k in DSEEngine.INTEGER_KEYS else v
+    _expand_qubits_alias(cfg)
     cfg["num_cores"] = min(int(cfg.get("num_cores", 1)), int(cfg.get("num_qubits", 1)))
     if "communication_qubits" in cfg:
         qpc = max(1, int(cfg["num_qubits"]) // max(1, int(cfg["num_cores"])))
@@ -635,6 +661,7 @@ class DSEEngine:
         routing_algorithm: str = "hqa_sabre",
         communication_qubits: int = 1,
         num_logical_qubits: Optional[int] = None,
+        custom_qasm: Optional[str] = None,
     ) -> CachedMapping:
         """
         Full circuit transpilation + mapping. Returns a CachedMapping that
@@ -650,13 +677,29 @@ class DSEEngine:
         per-comm-qubit pairings so K controls how many parallel
         teleportation slots exist between neighbouring cores.
         """
-        if num_logical_qubits is None:
+        if circuit_type == "custom":
+            if not custom_qasm:
+                raise ValueError("circuit_type='custom' requires a custom_qasm string")
+            from qiskit import qasm2
+            _custom_circ = qasm2.loads(custom_qasm)
+            num_logical_qubits = int(_custom_circ.num_qubits)
+            if num_logical_qubits > int(num_qubits):
+                raise ValueError(
+                    f"Custom circuit uses {num_logical_qubits} logical qubits, "
+                    f"which exceeds the device's {int(num_qubits)} physical qubits."
+                )
+        elif num_logical_qubits is None:
             num_logical_qubits = num_qubits
         num_logical_qubits = max(2, min(int(num_logical_qubits), int(num_qubits)))
+        import hashlib as _hashlib
+        qasm_fingerprint = (
+            _hashlib.sha256(custom_qasm.encode("utf-8")).hexdigest()[:16]
+            if custom_qasm else None
+        )
         config_key = (
             circuit_type, num_qubits, num_cores, topology_type, intracore_topology,
             placement_policy, seed, routing_algorithm, int(communication_qubits or 1),
-            int(num_logical_qubits),
+            int(num_logical_qubits), qasm_fingerprint,
         )
         if self._cache is not None and self._cache.config_key == config_key:
             return self._cache
@@ -667,11 +710,12 @@ class DSEEngine:
                 intracore_topology, seed, noise, config_key,
                 num_logical_qubits=num_logical_qubits,
                 communication_qubits=communication_qubits,
+                custom_qasm=custom_qasm,
             )
 
         t0 = time.time()
 
-        circ = _build_circuit(circuit_type, num_logical_qubits, seed)
+        circ = _build_circuit(circuit_type, num_logical_qubits, seed, qasm_str=custom_qasm)
         transp = _transpile_circuit(circ, seed)
 
         full_coupling_map, core_mapping = _build_topology(
@@ -768,6 +812,7 @@ class DSEEngine:
         config_key: tuple,
         num_logical_qubits: Optional[int] = None,
         communication_qubits: int = 1,
+        custom_qasm: Optional[str] = None,
     ) -> CachedMapping:
         """Cold path using TeleSABRE routing. Writes QASM + device JSON to
         temp files, calls telesabre_map_and_estimate, and caches the resulting
@@ -781,11 +826,17 @@ class DSEEngine:
         t0 = time.time()
         merged = _merge_noise(noise or {})
 
-        if num_logical_qubits is None:
+        if circuit_type == "custom":
+            if not custom_qasm:
+                raise ValueError("circuit_type='custom' requires a custom_qasm string")
+            from qiskit import qasm2
+            _custom_circ = qasm2.loads(custom_qasm)
+            num_logical_qubits = int(_custom_circ.num_qubits)
+        elif num_logical_qubits is None:
             num_logical_qubits = num_qubits
         num_logical_qubits = max(2, min(int(num_logical_qubits), int(num_qubits)))
 
-        circ = _build_circuit(circuit_type, num_logical_qubits, seed)
+        circ = _build_circuit(circuit_type, num_logical_qubits, seed, qasm_str=custom_qasm)
         transp = _transpile_circuit(circ, seed)
 
         # Write QASM to temp file
@@ -959,10 +1010,11 @@ class DSEEngine:
     # -- Sweep methods -------------------------------------------------------
 
     COLD_PATH_KEYS = frozenset({
+        "qubits",  # virtual alias: expands to num_qubits == num_logical_qubits
         "num_qubits", "num_cores", "communication_qubits", "num_logical_qubits",
         "circuit_type", "topology_type", "intracore_topology", "routing_algorithm",
     })
-    INTEGER_KEYS = frozenset({"num_qubits", "num_cores", "communication_qubits", "num_logical_qubits", "classical_link_width", "classical_routing_cycles"})
+    INTEGER_KEYS = frozenset({"qubits", "num_qubits", "num_cores", "communication_qubits", "num_logical_qubits", "classical_link_width", "classical_routing_cycles"})
 
     def _memory_capped_max_hot(self, max_hot: int | None) -> tuple[int, int]:
         """Clamp a requested ``max_hot`` to what current RAM can hold.
@@ -1124,6 +1176,7 @@ class DSEEngine:
                 cfg[k] = int(v) if k in self.INTEGER_KEYS else v
             else:
                 hot_noise[k] = v
+        _expand_qubits_alias(cfg)
         cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
         # Clamp communication_qubits to [1, floor(sqrt(qubits_per_core))] so the
         # same value flowing in from a sweep axis can't outrun a smaller
@@ -1203,8 +1256,12 @@ class DSEEngine:
         fallback_nq = int(cold_config.get("num_qubits", 16))
 
         def _group_nq(cv: tuple) -> int:
+            # Also recognise the ``qubits`` alias (logical == physical sweep)
+            # which expands to ``num_qubits`` inside the worker.  Without
+            # this, memory estimation falls back to the default and large
+            # qubit-count cells get scheduled in parallel and OOM.
             for k, v in cv:
-                if k == "num_qubits":
+                if k == "num_qubits" or k == "qubits":
                     return int(v)
             return fallback_nq
 
@@ -1693,6 +1750,7 @@ def _eval_cold_batch(
     for k, v in swept_list[0].items():
         if k in DSEEngine.COLD_PATH_KEYS:
             cfg[k] = int(v)
+    _expand_qubits_alias(cfg)
     cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
     if "communication_qubits" in cfg:
         qpc = max(1, int(cfg["num_qubits"]) // max(1, int(cfg["num_cores"])))

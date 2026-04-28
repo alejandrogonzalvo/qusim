@@ -372,6 +372,14 @@ def make_metric_selector(index: int) -> html.Div:
                 className="dse-dropdown",
             ),
             html.Div(
+                id=f"metric-help-{index}",
+                # Per-metric inline hint.  Hidden by default; populated by
+                # the dropdown-change callback when the chosen metric has a
+                # description worth surfacing inline (e.g. the ``qubits``
+                # alias which folds Physical + Logical).
+                style={"display": "none"},
+            ),
+            html.Div(
                 id=f"metric-slider-container-{index}",
                 children=[
                     dcc.RangeSlider(
@@ -600,6 +608,140 @@ _CONFIG_TAB_ACTIVE_STYLE = {
 }
 
 
+_QISKIT_QASM_SNIPPET = """from qiskit import QuantumCircuit, qasm2
+
+# Build (or load) your *logical* circuit — no transpiling, no
+# coupling-map, no swap insertion. Quadris re-routes for you.
+qc = QuantumCircuit(5)
+qc.h(0)
+for i in range(1, 5):
+    qc.cx(0, i)
+
+# OpenQASM 2.0 export — what the upload control expects.
+qasm_str = qasm2.dumps(qc)
+
+with open("my_circuit.qasm", "w") as f:
+    f.write(qasm_str)
+"""
+
+
+def make_custom_qasm_help_modal() -> dbc.Modal:
+    """Modal explaining how to export a logical OpenQASM file from Qiskit."""
+    return dbc.Modal(
+        id="custom-qasm-help-modal",
+        is_open=False,
+        size="lg",
+        children=[
+            dbc.ModalHeader(dbc.ModalTitle("Exporting a logical circuit from Qiskit")),
+            dbc.ModalBody(
+                children=[
+                    html.P(
+                        "Upload a logical OpenQASM 2.0 file — one that has not "
+                        "been compiled for any specific topology or coupling "
+                        "map. Quadris performs its own placement and routing, "
+                        "so any pre-inserted SWAPs would be applied on top of "
+                        "the routed program and skew the design-space results.",
+                        style={"fontSize": "13px", "marginBottom": "10px"},
+                    ),
+                    html.Pre(
+                        _QISKIT_QASM_SNIPPET,
+                        style={
+                            "background": COLORS["surface2"],
+                            "border": f"1px solid {COLORS['border']}",
+                            "borderRadius": "6px",
+                            "padding": "10px 12px",
+                            "fontSize": "12px",
+                            "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                            "color": COLORS["text"],
+                            "whiteSpace": "pre",
+                            "overflowX": "auto",
+                            "margin": "0",
+                        },
+                    ),
+                ],
+            ),
+            dbc.ModalFooter(
+                dbc.Button(
+                    "Close",
+                    id="custom-qasm-help-close",
+                    className="ghost-btn",
+                    n_clicks=0,
+                ),
+            ),
+        ],
+    )
+
+
+def make_custom_qasm_row() -> html.Div:
+    """
+    "Custom circuit" row in the Circuit tab.  Combines a compact upload
+    button, a help icon (opens the Qiskit-export modal), and a status
+    line showing the currently uploaded file (with a Clear button).
+    """
+    return html.Div(
+        id="cfg-row-custom-qasm",
+        style={"marginBottom": "10px"},
+        children=[
+            html.Div(
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "6px",
+                    "marginBottom": "4px",
+                },
+                children=[
+                    html.Span(
+                        "Custom circuit",
+                        style={"fontSize": "12px", "color": COLORS["text"]},
+                    ),
+                    html.Span(
+                        "?",
+                        id="custom-qasm-help-icon",
+                        className="help-icon",
+                        n_clicks=0,
+                        style={"cursor": "pointer"},
+                    ),
+                    dbc.Tooltip(
+                        "How to export a logical OpenQASM 2.0 file from Qiskit",
+                        target="custom-qasm-help-icon",
+                        placement="top",
+                        style={
+                            "fontSize": "11px",
+                            "maxWidth": "240px",
+                            "fontWeight": "400",
+                        },
+                    ),
+                ],
+            ),
+            dcc.Upload(
+                id="custom-qasm-upload",
+                multiple=False,
+                accept=".qasm,.txt",
+                children=html.Div(
+                    id="custom-qasm-upload-label",
+                    children="Upload .qasm",
+                    style={
+                        "border": f"1px dashed {COLORS['border']}",
+                        "borderRadius": "6px",
+                        "padding": "8px 10px",
+                        "fontSize": "12px",
+                        "color": COLORS["text_muted"],
+                        "textAlign": "center",
+                        "cursor": "pointer",
+                        "background": COLORS["surface2"],
+                    },
+                ),
+                style_active={},
+            ),
+            html.Div(
+                id="custom-qasm-status",
+                style={"display": "none"},
+                children=[],
+            ),
+        ],
+    )
+
+
 def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     """
     Build the right-panel configuration controls as tabbed sections.
@@ -619,55 +761,67 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     # --- Circuit tab content ---
     circuit_content = html.Div(
         [
-            slider_row(
-                label="Logical qubits",
-                slider_id="cfg-num-logical-qubits",
-                min=int(METRIC_BY_KEY["num_logical_qubits"].slider_min),
-                max=16,  # initial cap = default physical qubits; live-updated
-                step=1,
-                value=16,
-                log_scale=False,
-                tooltip=(
-                    "Number of qubits used by the algorithm circuit. "
-                    "Must be ≤ Physical qubits (set in the Topology tab)."
+            make_custom_qasm_row(),
+            html.Div(
+                id="cfg-row-num-logical-qubits-wrap",
+                children=slider_row(
+                    label="Logical qubits",
+                    slider_id="cfg-num-logical-qubits",
+                    min=int(METRIC_BY_KEY["num_logical_qubits"].slider_min),
+                    max=16,  # initial cap = default physical qubits; live-updated
+                    step=1,
+                    value=16,
+                    log_scale=False,
+                    tooltip=(
+                        "Number of qubits used by the algorithm circuit. "
+                        "Must be ≤ Physical qubits (set in the Topology tab)."
+                    ),
+                    row_id="cfg-row-num-logical-qubits",
+                    row_style=({"display": "none"} if "num_logical_qubits" in swept_keys else {}),
                 ),
-                row_id="cfg-row-num-logical-qubits",
-                row_style=({"display": "none"} if "num_logical_qubits" in swept_keys else {}),
-            ),
-            _label("Seed"),
-            dcc.Input(
-                id="cfg-seed",
-                type="number",
-                value=42,
-                min=0,
-                debounce=True,
-                className="dse-input",
-                style={
-                    "width": "100%",
-                    "background": COLORS["surface2"],
-                    "border": f"1px solid {COLORS['border']}",
-                    "color": COLORS["text"],
-                    "borderRadius": "6px",
-                    "padding": "6px 10px",
-                    "fontSize": "13px",
-                    "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
-                    "marginBottom": "10px",
-                    "outline": "none",
-                },
             ),
             html.Div(
-                id="cfg-row-cat-circuit_type",
+                id="cfg-row-seed",
                 children=[
-                    _label("Circuit type"),
-                    dcc.Dropdown(
-                        id="cfg-circuit-type",
-                        options=CIRCUIT_TYPES,
-                        value="qft",
-                        clearable=False,
-                        className="dse-dropdown",
-                        style={"marginBottom": "10px"},
+                    _label("Seed"),
+                    dcc.Input(
+                        id="cfg-seed",
+                        type="number",
+                        value=42,
+                        min=0,
+                        debounce=True,
+                        className="dse-input",
+                        style={
+                            "width": "100%",
+                            "background": COLORS["surface2"],
+                            "border": f"1px solid {COLORS['border']}",
+                            "color": COLORS["text"],
+                            "borderRadius": "6px",
+                            "padding": "6px 10px",
+                            "fontSize": "13px",
+                            "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
+                            "marginBottom": "10px",
+                            "outline": "none",
+                        },
                     ),
                 ],
+            ),
+            html.Div(
+                id="cfg-row-cat-circuit_type-wrap",
+                children=html.Div(
+                    id="cfg-row-cat-circuit_type",
+                    children=[
+                        _label("Circuit type"),
+                        dcc.Dropdown(
+                            id="cfg-circuit-type",
+                            options=CIRCUIT_TYPES,
+                            value="qft",
+                            clearable=False,
+                            className="dse-dropdown",
+                            style={"marginBottom": "10px"},
+                        ),
+                    ],
+                ),
             ),
             html.Div(
                 id="cfg-row-cat-placement",

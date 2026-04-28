@@ -37,6 +37,7 @@ from gui.components import (
     _tooltip_cfg,
     build_topology_elements,
     make_add_metric_button,
+    make_custom_qasm_help_modal,
     make_fixed_config_panel,
     make_merit_controls,
     make_merit_view_controls,
@@ -940,6 +941,16 @@ app.layout = html.Div(
         dcc.Store(id="merit-frozen-values-store", data={}, storage_type="memory"),
         dcc.Download(id="session-download"),
         dcc.Interval(id="sweep-check", interval=16, n_intervals=0),
+        # Custom-circuit upload state.  When ``qasm`` is non-empty the sweep
+        # callback bypasses ``circuit_type`` and feeds the QASM string into
+        # the engine; the Circuit-tab dropdown / seed / logical-qubits rows
+        # and the matching sweep-axis options are hidden.
+        dcc.Store(
+            id="custom-qasm-store",
+            data={"qasm": None, "filename": None, "num_qubits": None, "error": None},
+            storage_type="memory",
+        ),
+        make_custom_qasm_help_modal(),
     ],
 )
 
@@ -1199,10 +1210,21 @@ def toggle_noise_rows(*args):
     noise_styles = [
         {"display": "none"} if m.is_cold_path or m.key in swept else {} for m in _SM
     ]
-    qubits_style = {"display": "none"} if "num_qubits" in swept else {}
+    # The virtual ``qubits`` axis sweeps physical == logical, so it hides
+    # both config rows for the duration of the sweep.
+    qubits_alias_swept = "qubits" in swept
+    qubits_style = (
+        {"display": "none"}
+        if ("num_qubits" in swept or qubits_alias_swept)
+        else {}
+    )
     cores_style = {"display": "none"} if "num_cores" in swept else {}
     comm_style = {"display": "none"} if "communication_qubits" in swept else {}
-    logi_style = {"display": "none"} if "num_logical_qubits" in swept else {}
+    logi_style = (
+        {"display": "none"}
+        if ("num_logical_qubits" in swept or qubits_alias_swept)
+        else {}
+    )
     cat_styles = [
         {"display": "none"} if cat.key in swept else {} for cat in CATEGORICAL_METRICS
     ]
@@ -1534,6 +1556,7 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     State("pareto-y-axis-dropdown", "value"),
     State("fom-config-store", "data"),
     State("user-sid", "data"),
+    State("custom-qasm-store", "data"),
     *_NOISE_SLIDER_STATES,
     prevent_initial_call=True,
 )
@@ -1580,7 +1603,14 @@ def run_sweep(
     pareto_y = all_args[idx]; idx += 1
     fom_config = all_args[idx]; idx += 1
     user_sid = all_args[idx]; idx += 1
+    custom_qasm_data = all_args[idx] or {}; idx += 1
     noise_slider_vals = all_args[idx:]
+    custom_qasm_str = custom_qasm_data.get("qasm")
+    custom_qasm_nq = custom_qasm_data.get("num_qubits")
+    if custom_qasm_str:
+        circuit_type = "custom"
+        if custom_qasm_nq:
+            num_logical_qubits = int(custom_qasm_nq)
 
     sweep_lock.acquire()
 
@@ -1612,6 +1642,10 @@ def run_sweep(
         for i in range(int(num_metrics or 1)):
             k = dropdown_vals[i]
             if not k or k in seen:
+                continue
+            # When a custom QASM circuit is loaded, circuit-shape axes are
+            # meaningless — silently drop them so the sweep can still run.
+            if custom_qasm_str and k in _CUSTOM_QASM_DISABLED_KEYS:
                 continue
             seen.add(k)
             cat = CAT_METRIC_BY_KEY.get(k)
@@ -1657,6 +1691,7 @@ def run_sweep(
             "seed": int(seed or 42),
             "intracore_topology": intracore_topology or "all_to_all",
             "routing_algorithm": routing_algorithm or "hqa_sabre",
+            "custom_qasm": custom_qasm_str,
         }
 
         # Build numeric sweep_axes from slider ranges.
@@ -2069,6 +2104,45 @@ def replot_on_output_change(
 # ---------------------------------------------------------------------------
 
 
+# Inline-hint copy keyed by sweep-metric key.  Only metrics whose role is
+# non-obvious from the label live here; everything else gets nothing under
+# the dropdown.
+_METRIC_INLINE_HINT = {
+    "qubits": (
+        "Sweeps physical qubits with logical = physical. "
+        "Hides the Physical / Logical config rows while active."
+    ),
+}
+
+_METRIC_HINT_VISIBLE_STYLE = {
+    "fontSize": "11px",
+    "color": COLORS["text_muted"],
+    "background": COLORS["surface"],
+    "border": f"1px solid {COLORS['border']}",
+    "borderRadius": "4px",
+    "padding": "6px 8px",
+    "marginBottom": "10px",
+    "lineHeight": "1.35",
+    "fontStyle": "italic",
+    "display": "block",
+}
+
+
+for _idx in range(MAX_METRICS):
+
+    @app.callback(
+        Output(f"metric-help-{_idx}", "children"),
+        Output(f"metric-help-{_idx}", "style"),
+        Input(f"metric-dropdown-{_idx}", "value"),
+        prevent_initial_call=False,
+    )
+    def _update_metric_hint(metric_key, _i=_idx):
+        hint = _METRIC_INLINE_HINT.get(metric_key)
+        if not hint:
+            return "", {"display": "none"}
+        return hint, _METRIC_HINT_VISIBLE_STYLE
+
+
 def _arch_clamped_max(
     metric_key: str | None,
     slider_min: float,
@@ -2283,15 +2357,25 @@ _ALL_METRIC_OPTIONS = (
 )
 
 
+# Sweep-axis keys that are meaningless once a custom QASM circuit is loaded:
+# the algorithm size and gate sequence are fully determined by the uploaded
+# file, so neither circuit type, logical qubit count, nor the (logical, physical)
+# alias should be selectable on a sweep axis.
+_CUSTOM_QASM_DISABLED_KEYS = {"circuit_type", "num_logical_qubits", "qubits"}
+
+
 @app.callback(
     *[Output(f"metric-dropdown-{i}", "options") for i in range(MAX_METRICS)],
     *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
     Input("num-metrics-store", "data"),
+    Input("custom-qasm-store", "data"),
     prevent_initial_call=True,
 )
 def _filter_dropdown_options(*args):
     values = args[:MAX_METRICS]
     num_metrics = args[MAX_METRICS] or 1
+    custom_qasm = args[MAX_METRICS + 1] or {}
+    custom_active = bool(custom_qasm.get("qasm"))
     # Only consider dropdowns from visible (active) rows as "taken"
     results = []
     for i in range(MAX_METRICS):
@@ -2301,11 +2385,199 @@ def _filter_dropdown_options(*args):
             if j != i and values[j]
         }
         results.append([
-            {**opt, "disabled": opt["value"] in taken}
+            {
+                **opt,
+                "disabled": (
+                    opt["value"] in taken
+                    or (custom_active and opt["value"] in _CUSTOM_QASM_DISABLED_KEYS)
+                ),
+            }
             for opt in _ALL_METRIC_OPTIONS
         ])
     return results
 
+
+# ---------------------------------------------------------------------------
+# Callback: custom-QASM upload / clear → populate custom-qasm-store
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("custom-qasm-store", "data"),
+    Output("sweep-dirty", "data", allow_duplicate=True),
+    Input("custom-qasm-upload", "contents"),
+    Input({"type": "custom-qasm-clear", "index": ALL}, "n_clicks"),
+    State("custom-qasm-upload", "filename"),
+    State("sweep-dirty", "data"),
+    prevent_initial_call=True,
+)
+def on_custom_qasm_change(contents, clear_clicks, filename, sweep_dirty):
+    import base64
+
+    triggered = ctx.triggered_id
+    cleared = (
+        isinstance(triggered, dict)
+        and triggered.get("type") == "custom-qasm-clear"
+        and any(clear_clicks or [])
+    )
+    if cleared or contents is None:
+        return (
+            {"qasm": None, "filename": None, "num_qubits": None, "error": None},
+            (sweep_dirty or 0) + 1,
+        )
+
+    try:
+        _, b64 = contents.split(",", 1)
+        raw = base64.b64decode(b64)
+        qasm_str = raw.decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        return (
+            {"qasm": None, "filename": filename, "num_qubits": None,
+             "error": f"Failed to decode upload: {exc}"},
+            sweep_dirty or 0,
+        )
+
+    try:
+        from qiskit import qasm2
+        circ = qasm2.loads(qasm_str)
+        num_qubits = int(circ.num_qubits)
+    except Exception as exc:
+        return (
+            {"qasm": None, "filename": filename, "num_qubits": None,
+             "error": f"Not a valid OpenQASM 2.0 circuit: {exc}"},
+            sweep_dirty or 0,
+        )
+
+    return (
+        {"qasm": qasm_str, "filename": filename, "num_qubits": num_qubits, "error": None},
+        (sweep_dirty or 0) + 1,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Callback: render the custom-QASM status line + hide circuit-config rows
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("custom-qasm-status", "children"),
+    Output("custom-qasm-status", "style"),
+    Output("custom-qasm-upload-label", "children"),
+    Output("cfg-row-cat-circuit_type-wrap", "style"),
+    Output("cfg-row-num-logical-qubits-wrap", "style"),
+    Output("cfg-row-seed", "style"),
+    Input("custom-qasm-store", "data"),
+)
+def render_custom_qasm_status(data):
+    data = data or {}
+    qasm = data.get("qasm")
+    err = data.get("error")
+    filename = data.get("filename") or "circuit.qasm"
+    nq = data.get("num_qubits")
+
+    hidden = {"display": "none"}
+    visible = {}
+
+    if err:
+        status_children = [
+            html.Div(
+                err,
+                style={
+                    "fontSize": "11px",
+                    "color": FEEDBACK_COLORS["error"]["text"],
+                    "padding": "6px 8px",
+                    "background": FEEDBACK_COLORS["error"]["bg"],
+                    "border": f"1px solid {FEEDBACK_COLORS['error']['border']}",
+                    "borderRadius": "6px",
+                    "marginTop": "6px",
+                },
+            ),
+        ]
+        return (
+            status_children,
+            {"display": "block"},
+            "Upload .qasm",
+            visible, visible, visible,
+        )
+
+    if not qasm:
+        return (
+            [],
+            {"display": "none"},
+            "Upload .qasm",
+            visible, visible, visible,
+        )
+
+    status_children = [
+        html.Div(
+            style={
+                "display": "flex",
+                "alignItems": "center",
+                "justifyContent": "space-between",
+                "gap": "6px",
+                "marginTop": "6px",
+                "padding": "6px 8px",
+                "border": f"1px solid {COLORS['border']}",
+                "borderRadius": "6px",
+                "background": COLORS["surface"],
+            },
+            children=[
+                html.Div(
+                    style={
+                        "minWidth": "0",
+                        "fontSize": "11px",
+                        "color": COLORS["text"],
+                        "overflow": "hidden",
+                        "textOverflow": "ellipsis",
+                        "whiteSpace": "nowrap",
+                    },
+                    title=filename,
+                    children=[
+                        html.Span("✓ ", style={"color": COLORS["brand"]}),
+                        html.Span(filename, style={"fontWeight": "600"}),
+                        html.Span(
+                            f"  ({nq} qubits)" if nq else "",
+                            style={"color": COLORS["text_muted"]},
+                        ),
+                    ],
+                ),
+                html.Button(
+                    "Clear",
+                    id={"type": "custom-qasm-clear", "index": 0},
+                    className="ghost-btn",
+                    n_clicks=0,
+                    style={"padding": "2px 8px", "fontSize": "11px"},
+                ),
+            ],
+        ),
+    ]
+    return (
+        status_children,
+        {"display": "block"},
+        f"Replace ({filename})",
+        hidden, hidden, hidden,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Callback: open / close the custom-QASM help modal
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("custom-qasm-help-modal", "is_open"),
+    Input("custom-qasm-help-icon", "n_clicks"),
+    Input("custom-qasm-help-close", "n_clicks"),
+    State("custom-qasm-help-modal", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_custom_qasm_help_modal(open_clicks, close_clicks, is_open):
+    triggered = ctx.triggered_id
+    if triggered == "custom-qasm-help-icon":
+        return True
+    if triggered == "custom-qasm-help-close":
+        return False
+    return is_open
 
 
 # ---------------------------------------------------------------------------

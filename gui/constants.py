@@ -150,6 +150,19 @@ SWEEPABLE_METRICS: List[MetricDef] = [
         description="Clock cycles for routing/arbitration overhead per hop",
     ),
     MetricDef(
+        key="qubits",
+        label="Qubits",
+        slider_min=4, slider_max=256,
+        slider_default_low=4, slider_default_high=64,
+        num_steps=15, log_scale=False, unit="",
+        is_cold_path=True,
+        description=(
+            "Sweeps physical qubits with logical qubits == physical. "
+            "Hides the Physical / Logical config rows while active so "
+            "the design space is one-dimensional in qubit count."
+        ),
+    ),
+    MetricDef(
         key="num_qubits",
         label="Physical Qubits",
         slider_min=4, slider_max=256,
