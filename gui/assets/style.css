@@ -295,6 +295,82 @@ input[type="checkbox"] {
 
 
 /* ═══════════════════════════════════════════════════════════════════
+   PLOT HELP ICON  (injected into Plotly modebar by help_icon_modebar.js)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* The help icon lives outside the Plotly modebar (as a sibling of `.modebar`
+   inside `_modebardiv`) so it doesn't disturb the float-based modebar group
+   layout — `right` is recomputed in JS to track the modebar's width. */
+.modebar-help-btn {
+    position: absolute !important;
+    top: 2px;
+    /* `right` is set inline by help_icon_modebar.js */
+    cursor: help !important;
+    z-index: 5;
+}
+.modebar-help-btn .icon {
+    vertical-align: middle;
+}
+.modebar-help-btn path {
+    fill: var(--muted);
+    transition: fill 0.15s;
+}
+.modebar-help-btn:hover path {
+    fill: var(--brand);
+}
+
+.modebar-help-tip {
+    position: fixed;
+    z-index: 1000;
+    max-width: 320px;
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 11px;
+    line-height: 1.45;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    pointer-events: none;
+}
+
+.modebar-help-tip__title {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--brand);
+    margin-bottom: 4px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.modebar-help-tip__body {
+    color: var(--text);
+    font-weight: 400;
+}
+
+.modebar-help-tip__sep {
+    height: 1px;
+    background: var(--border);
+    margin: 8px 0 6px;
+}
+
+.modebar-help-tip__use-label {
+    font-size: 9px;
+    font-weight: 700;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+}
+
+.modebar-help-tip__use {
+    color: var(--text);
+    font-weight: 400;
+    font-style: italic;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
    PARALLEL COORDINATES — crisp text rendering
    ═══════════════════════════════════════════════════════════════════ */
 
@@ -350,6 +426,35 @@ input[type="checkbox"] {
 /* Dashed-border modifier used by "− Remove axis". */
 .ghost-btn--dashed {
     border-style: dashed;
+}
+
+/* Per-axis "×" button on each sweep-axis card. Same hover affordance as
+   .ghost-btn (subtle lift + surface fill) but sized for an icon glyph. */
+.axis-remove-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 4px;
+    width: 22px;
+    height: 22px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, transform 0.1s ease;
+    user-select: none;
+}
+.axis-remove-btn:hover {
+    background: var(--surface2);
+    border-color: var(--accent2);
+    color: var(--text);
+    transform: translateY(-1px);
+}
+.axis-remove-btn:active {
+    transform: translateY(0);
 }
 
 /* ── Dropdown that opens upward (used by the frozen-axis selector at the

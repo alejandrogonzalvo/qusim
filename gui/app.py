@@ -939,6 +939,9 @@ app.layout = html.Div(
         ),
         dcc.Store(id="merit-mode-store", data="heatmap", storage_type="memory"),
         dcc.Store(id="merit-frozen-values-store", data={}, storage_type="memory"),
+        # Sink for the clientside callback that pushes (view-type, merit-mode)
+        # into window.qusimUpdatePlotHelp — drives the modebar "?" popup text.
+        dcc.Store(id="plot-help-sink", data=0, storage_type="memory"),
         dcc.Download(id="session-download"),
         dcc.Interval(id="sweep-check", interval=16, n_intervals=0),
         # Custom-circuit upload state.  When ``qasm`` is non-empty the sweep
@@ -1136,6 +1139,26 @@ def on_remove_specific_metric(n_clicks_list, *all_states):
         new_num,
         True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Callback: per-axis "×" visibility — hide every cross when only one
+# sweep axis is active (so the user can't remove the last one), show all
+# of them otherwise. Runs on initial load via prevent_initial_call=False
+# so the layout matches num-metrics-store after a session restore.
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output({"type": "remove-metric-x", "index": ALL}, "style"),
+    Input("num-metrics-store", "data"),
+    State({"type": "remove-metric-x", "index": ALL}, "id"),
+    prevent_initial_call=False,
+)
+def toggle_axis_remove_visibility(num_metrics, ids):
+    show = (num_metrics or 1) > 1
+    style = {"display": "flex"} if show else {"display": "none"}
+    return [style for _ in ids]
 
 
 # ---------------------------------------------------------------------------
@@ -3430,6 +3453,22 @@ def toggle_merit_view_controls_visibility(view_type):
     if view_type == "merit":
         return _MERIT_VIEW_CONTAINER_STYLE_VISIBLE
     return _MERIT_VIEW_CONTAINER_STYLE_HIDDEN
+
+
+# Push the active (view-type, merit-mode) pair into the help-icon JS so the
+# modebar "?" popup describes whatever the user is currently looking at.
+app.clientside_callback(
+    """function(viewType, meritMode) {
+        if (window.qusimUpdatePlotHelp) {
+            window.qusimUpdatePlotHelp(viewType, meritMode);
+        }
+        return window.dash_clientside.no_update;
+    }""",
+    Output("plot-help-sink", "data"),
+    Input("view-type-store", "data"),
+    Input("merit-mode-store", "data"),
+    prevent_initial_call=False,
+)
 
 
 @app.callback(

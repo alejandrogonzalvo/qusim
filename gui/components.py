@@ -214,24 +214,52 @@ def slider_row(
     """
     input_id = f"{slider_id}-input"
     display = _format_value_for_input(value, log_scale)
+
+    label_text = html.Span(
+        label,
+        style={"fontSize": "12px", "color": COLORS["text"]},
+    )
+    if tooltip:
+        global _tooltip_counter
+        _tooltip_counter += 1
+        target_id = f"help-icon-{_tooltip_counter}"
+        label_node = html.Div(
+            style={
+                "display": "flex",
+                "alignItems": "center",
+                "gap": "6px",
+                "minWidth": 0,
+            },
+            children=[
+                label_text,
+                html.Span("?", id=target_id, className="help-icon"),
+                dbc.Tooltip(
+                    tooltip,
+                    target=target_id,
+                    placement="top",
+                    style={
+                        "fontSize": "11px",
+                        "maxWidth": "260px",
+                        "textTransform": "none",
+                        "letterSpacing": "normal",
+                        "fontWeight": "400",
+                    },
+                ),
+            ],
+        )
+    else:
+        label_node = label_text
+
     header = html.Div(
         style={
             "display": "flex",
             "justifyContent": "space-between",
-            "alignItems": "baseline",
+            "alignItems": "center",
             "marginBottom": "4px",
             "gap": "8px",
         },
         children=[
-            html.Span(
-                label,
-                title=tooltip,
-                style={
-                    "fontSize": "12px",
-                    "color": COLORS["text"],
-                    "cursor": "help" if tooltip else "default",
-                },
-            ),
+            label_node,
             dcc.Input(
                 id=input_id,
                 type="text",
@@ -345,21 +373,11 @@ def make_metric_selector(index: int) -> html.Div:
                         "×",
                         id={"type": "remove-metric-x", "index": index},
                         n_clicks=0,
-                        style={
-                            "background": "transparent",
-                            "border": f"1px solid {COLORS['border']}",
-                            "color": COLORS["text_muted"],
-                            "borderRadius": "4px",
-                            "width": "22px",
-                            "height": "22px",
-                            "cursor": "pointer",
-                            "fontSize": "14px",
-                            "lineHeight": "1",
-                            "padding": "0",
-                            "display": "flex" if index > 0 else "none",
-                            "alignItems": "center",
-                            "justifyContent": "center",
-                        },
+                        className="axis-remove-btn",
+                        # `display` is the only style driven from Python — a
+                        # callback in app.py keeps it in sync with
+                        # num-metrics-store (hidden when only one axis remains).
+                        style={"display": "flex"},
                     ),
                 ],
             ),
@@ -576,15 +594,35 @@ def _inline_toggle_row(label: str, checklist_id: str, tooltip: str = "") -> html
 
 
 def _label(text: str, tooltip: str = "") -> html.Div:
+    base_style = {
+        "fontSize": "12px",
+        "color": COLORS["text"],
+        "marginBottom": "4px",
+    }
+    if not tooltip:
+        return html.Div(text, style=base_style)
+
+    global _tooltip_counter
+    _tooltip_counter += 1
+    target_id = f"help-icon-{_tooltip_counter}"
     return html.Div(
-        text,
-        title=tooltip,
-        style={
-            "fontSize": "12px",
-            "color": COLORS["text"],
-            "marginBottom": "4px",
-            "cursor": "help" if tooltip else "default",
-        },
+        style={**base_style, "display": "flex", "alignItems": "center", "gap": "6px"},
+        children=[
+            html.Span(text),
+            html.Span("?", id=target_id, className="help-icon"),
+            dbc.Tooltip(
+                tooltip,
+                target=target_id,
+                placement="top",
+                style={
+                    "fontSize": "11px",
+                    "maxWidth": "260px",
+                    "textTransform": "none",
+                    "letterSpacing": "normal",
+                    "fontWeight": "400",
+                },
+            ),
+        ],
     )
 
 
@@ -783,7 +821,12 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             html.Div(
                 id="cfg-row-seed",
                 children=[
-                    _label("Seed"),
+                    _label(
+                        "Seed",
+                        "Random seed for placement and routing. Same circuit "
+                        "+ topology + seed always compile to the same schedule "
+                        "— change it to explore alternative qubit mappings.",
+                    ),
                     dcc.Input(
                         id="cfg-seed",
                         type="number",
@@ -811,7 +854,14 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                 children=html.Div(
                     id="cfg-row-cat-circuit_type",
                     children=[
-                        _label("Circuit type"),
+                        _label(
+                            "Circuit type",
+                            "Algorithm to compile and simulate. QFT exercises "
+                            "long-range entanglement; GHZ stresses comm qubits; "
+                            "Random gives a synthetic high-depth benchmark. "
+                            "Upload an OpenQASM file at the top of this tab to "
+                            "run a custom circuit instead.",
+                        ),
                         dcc.Dropdown(
                             id="cfg-circuit-type",
                             options=CIRCUIT_TYPES,
@@ -826,7 +876,13 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             html.Div(
                 id="cfg-row-cat-placement",
                 children=[
-                    _label("Placement"),
+                    _label(
+                        "Placement",
+                        "Initial mapping of logical qubits onto physical qubits, "
+                        "before routing. Random shuffles uniformly; Spectral "
+                        "Clustering uses a graph-Laplacian heuristic that keeps "
+                        "frequently-interacting logical qubits on the same core.",
+                    ),
                     dcc.Dropdown(
                         id="cfg-placement",
                         options=PLACEMENT_OPTIONS,
@@ -840,7 +896,14 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             html.Div(
                 id="cfg-row-cat-routing_algorithm",
                 children=[
-                    _label("Routing algorithm"),
+                    _label(
+                        "Routing algorithm",
+                        "Compiler pass that resolves coupling-map mismatches. "
+                        "HQA + Sabre runs the Hierarchical Quantum Architecture "
+                        "remapper followed by SABRE swap insertion; TeleSABRE "
+                        "inserts inter-core teleportations when cheaper than "
+                        "chains of SWAPs.",
+                    ),
                     dcc.Dropdown(
                         id="cfg-routing-algorithm",
                         options=ROUTING_ALGORITHM_OPTIONS,
@@ -891,6 +954,12 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                 step=1,
                 value=1,
                 log_scale=False,
+                tooltip=(
+                    "Number of processor cores. Physical qubits are split "
+                    "evenly across cores; inter-core 2Q gates require "
+                    "teleportation, while intra-core gates use the local "
+                    "coupling map."
+                ),
                 row_id="cfg-row-num-cores",
                 row_style=({"display": "none"} if "num_cores" in swept_keys else {}),
             ),
@@ -913,7 +982,14 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             html.Div(
                 id="cfg-row-cat-topology_type",
                 children=[
-                    _label("Inter-core topology"),
+                    _label(
+                        "Inter-core topology",
+                        "How cores are connected to each other. Ring connects "
+                        "each core to its 2 neighbours; All-to-All connects "
+                        "every pair (lots of EPR links); Linear Chain has "
+                        "fixed endpoints. Affects teleportation hop count "
+                        "between distant cores.",
+                    ),
                     dcc.Dropdown(
                         id="cfg-topology",
                         options=TOPOLOGY_TYPES,
@@ -927,7 +1003,13 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             html.Div(
                 id="cfg-row-cat-intracore_topology",
                 children=[
-                    _label("Intra-core topology"),
+                    _label(
+                        "Intra-core topology",
+                        "Coupling map within each core. All-to-All assumes any "
+                        "pair of qubits can interact directly (1-cycle SWAPs); "
+                        "Linear / Ring / Grid restrict interactions, forcing "
+                        "more SWAPs but reflecting realistic hardware.",
+                    ),
                     dcc.Dropdown(
                         id="cfg-intracore-topology",
                         options=INTRACORE_TOPOLOGY_TYPES,
@@ -1025,7 +1107,12 @@ def _output_tab_children() -> list:
     dropped — the tab itself is the affordance now.
     """
     return [
-        _label("Output (Y-axis)"),
+        _label(
+            "Output (Y-axis)",
+            "Metric to plot on the Y-axis (1D), the colour scale (2D / "
+            "scatter), or the surface height (3D). Switching this re-renders "
+            "the current view from the cached sweep — no re-run needed.",
+        ),
         dcc.Dropdown(
             id="cfg-output-metric",
             options=OUTPUT_METRICS,
@@ -1034,7 +1121,12 @@ def _output_tab_children() -> list:
             className="dse-dropdown",
             style={"marginBottom": "10px"},
         ),
-        _label("Iso-levels"),
+        _label(
+            "Iso-levels",
+            "Threshold values overlaid on the plot as contour lines (2D) or "
+            "nested isosurfaces (3D). Each row is a (value, colour) pair; +/− "
+            "below adds or removes rows. Use to mark target performance bands.",
+        ),
         dcc.Checklist(
             id="cfg-threshold-enable",
             options=[{"label": " Show on non-3D views", "value": "yes"}],
@@ -2258,6 +2350,14 @@ def make_topology_view_panel() -> html.Div:
                     "gap": "8px",
                 },
                 children=[
+                    # Help "?" — bound by help_icon_modebar.js to show the
+                    # same popup as the Plotly modebar help icon.
+                    html.Span(
+                        "?",
+                        id="topology-help-icon",
+                        className="help-icon",
+                        title="What is this view?",
+                    ),
                     html.Button(
                         "Re-layout",
                         id="topology-view-relayout",
