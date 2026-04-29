@@ -969,13 +969,27 @@ class DSEEngine:
     # Max noise configs per Rust batch call to bound peak memory
     _HOT_BATCH_CHUNK = 5_000
 
-    def run_hot_batch(self, cached: CachedMapping, noise_dicts: list[dict]) -> list[dict]:
+    def run_hot_batch(
+        self,
+        cached: CachedMapping,
+        noise_dicts: list[dict],
+        keep_grids: bool = False,
+    ) -> list[dict]:
         """
         Batch fidelity estimation: chunked Rust calls for many noise configs.
 
         Structural data (tensor, placements, routing) is parsed once per chunk.
         Chunks keep peak memory bounded instead of allocating all results at once.
+
+        ``keep_grids=True`` returns the per-qubit ``*_fidelity_grid`` ndarrays
+        per result. The Rust batch entry point is scalar-only by design (for
+        throughput), so this branch falls back to a per-cell ``run_hot`` loop —
+        slower per cell, but the only path that actually produces the
+        (num_layers, num_qubits) grids the topology overlay needs.
         """
+        if keep_grids:
+            return [self.run_hot(cached, n) for n in noise_dicts]
+
         gate_error_arr, gate_time_arr = _make_gate_arrays(
             cached.gate_names, _merge_noise(noise_dicts[0]),
         )
@@ -1001,8 +1015,9 @@ class DSEEngine:
                 r["total_network_distance"] = cached.total_network_distance
             # Strip per-qubit ``*_grid`` ndarrays before they cross the
             # process-pool pickle boundary or enter the sweep grid. The
-            # sweep UI never reads them back; the topology view recomputes
-            # on demand via ``run_hot`` when needed.
+            # batch Rust call already returns scalar-only dicts; this strip
+            # is a defensive no-op there but matters when callers feed in
+            # an alternative result source.
             all_results.extend(_strip_for_grid(r) for r in chunk_results)
 
         return all_results
@@ -1236,6 +1251,7 @@ class DSEEngine:
         total: int,
         progress_callback: Callable[[SweepProgress], None] | None,
         max_workers: int | None,
+        keep_grids: bool = False,
     ) -> dict[tuple, dict]:
         """Run cold-path sweep points with qubit-aware parallel scheduling.
 
@@ -1329,6 +1345,7 @@ class DSEEngine:
                         fut = pool.submit(
                             _eval_cold_batch,
                             cold_config, noise, swept_list, rss_cap_bytes,
+                            keep_grids,
                         )
                         active[fut] = (cv, cost)
                         used += cost
@@ -1640,6 +1657,7 @@ class DSEEngine:
             rmap = self._parallel_cold_sweep(
                 cold_config, fixed_noise, _indexed_iter(), total,
                 progress_callback, max_workers,
+                keep_grids=keep_per_qubit_grids,
             )
             for idx in np.ndindex(shape):
                 full_res = rmap[idx]
@@ -1674,7 +1692,9 @@ class DSEEngine:
                         noise[keys[d]] = axes[d][idx[d]]
                     noise_dicts.append(noise)
 
-                chunk_results = self.run_hot_batch(cached, noise_dicts)
+                chunk_results = self.run_hot_batch(
+                    cached, noise_dicts, keep_grids=keep_per_qubit_grids,
+                )
                 for i, idx in enumerate(chunk_indices):
                     full_res = chunk_results[i]
                     grid[idx] = _result_to_row(full_res)
@@ -1720,6 +1740,7 @@ def _eval_cold_batch(
     noise: dict,
     swept_list: list[dict],
     rss_cap_bytes: int | None = None,
+    keep_grids: bool = False,
 ) -> list[dict]:
     """Evaluate a batch of design points sharing the same cold-path config.
 
@@ -1775,7 +1796,7 @@ def _eval_cold_batch(
     cached = engine.run_cold(**cfg, noise=noise_dicts[0])
 
     # Single batched Rust call for all hot-path variations
-    return engine.run_hot_batch(cached, noise_dicts)
+    return engine.run_hot_batch(cached, noise_dicts, keep_grids=keep_grids)
 
 
 # ---------------------------------------------------------------------------

@@ -92,7 +92,7 @@ class TestEstimateColdMb:
 # Scheduler
 # ---------------------------------------------------------------------------
 
-def _fake_eval_cold_batch(cold_config, noise, swept_list, rss_cap_bytes=None):
+def _fake_eval_cold_batch(cold_config, noise, swept_list, rss_cap_bytes=None, keep_grids=False):
     """Emulate a cold compilation with a short sleep, record timing."""
     nq = int(swept_list[0].get("num_qubits", cold_config.get("num_qubits", 0)))
     start = time.monotonic()
