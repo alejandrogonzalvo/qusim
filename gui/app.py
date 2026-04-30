@@ -2330,22 +2330,37 @@ def _arch_clamped_max(
     slider_max: float,
     num_qubits: float | int | None,
     num_cores: float | int | None,
+    comm_qubits: float | int | None = None,
+    routing_algorithm: str | None = None,
+    routing_axis_active: bool = False,
 ) -> float:
     """Cap a sweep slider's max to the architectural limit, if any.
 
-    Currently only ``communication_qubits`` has an architectural cap:
-    ``floor(sqrt(qubits_per_core))``.  The engine clamps anyway, but
-    capping the *slider* prevents the user from spending sweep budget on
-    cells that all collapse onto the clamp.
+    Two metrics carry architectural caps:
+
+    * ``communication_qubits`` is bounded by ``floor(sqrt(qubits_per_core))``
+      (TeleSABRE's K×K bipartite inter-core fabric cost grows quadratically;
+      anything larger collapses onto the clamp inside the engine and wastes
+      sweep budget).
+    * ``num_logical_qubits`` is bounded by physical qubits in HQA mode and
+      by ``num_phys − num_cores × comm_qubits`` (the data-slot count) when
+      TeleSABRE is in play. When the routing algorithm is itself a sweep
+      axis, the stricter TeleSABRE bound wins so every cell stays valid.
     """
     import math as _math
-    if metric_key != "communication_qubits":
-        return slider_max
-    nq = int(num_qubits) if num_qubits else 16
-    nc = max(1, int(num_cores) if num_cores else 1)
-    qpc = max(1, nq // nc)
-    cap = max(1, _math.isqrt(qpc))
-    return float(min(slider_max, max(slider_min, float(cap))))
+    if metric_key == "communication_qubits":
+        nq = int(num_qubits) if num_qubits else 16
+        nc = max(1, int(num_cores) if num_cores else 1)
+        qpc = max(1, nq // nc)
+        cap = max(1, _math.isqrt(qpc))
+        return float(min(slider_max, max(slider_min, float(cap))))
+    if metric_key == "num_logical_qubits":
+        cap = _logical_qubits_max(
+            num_qubits, num_cores, comm_qubits,
+            routing_algorithm, routing_axis_active,
+        )
+        return float(min(slider_max, max(slider_min, float(cap))))
+    return slider_max
 
 
 for _idx in range(MAX_METRICS):
@@ -2390,9 +2405,16 @@ for _idx in range(MAX_METRICS):
         State("suppress-cascade", "data"),
         State("cfg-num-qubits", "value"),
         State("cfg-num-cores", "value"),
+        State("cfg-communication-qubits", "value"),
+        State("cfg-routing-algorithm", "value"),
+        State({"type": "metric-dropdown", "index": ALL}, "value"),
         prevent_initial_call=True,
     )
-    def _reconfigure_slider(metric_key, suppress, num_qubits, num_cores, _i=_idx):
+    def _reconfigure_slider(
+        metric_key, suppress, num_qubits, num_cores,
+        comm_qubits, routing_algorithm, sweep_axis_keys,
+        _i=_idx,
+    ):
         no = dash.no_update
         if not metric_key:
             return (no, no, no, no, no, no)
@@ -2400,11 +2422,18 @@ for _idx in range(MAX_METRICS):
         if m is None:
             return (no, no, no, no, no, no)
         # Clamp the registry max to the architectural limit when the metric
-        # has one (comm_qubits is bounded by floor(sqrt(qubits/cores))).
-        # Without this the user can sweep [1, 16] but values >= clamp all
-        # collapse to the clamp inside the engine, wasting cells.
+        # has one (comm_qubits is bounded by floor(sqrt(qubits/cores)),
+        # num_logical_qubits by data-slot capacity under TeleSABRE). Without
+        # this the user can sweep [1, 16] but values past the clamp all
+        # collapse onto the clamp inside the engine, wasting cells.
+        routing_axis_active = "routing_algorithm" in (sweep_axis_keys or [])
         smin, smax = float(m.slider_min), float(m.slider_max)
-        smax = _arch_clamped_max(metric_key, smin, smax, num_qubits, num_cores)
+        smax = _arch_clamped_max(
+            metric_key, smin, smax, num_qubits, num_cores,
+            comm_qubits=comm_qubits,
+            routing_algorithm=routing_algorithm,
+            routing_axis_active=routing_axis_active,
+        )
         marks = (
             _log_marks(smin, smax, m.unit)
             if m.log_scale
@@ -2444,13 +2473,18 @@ for _idx in range(MAX_METRICS):
         Output(f"metric-slider-{_idx}", "value", allow_duplicate=True),
         Input("cfg-num-qubits", "value"),
         Input("cfg-num-cores", "value"),
+        Input("cfg-communication-qubits", "value"),
+        Input("cfg-routing-algorithm", "value"),
+        Input({"type": "metric-dropdown", "index": ALL}, "value"),
         State(f"metric-dropdown-{_idx}", "value"),
         State(f"metric-slider-{_idx}", "value"),
         State(f"metric-slider-{_idx}", "max"),
         prevent_initial_call=True,
     )
     def _reclamp_axis_to_arch(
-        num_qubits, num_cores, metric_key, current_value, current_max,
+        num_qubits, num_cores, comm_qubits, routing_algorithm,
+        sweep_axis_keys,
+        metric_key, current_value, current_max,
         _i=_idx,
     ):
         no = dash.no_update
@@ -2460,7 +2494,13 @@ for _idx in range(MAX_METRICS):
         if m is None:
             return (no, no, no)
         smin = float(m.slider_min)
-        new_max = _arch_clamped_max(metric_key, smin, float(m.slider_max), num_qubits, num_cores)
+        routing_axis_active = "routing_algorithm" in (sweep_axis_keys or [])
+        new_max = _arch_clamped_max(
+            metric_key, smin, float(m.slider_max), num_qubits, num_cores,
+            comm_qubits=comm_qubits,
+            routing_algorithm=routing_algorithm,
+            routing_axis_active=routing_axis_active,
+        )
         if current_max is not None and abs(float(current_max) - new_max) < 1e-9:
             # No-op: cap unchanged for the current architecture.
             return (no, no, no)
@@ -4210,21 +4250,55 @@ for _m in _SWEEPABLE_METRICS:
 # ---------------------------------------------------------------------------
 
 
+def _logical_qubits_max(
+    num_qubits: int, num_cores: int, comm_qubits: int,
+    routing_algorithm: str | None,
+    routing_axis_active: bool,
+) -> int:
+    """Compute the highest logical-qubit count the slider should allow.
+
+    HQA can place logical qubits in any of the ``num_qubits`` physical
+    slots — comm qubits are part of routing but not exclusive. TeleSABRE
+    reserves ``num_cores × comm_qubits`` physical slots as comm-only and
+    places logical qubits in the remaining data slots. When the user is
+    sweeping the routing axis (so the same configuration must be valid
+    under both algorithms), the stricter TeleSABRE bound wins.
+    """
+    phys = max(2, int(num_qubits or 16))
+    cores = max(1, int(num_cores or 1))
+    k = max(0, int(comm_qubits or 0))
+    if routing_axis_active or (routing_algorithm or "hqa") == "telesabre":
+        # TeleSABRE: data slots = phys − comm-reserved slots
+        data_slots = phys - cores * k
+        return max(2, min(phys, data_slots))
+    return phys
+
+
 @app.callback(
     Output("cfg-num-logical-qubits", "max"),
     Output("cfg-num-logical-qubits", "marks"),
     Output("cfg-num-logical-qubits", "value", allow_duplicate=True),
     Input("cfg-num-qubits", "value"),
+    Input("cfg-num-cores", "value"),
+    Input("cfg-communication-qubits", "value"),
+    Input("cfg-routing-algorithm", "value"),
+    Input({"type": "metric-dropdown", "index": ALL}, "value"),
     State("cfg-num-logical-qubits", "value"),
     prevent_initial_call=True,
 )
-def _clamp_logical_to_physical(num_qubits, current_logical):
+def _clamp_logical_to_physical(
+    num_qubits, num_cores, comm_qubits, routing_algorithm,
+    sweep_axis_keys, current_logical,
+):
     from gui.components import _minmax_marks
-    phys = int(num_qubits) if num_qubits else 16
-    phys = max(2, phys)
-    cur = int(current_logical) if current_logical else phys
-    clamped = max(2, min(cur, phys))
-    return phys, _minmax_marks(2, phys, log_scale=False), clamped
+    routing_axis_active = "routing_algorithm" in (sweep_axis_keys or [])
+    new_max = _logical_qubits_max(
+        num_qubits, num_cores, comm_qubits,
+        routing_algorithm, routing_axis_active,
+    )
+    cur = int(current_logical) if current_logical else new_max
+    clamped = max(2, min(cur, new_max))
+    return new_max, _minmax_marks(2, new_max, log_scale=False), clamped
 
 
 # ---------------------------------------------------------------------------

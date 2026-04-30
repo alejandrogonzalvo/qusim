@@ -166,12 +166,12 @@ void telesabre_safety_valve_check(telesabre_t *ts) {
         ts->layout = layout_copy(ts->last_progress_layout);
         result_free(&ts->result);
         ts->result = result_copy(&ts->last_progress_result);
-        printf("Safety valve activated at iteration %d\n", ts->it);
+        if (ts->config->verbose) printf("Safety valve activated at iteration %d\n", ts->it);
         ts->result.num_deadlocks++;
     }
 
     if (ts->safety_valve_activated && ts->it_without_progress > ts->config->safety_valve_iters + ts->config->max_safety_valve_iters && !ts->safety_valve_exiting) {
-        printf("Safety valve still activated after %d iterations, exiting...\n", ts->it_without_progress);
+        if (ts->config->verbose) printf("Safety valve still activated after %d iterations, exiting...\n", ts->it_without_progress);
         ts->config->save_report = true;
         ts->safety_valve_exiting = true;
         ts->config->max_iterations = ts->it + ts->config->max_safety_valve_iters;
@@ -183,12 +183,14 @@ void telesabre_execute_front_gate(telesabre_t* ts, size_t front_gate_idx) {
     const gate_t* gate = &ts->circuit->gates[ts->front[front_gate_idx]];
 
     // Debug Print
-    printf(H3COL"  Executing gate "CRESET"%03zu = %s(", ts->front[front_gate_idx], gate->type);
-    for (int j = 0; j < gate->num_target_qubits; j++) {
-        printf("%d", gate->target_qubits[j]);
-        if (j < gate->num_target_qubits - 1) printf(", ");
+    if (ts->config->verbose) {
+        printf(H3COL"  Executing gate "CRESET"%03zu = %s(", ts->front[front_gate_idx], gate->type);
+        for (int j = 0; j < gate->num_target_qubits; j++) {
+            printf("%d", gate->target_qubits[j]);
+            if (j < gate->num_target_qubits - 1) printf(", ");
+        }
+        printf(")\n");
     }
-    printf(")\n");
     
     // Update Usage Penalties
     for (vqubit_t v = 0; v < gate->num_target_qubits; v++) {
@@ -211,7 +213,7 @@ void telesabre_execute_front_gate(telesabre_t* ts, size_t front_gate_idx) {
         ts->gate_num_remaining_parents[child_id]--;
         if (ts->gate_num_remaining_parents[child_id] == 0) {
             if (child_id == 0) {
-                printf("adding node 0 again wtf\n");
+                if (ts->config->verbose) printf("adding node 0 again wtf\n");
                 exit(1);
             }
             ts->front[ts->front_size++] = child_id;
@@ -277,13 +279,15 @@ void telesabre_calculate_attraction_paths(telesabre_t *ts) {
     }
 
     // Print needed comm. qubits
-    printf(H2COL"  Needed Paths: "CRESET"%zu\n", ts->num_attraction_paths);
-    for (int i = 0; i < ts->num_attraction_paths; i++) {
-        printf("    Path %d: ", i);
-        for (int j = 0; j < ts->attraction_paths[i]->length; j++) {
-            printf("%d ", ts->attraction_paths[i]->nodes[j]);
+    if (ts->config->verbose) {
+        printf(H2COL"  Needed Paths: "CRESET"%zu\n", ts->num_attraction_paths);
+        for (int i = 0; i < ts->num_attraction_paths; i++) {
+            printf("    Path %d: ", i);
+            for (int j = 0; j < ts->attraction_paths[i]->length; j++) {
+                printf("%d ", ts->attraction_paths[i]->nodes[j]);
+            }
+            printf("\n");
         }
-        printf("\n");
     }
 }
 
@@ -313,10 +317,12 @@ void telesabre_collect_traversed_comm_qubits(telesabre_t *ts) {
         }
     }
 
-    printf(H2COL"  Needed communication qubits: "CRESET);
-    for (int j = 0; j < ts->num_traversed_comm_qubits; j++)
-        printf("%d ", ts->traversed_comm_qubits[j]);
-    printf("\n");
+    if (ts->config->verbose) {
+        printf(H2COL"  Needed communication qubits: "CRESET);
+        for (int j = 0; j < ts->num_traversed_comm_qubits; j++)
+            printf("%d ", ts->traversed_comm_qubits[j]);
+        printf("\n");
+    }
 }
 
 
@@ -338,10 +344,12 @@ void telesabre_collect_nearest_free_qubits(telesabre_t *ts) {
             
     }
 
-    printf(H2COL"  Needed nearest free qubits: "CRESET);
-    for (int j = 0; j < ts->num_nearest_free_qubits; j++)
-        printf("%d ", ts->nearest_free_qubits[j]);
-    printf("\n");
+    if (ts->config->verbose) {
+        printf(H2COL"  Needed nearest free qubits: "CRESET);
+        for (int j = 0; j < ts->num_nearest_free_qubits; j++)
+            printf("%d ", ts->nearest_free_qubits[j]);
+        printf("\n");
+    }
 }
 
 
@@ -803,13 +811,15 @@ void telesabre_apply_candidate_op(telesabre_t *ts, const op_t *op) {
         telesabre_made_progress(ts);
     }
 
-    printf(H2COL"  Applied operation: "CRESET);
-    if (op->type == OP_TELEPORT) {
-        printf("Teleport(%d, %d, %d)\n", op->qubits[0], op->qubits[1], op->qubits[2]);
-    } else if (op->type == OP_SWAP) {
-        printf("Swap(%d, %d)\n", op->qubits[0], op->qubits[1]);
-    } else if (op->type == OP_TELEGATE) {
-        printf("Telegate(%d, %d, %d, %d)\n", op->qubits[0], op->qubits[1], op->qubits[2], op->qubits[3]);
+    if (ts->config->verbose) {
+        printf(H2COL"  Applied operation: "CRESET);
+        if (op->type == OP_TELEPORT) {
+            printf("Teleport(%d, %d, %d)\n", op->qubits[0], op->qubits[1], op->qubits[2]);
+        } else if (op->type == OP_SWAP) {
+            printf("Swap(%d, %d)\n", op->qubits[0], op->qubits[1]);
+        } else if (op->type == OP_TELEGATE) {
+            printf("Telegate(%d, %d, %d, %d)\n", op->qubits[0], op->qubits[1], op->qubits[2], op->qubits[3]);
+        }
     }
 }
 
@@ -971,21 +981,23 @@ void telesabre_step(telesabre_t* ts) {
     const device_t* device = ts->device;
     const circuit_t* circuit = ts->circuit;
 
-    layout_print(ts->layout);
+    if (config->verbose) layout_print(ts->layout);
 
     telesabre_safety_valve_check(ts);
 
     // Debug Print
-    int num_remaining_gates = 0;
-    for (int i = 0; i < circuit->num_gates; i++)
-        if (ts->gate_num_remaining_parents[i] != (size_t)-1)
-            num_remaining_gates++;
-    printf(H1COL"\nIteration %d - Remaining Slices: %zu - Remaining Gates: %d/%zu" CRESET, 
-        ts->it, ts->num_remaining_slices, num_remaining_gates, circuit->num_gates);
-    if (ts->safety_valve_activated) {
-        printf(" - "BHCYN"Safety Valve ON\n"CRESET);
-    } else {
-        printf("\n");
+    if (config->verbose) {
+        int num_remaining_gates = 0;
+        for (int i = 0; i < circuit->num_gates; i++)
+            if (ts->gate_num_remaining_parents[i] != (size_t)-1)
+                num_remaining_gates++;
+        printf(H1COL"\nIteration %d - Remaining Slices: %zu - Remaining Gates: %d/%zu" CRESET,
+            ts->it, ts->num_remaining_slices, num_remaining_gates, circuit->num_gates);
+        if (ts->safety_valve_activated) {
+            printf(" - "BHCYN"Safety Valve ON\n"CRESET);
+        } else {
+            printf("\n");
+        }
     }
 
     // Run front gates that can be run according to current layout
@@ -1007,40 +1019,44 @@ void telesabre_step(telesabre_t* ts) {
     } while(found_executable_gate && ts->front_size > 0);
 
     // Debug Print front
-    printf(H2COL"  Front size: "CRESET"%zu\n", ts->front_size);
-    for (int i = 0; i < ts->front_size; i++) {
-        const gate_t* gate = &circuit->gates[ts->front[i]];
-        printf("    (%*zu): Virt: ", 3, ts->front[i]);
-        for (int j = 0; j < gate->num_target_qubits; j++) {
-            printf("%*d ", 3, gate->target_qubits[j]);
+    if (config->verbose) {
+        printf(H2COL"  Front size: "CRESET"%zu\n", ts->front_size);
+        for (int i = 0; i < ts->front_size; i++) {
+            const gate_t* gate = &circuit->gates[ts->front[i]];
+            printf("    (%*zu): Virt: ", 3, ts->front[i]);
+            for (int j = 0; j < gate->num_target_qubits; j++) {
+                printf("%*d ", 3, gate->target_qubits[j]);
+            }
+            printf(" - Phys: ");
+            for (int j = 0; j < gate->num_target_qubits; j++) {
+                pqubit_t phys_qubit = layout_get_phys(ts->layout, gate->target_qubits[j]);
+                printf("%*d ", 3, phys_qubit);
+            }
+            printf(" - Cores: ");
+            for (int j = 0; j < gate->num_target_qubits; j++) {
+                pqubit_t phys_qubit = layout_get_phys(ts->layout, gate->target_qubits[j]);
+                core_t core = device->phys_to_core[phys_qubit];
+                printf("%*d ", 3, core);
+            }
+            printf("\n");
         }
-        printf(" - Phys: ");
-        for (int j = 0; j < gate->num_target_qubits; j++) {
-            pqubit_t phys_qubit = layout_get_phys(ts->layout, gate->target_qubits[j]);
-            printf("%*d ", 3, phys_qubit);
-        }
-        printf(" - Cores: ");
-        for (int j = 0; j < gate->num_target_qubits; j++) {
-            pqubit_t phys_qubit = layout_get_phys(ts->layout, gate->target_qubits[j]);
-            core_t core = device->phys_to_core[phys_qubit];
-            printf("%*d ", 3, core);
-        }
-        printf("\n");
     }
 
     if (ts->slices_outdated)
         telesabre_slice_remaining_circuit(ts);
-    
+
     // Print first 3 remaining slices
-    printf(H2COL"  Remaining Slices:\n"CRESET);
-    for (int i = 0; i < ts->num_remaining_slices && i < 3; i++) {
-        size_t slice_start = ts->remaining_slices_ptr[i];
-        size_t slice_end = ts->remaining_slices_ptr[i + 1];
-        printf("    Slice %d: ", i);
-        for (size_t j = slice_start; j < slice_end; j++) {
-            printf("%zu ", ts->remaining_slices[j]);
+    if (config->verbose) {
+        printf(H2COL"  Remaining Slices:\n"CRESET);
+        for (int i = 0; i < ts->num_remaining_slices && i < 3; i++) {
+            size_t slice_start = ts->remaining_slices_ptr[i];
+            size_t slice_end = ts->remaining_slices_ptr[i + 1];
+            printf("    Slice %d: ", i);
+            for (size_t j = slice_start; j < slice_end; j++) {
+                printf("%zu ", ts->remaining_slices[j]);
+            }
+            printf("\n");
         }
-        printf("\n");
     }
 
     // Search for qubit movement operations
@@ -1058,16 +1074,17 @@ void telesabre_step(telesabre_t* ts) {
     ts->front_size = old_front_size;
 
     // Debug candidate op print
-    printf(H2COL"  Candidate Operations:\n"CRESET);
-    for (int i = 0; i < ts->num_candidate_ops; i++) {
-        const op_t* op = &ts->candidate_ops[i];
-        int op_qubits = op_get_num_qubits(op);
-        printf("    (%*d): Type: %s, Qubits: ", 3, i, op_get_type_str(op));
-        for (int j = 0; j < op_qubits; j++) {
-            printf("%*d", 4, op->qubits[j]);
+    if (config->verbose) {
+        printf(H2COL"  Candidate Operations:\n"CRESET);
+        for (int i = 0; i < ts->num_candidate_ops; i++) {
+            const op_t* op = &ts->candidate_ops[i];
+            int op_qubits = op_get_num_qubits(op);
+            printf("    (%*d): Type: %s, Qubits: ", 3, i, op_get_type_str(op));
+            for (int j = 0; j < op_qubits; j++) {
+                printf("%*d", 4, op->qubits[j]);
+            }
+            printf(", Front Gate Index: %d, Energy: %.3f, Flags: %s\n", op->front_gate_idx, ts->candidate_ops_energies[i], byte_to_binary(op->reasons));
         }
-        printf(", Front Gate Index: %d, Energy: %.3f, Flags: %s\n", op->front_gate_idx, ts->candidate_ops_energies[i], byte_to_binary(op->reasons));
-        
     }
 
     // Find operations with lowest resulting layout energy
@@ -1093,7 +1110,7 @@ void telesabre_step(telesabre_t* ts) {
         telesabre_apply_candidate_op(ts, &best_op);
         ts->energy = best_energy;
     } else {
-        printf("    None\n");
+        if (config->verbose) printf("    None\n");
         ts->applied_op = (op_t){0};
         telesabre_add_report_entry(ts);
     }
@@ -1138,19 +1155,21 @@ result_t telesabre_run(config_t* config, device_t* device, circuit_t* circuit) {
         }
 
         if (ts->it >= config->max_iterations) {
-            printf(H1COL"\nTeleSABRE reached maximum iterations (%d).\n" CRESET, config->max_iterations);
+            if (config->verbose) printf(H1COL"\nTeleSABRE reached maximum iterations (%d).\n" CRESET, config->max_iterations);
         } else if (ts->front_size == 0) {
-            printf(H1COL"\nTeleSABRE completed all gates successfully.\n" CRESET);
+            if (config->verbose) printf(H1COL"\nTeleSABRE completed all gates successfully.\n" CRESET);
             ts->result.success = true;
         }
 
         // Final print
-        double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
-        printf(H1COL"\nTeleSABRE completed in %.3fs.\n" CRESET, elapsed);
-        printf(H1COL"Solution has %d teledata ops, %d telegate ops and %d swaps.\n" CRESET, 
-            ts->result.num_teledata, ts->result.num_telegate, ts->result.num_swaps);
-        printf(H1COL"Safety Valve activated %d times.\n\n" CRESET, 
-            ts->result.num_deadlocks);
+        if (config->verbose) {
+            double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
+            printf(H1COL"\nTeleSABRE completed in %.3fs.\n" CRESET, elapsed);
+            printf(H1COL"Solution has %d teledata ops, %d telegate ops and %d swaps.\n" CRESET,
+                ts->result.num_teledata, ts->result.num_telegate, ts->result.num_swaps);
+            printf(H1COL"Safety Valve activated %d times.\n\n" CRESET,
+                ts->result.num_deadlocks);
+        }
 
         layout = layout_copy(ts->layout);
 

@@ -53,6 +53,12 @@ config_t* config_new() {
 
     config->optimize_initial_layout = false;
 
+    /* Default quiet — the per-iteration debug prints are useful for
+     * standalone development of the C library but cost ~16 % of compile
+     * time on large circuits and flood the host's stdout when the engine
+     * runs as a sweep-cell evaluator. JSON config can flip this on. */
+    config->verbose = false;
+
     config->json = NULL;
     return config;
 }

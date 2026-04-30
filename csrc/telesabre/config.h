@@ -59,6 +59,14 @@ typedef struct config {
 
     bool optimize_initial_layout;
 
+    /* When false (default), per-iteration debug prints are silenced —
+     * iteration headers, front lists, candidate-op enumerations, etc.
+     * Banner prints (load/save lines, the final completion summary) and
+     * fatal-error fprintfs to stderr remain regardless. Cuts ~16 % off
+     * compile time on a QFT-128 sweep cell and avoids flooding the
+     * GUI's stdout pipe when the engine runs in a Dash callback. */
+    bool verbose;
+
     cJSON *json;
 } config_t;
 
@@ -89,7 +97,8 @@ typedef struct config {
     X(optimize_initial) \
     X(save_report) \
     X(enable_passing_core_emptying_teleport_possibility) \
-    X(optimize_initial_layout)
+    X(optimize_initial_layout) \
+    X(verbose)
 
 #define TS_CONFIG_STRING_ENTRIES \
     X(name) \
