@@ -61,8 +61,8 @@
         },
         "importance": {
             title: "Feature Importance",
-            body: "Variance-based ranking of how much each axis drives the output metric.",
-            useFor: "Which knobs matter most? Use this to rank parameters before a finer sweep, or to justify dropping low-impact axes from a follow-up run."
+            body: "Horizontal bar chart ranking sweep axes by their effect on the output. Mode toggle below the plot: ‘Range’ (max−min of the projection mean — global structure) or ‘Sensitivity’ (mean |∂F/∂x_i| — local rate of change at the operating point, log-axis aware).",
+            useFor: "Which knobs matter most? Range answers ‘over the whole sweep, what moved F?’; Sensitivity answers ‘at this point, what would moving each knob do?’. Range is good for picking a follow-up sweep; Sensitivity is good for picking the next hardware investment."
         },
         "pareto": {
             title: "Pareto Front",
@@ -70,9 +70,9 @@
             useFor: "Comparing two metrics that pull in opposite directions (e.g. fidelity vs runtime) — what's the cheapest point that still meets a fidelity floor?"
         },
         "correlation": {
-            title: "Correlation Matrix",
-            body: "Pairwise Pearson correlations between sweep axes and output metrics.",
-            useFor: "Which axes are redundant (|r|≈1)? Which axes drive which metric most strongly? Spot positive vs negative couplings before designing a follow-up sweep."
+            title: "Relationship Matrix",
+            body: "Two-mode matrix selectable below the plot. ‘Spearman ρ’ is the input × output rank correlation (signed: red = drops F, blue = raises F). ‘Interaction’ is the symmetric input × input matrix of mean |∂²F/∂x_i ∂x_j| — the strength with which two axes interact when both move (diagonal = pure curvature, off-diagonals = coupling).",
+            useFor: "Spearman: which axes drive which output metrics, and which axes are redundant. Interaction: which axis pairs cannot be tuned independently — hot off-diagonals mean those parameters need joint optimisation, not sequential."
         },
         "elasticity": {
             title: "Elasticity Comparison",

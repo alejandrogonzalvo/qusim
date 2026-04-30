@@ -96,6 +96,7 @@ def plot_1d(
     output_key: str,
     thresholds: list[float] | None = None,
     threshold_colors: list[str] | None = None,
+    inflection_x: float | None = None,
 ) -> go.Figure:
     _colors = threshold_colors or _THRESHOLD_COLORS
     y = _extract(results, output_key)
@@ -158,6 +159,24 @@ def plot_1d(
         fig.add_shape(
             type="rect", xref="paper", x0=0, x1=1, y0=0, y1=lowest,
             fillcolor="rgba(215, 48, 39, 0.08)", line=dict(width=0),
+        )
+
+    # Diminishing-returns marker: when the second-derivative view computed
+    # an inflection x, draw a vertical guide + label so the saturation
+    # point is impossible to miss.
+    if inflection_x is not None and np.isfinite(inflection_x):
+        fig.add_shape(
+            type="line", xref="x", yref="paper",
+            x0=inflection_x, x1=inflection_x, y0=0, y1=1,
+            line=dict(color=_THRESHOLD_COLORS[0], width=1.5, dash="dot"),
+        )
+        fig.add_annotation(
+            x=inflection_x, y=1.0, xref="x", yref="paper",
+            text=f"inflection x ≈ {inflection_x:.3g}",
+            showarrow=False,
+            xanchor="left", yanchor="top",
+            xshift=4, yshift=-4,
+            font=dict(size=10, color=_THRESHOLD_COLORS[0]),
         )
 
     return fig
@@ -984,29 +1003,73 @@ def plot_slice(sweep_data: dict, output_key: str) -> go.Figure:
 # Parameter importance (range-based sensitivity — horizontal bar chart)
 # ---------------------------------------------------------------------------
 
-def plot_importance(sweep_data: dict, output_key: str) -> go.Figure:
+def plot_importance(
+    sweep_data: dict, output_key: str, mode: str = "range",
+) -> go.Figure:
+    """Horizontal bar chart ranking parameters by their effect on F.
+
+    Two ranking modes:
+
+    * ``"range"`` (default) — global structure: for each parameter, take
+      the spread (``max - min``) of F's mean projected onto that axis.
+      Answers "how much does varying this parameter change F overall?".
+    * ``"sensitivity"`` — local structure: ``mean(|∂F/∂x_i|)`` averaged
+      over the grid, with log-axis correction. Answers "what's the local
+      rate of change at this operating point?". Complements the range
+      mode, especially when the response saturates or has a sharp
+      transition that the range averages over.
+    """
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
     if len(rows) == 0:
         return plot_empty("No data for importance plot")
 
-    data = rows  # already an ndarray from _flatten_sweep_to_table
-    num_params = len(metric_keys)
-    out_col = num_params + available_outputs.index(output_key) if output_key in available_outputs else num_params
+    if mode == "sensitivity":
+        try:
+            from gui.derivatives import (
+                extract_grid_values, sensitivity_ranking,
+            )
 
-    importances = []
-    for idx, param_key in enumerate(metric_keys):
-        unique_vals = sorted(set(data[:, idx]))
-        means = []
-        for v in unique_vals:
-            mask = data[:, idx] == v
-            means.append(data[mask, out_col].mean())
-        importance = max(means) - min(means) if means else 0.0
-        m = METRIC_BY_KEY.get(param_key) or CAT_METRIC_BY_KEY.get(param_key)
-        label = m.label if m else param_key
-        importances.append((label, importance))
+            mks = list(sweep_data.get("metric_keys", []))
+            ndim = len(mks)
+            if ndim == 0 or "grid" not in sweep_data:
+                raise ValueError("Sensitivity mode requires a structured N-D grid.")
+            axes = _resolve_axes(sweep_data, ndim)
+            F = extract_grid_values(sweep_data["grid"], ndim, output_key)
+            sens = sensitivity_ranking(F, [np.asarray(a) for a in axes], mks)
+            importances = []
+            for i, param_key in enumerate(mks):
+                m = METRIC_BY_KEY.get(param_key) or CAT_METRIC_BY_KEY.get(param_key)
+                label = m.label if m else param_key
+                importances.append((label, float(sens[i])))
+            importances.sort(key=lambda t: t[1])
+            x_title = (
+                f"⟨|∂{_OUTPUT_LABELS.get(output_key, output_key)} / ∂x|⟩"
+                "  (mean magnitude over grid)"
+            )
+        except Exception as exc:
+            return plot_empty(f"Sensitivity mode error: {exc}")
+    else:
+        data = rows  # already an ndarray from _flatten_sweep_to_table
+        num_params = len(metric_keys)
+        out_col = (
+            num_params + available_outputs.index(output_key)
+            if output_key in available_outputs else num_params
+        )
 
-    importances.sort(key=lambda x: x[1])
+        importances = []
+        for idx, param_key in enumerate(metric_keys):
+            unique_vals = sorted(set(data[:, idx]))
+            means = []
+            for v in unique_vals:
+                mask = data[:, idx] == v
+                means.append(data[mask, out_col].mean())
+            importance = max(means) - min(means) if means else 0.0
+            m = METRIC_BY_KEY.get(param_key) or CAT_METRIC_BY_KEY.get(param_key)
+            label = m.label if m else param_key
+            importances.append((label, importance))
+        importances.sort(key=lambda x: x[1])
+        x_title = f"Range of {_OUTPUT_LABELS.get(output_key, output_key)}"
 
     labels = [x[0] for x in importances]
     values = [x[1] for x in importances]
@@ -1024,8 +1087,7 @@ def plot_importance(sweep_data: dict, output_key: str) -> go.Figure:
     fig.update_layout(
         **{**_LAYOUT_BASE, "margin": dict(l=120, r=20, t=50, b=45)},
         xaxis=dict(
-            title=dict(text=f"Range of {_OUTPUT_LABELS.get(output_key, output_key)}",
-                       font=dict(size=12, color=_TEXT_MUTED)),
+            title=dict(text=x_title, font=dict(size=12, color=_TEXT_MUTED)),
             gridcolor=_GRID_COLOR,
             tickfont=dict(size=10, color=_TEXT_MUTED),
         ),
@@ -1239,11 +1301,85 @@ def _spearman_corr(x: np.ndarray, y: np.ndarray) -> float:
     return float(num / den)
 
 
-def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
+def plot_correlation(
+    sweep_data: dict, output_key: str, mode: str = "spearman",
+) -> go.Figure:
+    """Two-mode parameter relationship matrix.
+
+    * ``"spearman"`` (default) — rank correlation between each input axis
+      and each output metric (the historical Corr. view).
+    * ``"interaction"`` — symmetric N×N matrix of mean ``|∂²F/∂x_i∂x_j|``
+      magnitudes for the active output metric. Diagonal entries are pure
+      curvature; hot off-diagonals mark axis pairs that can't be tuned
+      independently.
+    """
     metric_keys, available_outputs, rows = _flatten_sweep_to_table(sweep_data)
 
     if len(rows) == 0:
         return plot_empty("No data for correlation matrix")
+
+    if mode == "interaction":
+        try:
+            from gui.derivatives import extract_grid_values, interaction_matrix
+
+            mks = list(sweep_data.get("metric_keys", []))
+            n = len(mks)
+            if n < 2 or "grid" not in sweep_data:
+                return plot_empty(
+                    "Interaction matrix needs ≥ 2 sweep axes and a structured grid."
+                )
+            axes = _resolve_axes(sweep_data, n)
+            F = extract_grid_values(sweep_data["grid"], n, output_key)
+            M = interaction_matrix(F, [np.asarray(a) for a in axes], mks)
+        except Exception as exc:
+            return plot_empty(f"Interaction matrix error: {exc}")
+
+        labels = [
+            (METRIC_BY_KEY.get(k).label if METRIC_BY_KEY.get(k) else k) for k in mks
+        ]
+        m_max = float(np.nanmax(np.abs(M))) if M.size else 1.0
+        if not np.isfinite(m_max) or m_max <= 0:
+            m_max = 1.0
+
+        annotations = []
+        for i in range(n):
+            for j in range(n):
+                annotations.append(dict(
+                    x=j, y=i,
+                    text=f"{M[i, j]:.2f}",
+                    showarrow=False,
+                    font=dict(
+                        size=9,
+                        color=_TEXT_COLOR if abs(M[i, j]) < 0.7 * m_max else "#FFFFFF",
+                    ),
+                ))
+
+        out_label = _OUTPUT_LABELS.get(output_key, output_key)
+        fig = go.Figure(
+            go.Heatmap(
+                z=M,
+                x=labels, y=labels,
+                zmin=0.0, zmax=m_max,
+                colorscale=_COLORSCALE,
+                showscale=True,
+                colorbar=dict(
+                    title=dict(
+                        text=f"⟨|∂²{out_label}/∂x_i∂x_j|⟩",
+                        font=dict(size=11, color=_TEXT_MUTED),
+                    ),
+                    tickfont=dict(color=_TEXT_MUTED, size=10),
+                    outlinewidth=0, thickness=14, len=0.75,
+                ),
+                hovertemplate="%{x} × %{y}: <b>%{z:.3f}</b><extra></extra>",
+            )
+        )
+        fig.update_layout(
+            **{**_LAYOUT_BASE, "margin": dict(l=100, r=20, t=50, b=100)},
+            xaxis=dict(tickfont=dict(size=9, color=_TEXT_MUTED), tickangle=45),
+            yaxis=dict(tickfont=dict(size=9, color=_TEXT_MUTED), autorange="reversed"),
+            annotations=annotations,
+        )
+        return fig
 
     data = rows  # already an ndarray from _flatten_sweep_to_table
     n_inputs = len(metric_keys)
@@ -1253,7 +1389,7 @@ def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
     for name in metric_keys:
         m = METRIC_BY_KEY.get(name) or CAT_METRIC_BY_KEY.get(name)
         x_labels.append(m.label if m else _OUTPUT_LABELS.get(name, name))
-        
+
     y_labels = []
     for name in available_outputs:
         m = METRIC_BY_KEY.get(name) or CAT_METRIC_BY_KEY.get(name)
@@ -1468,6 +1604,7 @@ def _apply_view_mode(
     """
     from gui.derivatives import (
         elasticity_1d, extract_grid_values, gradient_magnitude,
+        mixed_partial_2d, second_derivative_1d,
     )
 
     if view_mode == "absolute" or not view_mode:
@@ -1503,6 +1640,40 @@ def _apply_view_mode(
         new_data = _rebuild_grid_with_field(sweep_data, elast)
         _OUTPUT_LABELS[_DERIV_OUTPUT_KEY] = (
             f"Elasticity of {_OUTPUT_LABELS.get(output_key, output_key)}"
+        )
+        return new_data, _DERIV_OUTPUT_KEY
+
+    if view_mode == "second_derivative":
+        # Curvature of the 1-D response — sign change marks the inflection
+        # point (the diminishing-returns sweet spot). The Line plotter
+        # auto-annotates that x value as a vertical guide.
+        if ndim != 1:
+            return sweep_data, output_key
+        from gui.derivatives import find_inflection_x
+
+        d2 = second_derivative_1d(F, np.asarray(axes[0]), metric_keys[0])
+        new_data = _rebuild_grid_with_field(sweep_data, d2)
+        new_data["_inflection_x"] = find_inflection_x(d2, np.asarray(axes[0]))
+        _OUTPUT_LABELS[_DERIV_OUTPUT_KEY] = (
+            f"d²{_OUTPUT_LABELS.get(output_key, output_key)} / dx²"
+        )
+        return new_data, _DERIV_OUTPUT_KEY
+
+    if view_mode == "mixed_partial":
+        # ∂²F/∂x∂y interaction heatmap — positive = synergy, negative =
+        # substitution, zero = independent. Smoothed with Savitzky-Golay
+        # so coarse-grid finite-difference noise stays readable.
+        if ndim != 2:
+            return sweep_data, output_key
+        mp = mixed_partial_2d(
+            F,
+            np.asarray(axes[0]), np.asarray(axes[1]),
+            metric_keys[0], metric_keys[1],
+            smooth=True,
+        )
+        new_data = _rebuild_grid_with_field(sweep_data, mp)
+        _OUTPUT_LABELS[_DERIV_OUTPUT_KEY] = (
+            f"∂²{_OUTPUT_LABELS.get(output_key, output_key)} / ∂x∂y"
         )
         return new_data, _DERIV_OUTPUT_KEY
 
@@ -2754,6 +2925,8 @@ def build_figure(
     merit_color_by: str | None = None,
     view_mode: str = "absolute",
     elasticity_trajectory: str | None = None,
+    importance_mode: str = "range",
+    correlation_mode: str = "spearman",
 ) -> go.Figure:
     if sweep_data is None:
         return plot_empty()
@@ -2797,18 +2970,20 @@ def build_figure(
 
     _tc = threshold_colors
 
-    # Derivative view mode: replace F in the grid with |∇F| or local
-    # elasticity before dispatching, so every dimensional plotter renders
-    # the derivative without knowing it. Threshold iso-levels are passed
-    # through unchanged — they trace level sets of the *displayed* scalar
-    # field, so in derivative mode the same threshold values (e.g. 0.3) draw
-    # contours where |∇F| = 0.3 instead of where F = 0.3. Same legend
-    # toggle UX in both modes; the user reinterprets the threshold numbers
-    # against the colorbar that says "|∇Overall Fidelity|".
-    _is_dimensional_view = (
-        view_type is None
-        or view_type in ("isosurface", "scatter3d", "frozen_heatmap", "frozen_contour")
-    )
+    # Derivative view mode: replace F in the grid with |∇F| / elasticity /
+    # second derivative / mixed partial before dispatching, so every
+    # dimensional plotter renders the derivative without knowing it.
+    # Threshold iso-levels are passed through unchanged — they trace level
+    # sets of the *displayed* scalar field, so in derivative mode the same
+    # threshold values (e.g. 0.3) draw contours where |∇F| = 0.3 instead
+    # of where F = 0.3. Same legend toggle UX in both modes; the user
+    # reinterprets the threshold numbers against the colorbar that now
+    # says "|∇Overall Fidelity|" (or similar).
+    _analysis_views = {
+        "parallel", "slices", "importance", "pareto", "correlation",
+        "elasticity", "merit", "topology",
+    }
+    _is_dimensional_view = view_type is None or view_type not in _analysis_views
     if (
         view_mode and view_mode != "absolute"
         and _is_dimensional_view
@@ -2828,7 +3003,7 @@ def build_figure(
     elif view_type == "slices":
         fig = plot_slice(sweep_data, output_key)
     elif view_type == "importance":
-        fig = plot_importance(sweep_data, output_key)
+        fig = plot_importance(sweep_data, output_key, mode=importance_mode or "range")
     elif view_type == "pareto":
         fig = plot_pareto(
             sweep_data,
@@ -2838,7 +3013,7 @@ def build_figure(
             threshold_colors=_tc,
         )
     elif view_type == "correlation":
-        fig = plot_correlation(sweep_data, output_key)
+        fig = plot_correlation(sweep_data, output_key, mode=correlation_mode or "spearman")
     else:
         try:
             if num_metrics == 1:
@@ -2849,6 +3024,7 @@ def build_figure(
                     output_key=output_key,
                     thresholds=thresholds,
                     threshold_colors=_tc,
+                    inflection_x=sweep_data.get("_inflection_x"),
                 )
             elif num_metrics == 2:
                 # Heatmap with iso-line overlay (the previous "contour" view —

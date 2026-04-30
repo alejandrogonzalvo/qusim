@@ -425,5 +425,7 @@ VIEW_MODES: list[dict] = [
     {"value": "absolute", "label": "Absolute"},
     {"value": "gradient_magnitude", "label": "|∇F|  (gradient magnitude)"},
     {"value": "elasticity", "label": "Elasticity  (1-D only)"},
+    {"value": "second_derivative", "label": "d²F/dx²  (1-D only — marks inflection)"},
+    {"value": "mixed_partial", "label": "∂²F/∂x∂y  (2-D only — interaction map)"},
 ]
 DEFAULT_VIEW_MODE = "absolute"

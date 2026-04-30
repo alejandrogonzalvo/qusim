@@ -1125,14 +1125,17 @@ def _output_tab_children() -> list:
         ),
         _label(
             "View mode",
-            "What every dimensional view (Line / Heatmap / Isosurface / "
-            "Frozen Heat) actually plots: the absolute output value, its "
-            "gradient magnitude |∇F| (a single scalar per cell summarising "
-            "how steep F is in any direction — low values mark robust "
-            "regions, high values mark sensitive ones), or — on 1-D Line "
-            "views only — the dimensionless local elasticity (x/F)·dF/dx, "
-            "i.e. the % change in F per % change in x. For multi-axis "
-            "elasticity comparison, use the dedicated Elasticity tab.",
+            "What every dimensional view actually plots. Absolute = the "
+            "output value as is. |∇F| = gradient magnitude (single scalar "
+            "per cell summarising how steep F is in any direction — low "
+            "values mark robust regions, high values mark sensitive ones). "
+            "Elasticity (1-D only) = (x/F)·dF/dx, the % change in F per % "
+            "change in x. d²F/dx² (1-D only) = curvature, with the "
+            "inflection point auto-marked as a vertical guide — that's the "
+            "diminishing-returns sweet spot. ∂²F/∂x∂y (2-D only) = "
+            "Savitzky-Golay-smoothed mixed partial; positive = the two "
+            "axes synergise, negative = they substitute. For multi-axis "
+            "elasticity comparison use the dedicated Elasticity tab.",
         ),
         dcc.Dropdown(
             id="cfg-view-mode",

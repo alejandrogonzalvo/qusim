@@ -216,6 +216,206 @@ def elasticity_comparison(
 
 
 # ---------------------------------------------------------------------------
+# Second derivative + inflection point (1-D Line view)
+# ---------------------------------------------------------------------------
+
+
+def second_derivative_1d(
+    F: np.ndarray, x_values: np.ndarray, axis_key: str,
+) -> np.ndarray:
+    """Second derivative ``d²F/dx²`` evaluated at every grid point.
+
+    For log-scaled axes this returns ``d²F/d(log10 x)²``, which is what the
+    Line view actually visualises (its X-axis is log-rendered, so the
+    coordinate-space curvature is what's meaningful — a positive value
+    means the curve is concave-up *as drawn*, not as drawn against raw x).
+    """
+    F = np.asarray(F, dtype=np.float64)
+    x = np.asarray(x_values, dtype=np.float64)
+    if F.shape != x.shape:
+        raise ValueError(
+            f"second_derivative_1d: F shape {F.shape} != x shape {x.shape}",
+        )
+    coord = _coord_array(x, _is_log_axis(axis_key))
+    dF = np.gradient(F, coord)
+    d2F = np.gradient(dF, coord)
+    return d2F
+
+
+def find_inflection_x(
+    d2F: np.ndarray, x_values: np.ndarray,
+) -> float | None:
+    """Return the X-value of the *first* sign change in ``d²F/dx²``.
+
+    Inflection = curvature flip = where the response transitions from
+    accelerating to decelerating (or vice versa). For monotonic
+    diminishing-returns curves there's typically exactly one inflection
+    and it's the natural "sweet spot" beyond which extra investment in
+    the swept parameter buys progressively less.
+
+    Returns ``None`` when no sign change is detectable (curve is purely
+    convex or concave, or all-NaN).
+    """
+    d2 = np.asarray(d2F, dtype=np.float64)
+    x = np.asarray(x_values, dtype=np.float64)
+    if d2.size < 3:
+        return None
+    finite = np.isfinite(d2)
+    if not finite.all():
+        d2 = np.where(finite, d2, 0.0)
+    # Sign change between consecutive samples — linear interpolate the
+    # zero crossing between (x[i], d2[i]) and (x[i+1], d2[i+1]).
+    for i in range(d2.size - 1):
+        a, b = d2[i], d2[i + 1]
+        if a == 0.0:
+            return float(x[i])
+        if a * b < 0.0:
+            t = a / (a - b)
+            return float(x[i] + t * (x[i + 1] - x[i]))
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Mixed partial derivative (2-D Heatmap interaction map)
+# ---------------------------------------------------------------------------
+
+
+def _savgol_2d(
+    grid: np.ndarray, window: int = 5, order: int = 2,
+) -> np.ndarray:
+    """Apply a separable Savitzky-Golay smoothing pass along both axes.
+
+    Mixed partials amplify finite-difference noise — without smoothing
+    the heatmap looks like static. We use the smallest credible window
+    (length 5, order 2) so genuine interaction structure isn't smeared
+    away. Falls back to the raw grid when an axis is too short for the
+    chosen window.
+    """
+    from scipy.signal import savgol_filter
+
+    g = np.asarray(grid, dtype=np.float64)
+    if g.ndim != 2:
+        return g
+    w = min(window, g.shape[0] | 1, g.shape[1] | 1)  # force odd, fit shape
+    if w < 3 or w <= order:
+        return g
+    smoothed = savgol_filter(g, window_length=w, polyorder=order, axis=0, mode="nearest")
+    smoothed = savgol_filter(smoothed, window_length=w, polyorder=order, axis=1, mode="nearest")
+    return smoothed
+
+
+def mixed_partial_2d(
+    F: np.ndarray,
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    x_key: str,
+    y_key: str,
+    smooth: bool = True,
+) -> np.ndarray:
+    """Mixed partial ``∂²F/∂x∂y`` over a 2-D sweep grid.
+
+    Sign convention mirrors the elasticity-ish per-axis derivative: each
+    partial is taken in its natural coordinate (log10 for log axes), so
+    a positive entry means "increasing x makes y *more* effective at
+    raising F" — synergy. Negative = parameters substitute for each
+    other. Near-zero = independent effects.
+
+    Optional Savitzky-Golay smoothing keeps the result readable on the
+    coarse grids the GUI typically runs (≤ 50 points per axis).
+    """
+    F = np.asarray(F, dtype=np.float64)
+    if F.ndim != 2:
+        raise ValueError(f"mixed_partial_2d: expected 2-D F, got shape {F.shape}")
+    x_coord = _coord_array(x_values, _is_log_axis(x_key))
+    y_coord = _coord_array(y_values, _is_log_axis(y_key))
+    # ∂F/∂x first, then ∂(∂F/∂x)/∂y. F is shaped (Nx, Ny) per the rest of
+    # the codebase (sweep_data["grid"][i][j] indexes axis-1 first).
+    dF_dx = np.gradient(F, x_coord, axis=0)
+    d2F = np.gradient(dF_dx, y_coord, axis=1)
+    if smooth:
+        d2F = _savgol_2d(d2F)
+    return d2F
+
+
+# ---------------------------------------------------------------------------
+# Sensitivity ranking (gradient-based Parameter Importance)
+# ---------------------------------------------------------------------------
+
+
+def sensitivity_ranking(
+    F_grid: np.ndarray, axes: list[np.ndarray], axis_keys: list[str],
+) -> np.ndarray:
+    """Per-axis ``mean(|∂F/∂x_i|)`` averaged over every other axis.
+
+    Returns an array indexed in the order of ``axis_keys`` — caller
+    typically zips this with the metric labels to render a horizontal
+    bar chart, sorted by magnitude. Complements the existing
+    variance-based Importance view: variance answers "how much does
+    varying x change F overall", sensitivity answers "what's the local
+    rate of change at this operating point" — both useful, this is the
+    local one.
+
+    Per-axis log-coordinate correction is applied (so log-scaled axes'
+    sensitivities are per-decade, comparable across multi-scale param
+    combinations).
+    """
+    F = np.asarray(F_grid, dtype=np.float64)
+    if F.ndim != len(axes) or F.ndim != len(axis_keys):
+        raise ValueError("sensitivity_ranking: ndim mismatch")
+    out = np.zeros(F.ndim, dtype=np.float64)
+    for d, (ax_vals, ax_key) in enumerate(zip(axes, axis_keys)):
+        coord = _coord_array(ax_vals, _is_log_axis(ax_key))
+        partial = np.gradient(F, coord, axis=d)
+        with np.errstate(invalid="ignore"):
+            out[d] = float(np.nanmean(np.abs(partial)))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Interaction matrix (mean |mixed partial| per axis pair)
+# ---------------------------------------------------------------------------
+
+
+def interaction_matrix(
+    F_grid: np.ndarray, axes: list[np.ndarray], axis_keys: list[str],
+    smooth: bool = True,
+) -> np.ndarray:
+    """N×N matrix of ``mean(|∂²F/∂x_i∂x_j|)`` over the grid.
+
+    Diagonal entries hold the mean of ``|∂²F/∂x_i²|`` (curvature). Off-
+    diagonals hold mixed-partial magnitudes — entry ``(i, j)`` summarises
+    "how strongly do axes i and j interact across the sweep". Symmetric
+    by construction (Schwarz's theorem on the smoothed field).
+
+    Same partial-coordinate convention as :func:`mixed_partial_2d`:
+    every partial is taken in log10-space for log axes, raw otherwise,
+    so cross-axis comparisons are meaningful even when units differ.
+    """
+    F = np.asarray(F_grid, dtype=np.float64)
+    n = F.ndim
+    if n != len(axes) or n != len(axis_keys):
+        raise ValueError("interaction_matrix: ndim mismatch")
+
+    coords = [
+        _coord_array(ax_vals, _is_log_axis(ax_key))
+        for ax_vals, ax_key in zip(axes, axis_keys)
+    ]
+    partials = [np.gradient(F, c, axis=d) for d, c in enumerate(coords)]
+
+    M = np.zeros((n, n), dtype=np.float64)
+    for i in range(n):
+        for j in range(i, n):
+            d2 = np.gradient(partials[i], coords[j], axis=j)
+            if smooth and n == 2:
+                d2 = _savgol_2d(d2)
+            with np.errstate(invalid="ignore"):
+                v = float(np.nanmean(np.abs(d2)))
+            M[i, j] = v
+            M[j, i] = v
+    return M
+
+
+# ---------------------------------------------------------------------------
 # Grid extraction helper — pulls F out of the nested-list sweep grid into a
 # numpy ndarray with the natural shape (matches the order of metric_keys).
 # ---------------------------------------------------------------------------

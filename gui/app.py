@@ -847,6 +847,96 @@ def _center_panel() -> html.Div:
                     ),
                 ],
             ),
+            # Mode toggle for Parameter Importance: range-based (global
+            # spread) vs gradient-based sensitivity (local rate of change
+            # at the operating point). Visibility toggled by view_type.
+            html.Div(
+                id="importance-mode-container",
+                style={"display": "none", "padding": "4px 16px 8px"},
+                children=[
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "8px",
+                            "fontSize": "11px",
+                            "color": COLORS["text_muted"],
+                        },
+                        children=[
+                            html.Span("Importance metric", style={"flexShrink": "0"}),
+                            html.Div(
+                                style={"width": "320px", "flexShrink": "0"},
+                                children=dcc.Dropdown(
+                                    id="importance-mode-dropdown",
+                                    className="dse-dropdown dse-dropdown-up",
+                                    options=[
+                                        {"value": "range", "label": "Range  (max − min of mean projection)"},
+                                        {"value": "sensitivity", "label": "Sensitivity  ⟨|∂F/∂x_i|⟩  (gradient)"},
+                                    ],
+                                    value="range",
+                                    clearable=False,
+                                    searchable=False,
+                                    style={"fontSize": "11px"},
+                                ),
+                            ),
+                            html.Span(
+                                "Range = global structure;  Sensitivity = local rate of change.",
+                                style={
+                                    "flexShrink": "1",
+                                    "marginLeft": "12px",
+                                    "fontStyle": "italic",
+                                    "color": COLORS["text_muted"],
+                                },
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            # Mode toggle for the Correlation matrix: Spearman ρ
+            # (input × output rank correlation, the historical view) vs
+            # mean |∂²F/∂x_i ∂x_j| (interaction strength between axis pairs).
+            html.Div(
+                id="correlation-mode-container",
+                style={"display": "none", "padding": "4px 16px 8px"},
+                children=[
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "8px",
+                            "fontSize": "11px",
+                            "color": COLORS["text_muted"],
+                        },
+                        children=[
+                            html.Span("Matrix", style={"flexShrink": "0"}),
+                            html.Div(
+                                style={"width": "340px", "flexShrink": "0"},
+                                children=dcc.Dropdown(
+                                    id="correlation-mode-dropdown",
+                                    className="dse-dropdown dse-dropdown-up",
+                                    options=[
+                                        {"value": "spearman", "label": "Spearman ρ  (rank correlation, signed)"},
+                                        {"value": "interaction", "label": "Interaction  ⟨|∂²F/∂x_i ∂x_j|⟩  (axis pairs)"},
+                                    ],
+                                    value="spearman",
+                                    clearable=False,
+                                    searchable=False,
+                                    style={"fontSize": "11px"},
+                                ),
+                            ),
+                            html.Span(
+                                "Spearman compares input × output;  Interaction compares input × input.",
+                                style={
+                                    "flexShrink": "1",
+                                    "marginLeft": "12px",
+                                    "fontStyle": "italic",
+                                    "color": COLORS["text_muted"],
+                                },
+                            ),
+                        ],
+                    ),
+                ],
+            ),
             # Trajectory selector for the Elasticity Comparison view — picks
             # which sweep axis lives on the X-axis (every other axis becomes
             # one curve). Options are populated from the active sweep's
@@ -2099,6 +2189,8 @@ app.clientside_callback(
     Input("pareto-x-axis-dropdown", "value"),
     Input("pareto-y-axis-dropdown", "value"),
     Input("elasticity-trajectory-dropdown", "value"),
+    Input("importance-mode-dropdown", "value"),
+    Input("correlation-mode-dropdown", "value"),
     State("sweep-result-store", "data"),
     State("view-type-store", "data"),
     State("num-thresholds-store", "data"),
@@ -2127,6 +2219,8 @@ def replot_on_output_change(
     pareto_x,
     pareto_y,
     elasticity_trajectory,
+    importance_mode,
+    correlation_mode,
     sweep_store,
     view_type,
     num_thresholds,
@@ -2140,13 +2234,16 @@ def replot_on_output_change(
     full = _get_sweep(sweep_store)
     if full is None:
         return dash.no_update
-    # Pareto / elasticity dropdown changes only affect their respective
-    # views; skip rebuilds elsewhere so we don't re-render expensive 3-D
-    # figures on every trajectory toggle.
+    # Each per-view mode dropdown only affects its own view — skip rebuilds
+    # elsewhere so we don't re-render expensive 3-D figures on every toggle.
     if ctx.triggered_id in ("pareto-x-axis-dropdown", "pareto-y-axis-dropdown") \
             and view_type != "pareto":
         return dash.no_update
     if ctx.triggered_id == "elasticity-trajectory-dropdown" and view_type != "elasticity":
+        return dash.no_update
+    if ctx.triggered_id == "importance-mode-dropdown" and view_type != "importance":
+        return dash.no_update
+    if ctx.triggered_id == "correlation-mode-dropdown" and view_type != "correlation":
         return dash.no_update
     num_metrics = len(full.get("metric_keys", []))
     n_t = int(num_thresholds or 3)
@@ -2177,6 +2274,8 @@ def replot_on_output_change(
         merit_color_by=merit_color_by,
         view_mode=view_mode or "absolute",
         elasticity_trajectory=elasticity_trajectory,
+        importance_mode=importance_mode or "range",
+        correlation_mode=correlation_mode or "spearman",
     )
 
 
@@ -2682,6 +2781,8 @@ def toggle_custom_qasm_help_modal(open_clicks, close_clicks, is_open):
     State("pareto-x-axis-dropdown", "value"),
     State("pareto-y-axis-dropdown", "value"),
     State("elasticity-trajectory-dropdown", "value"),
+    State("importance-mode-dropdown", "value"),
+    State("correlation-mode-dropdown", "value"),
     State("fom-config-store", "data"),
     prevent_initial_call=True,
 )
@@ -2706,6 +2807,8 @@ def on_view_tab_click(
     pareto_x,
     pareto_y,
     elasticity_trajectory,
+    importance_mode,
+    correlation_mode,
     fom_config,
 ):
     if not ctx.triggered_id or not any(n_clicks_list):
@@ -2738,6 +2841,8 @@ def on_view_tab_click(
         fom_config=fom_config,
         view_mode=view_mode or "absolute",
         elasticity_trajectory=elasticity_trajectory,
+        importance_mode=importance_mode or "range",
+        correlation_mode=correlation_mode or "spearman",
     )
     return fig, view_type, make_view_tab_bar(actual_metrics, view_type)
 
@@ -3300,6 +3405,28 @@ def toggle_pareto_axis_visibility(view_type):
 )
 def toggle_elasticity_axis_visibility(view_type):
     if view_type == "elasticity":
+        return {"padding": "4px 16px 8px"}
+    return {"display": "none"}
+
+
+@app.callback(
+    Output("importance-mode-container", "style"),
+    Input("view-type-store", "data"),
+    prevent_initial_call=False,
+)
+def toggle_importance_mode_visibility(view_type):
+    if view_type == "importance":
+        return {"padding": "4px 16px 8px"}
+    return {"display": "none"}
+
+
+@app.callback(
+    Output("correlation-mode-container", "style"),
+    Input("view-type-store", "data"),
+    prevent_initial_call=False,
+)
+def toggle_correlation_mode_visibility(view_type):
+    if view_type == "correlation":
         return {"padding": "4px 16px 8px"}
     return {"display": "none"}
 
