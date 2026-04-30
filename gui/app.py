@@ -847,6 +847,52 @@ def _center_panel() -> html.Div:
                     ),
                 ],
             ),
+            # Trajectory selector for the Elasticity Comparison view — picks
+            # which sweep axis lives on the X-axis (every other axis becomes
+            # one curve). Options are populated from the active sweep's
+            # metric_keys; visibility toggled by view_type.
+            html.Div(
+                id="elasticity-axis-container",
+                style={"display": "none", "padding": "4px 16px 8px"},
+                children=[
+                    html.Div(
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "8px",
+                            "fontSize": "11px",
+                            "color": COLORS["text_muted"],
+                        },
+                        children=[
+                            html.Span(
+                                "Trajectory axis",
+                                style={"flexShrink": "0"},
+                            ),
+                            html.Div(
+                                style={"width": "220px", "flexShrink": "0"},
+                                children=dcc.Dropdown(
+                                    id="elasticity-trajectory-dropdown",
+                                    className="dse-dropdown dse-dropdown-up",
+                                    options=[],
+                                    value=None,
+                                    clearable=False,
+                                    searchable=False,
+                                    style={"fontSize": "11px"},
+                                ),
+                            ),
+                            html.Span(
+                                "Every other sweep axis becomes one curve.",
+                                style={
+                                    "flexShrink": "1",
+                                    "marginLeft": "12px",
+                                    "fontStyle": "italic",
+                                    "color": COLORS["text_muted"],
+                                },
+                            ),
+                        ],
+                    ),
+                ],
+            ),
             make_merit_controls(),
             dcc.Download(id="csv-download"),
         ],
@@ -1570,6 +1616,7 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     State("cfg-max-hot", "value"),
     State("cfg-max-workers", "value"),
     State("cfg-output-metric", "value"),
+    State("cfg-view-mode", "value"),
     State("cfg-threshold-enable", "value"),
     *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
     *[State(f"cfg-threshold-color-{i}", "value") for i in range(5)],
@@ -1617,6 +1664,7 @@ def run_sweep(
     max_hot = all_args[idx]; idx += 1
     max_workers = all_args[idx]; idx += 1
     output_key = all_args[idx]; idx += 1
+    view_mode = all_args[idx]; idx += 1
     threshold_enable = all_args[idx]; idx += 1
     t_vals = all_args[idx:idx + 5]; idx += 5
     tc_vals = all_args[idx:idx + 5]; idx += 5
@@ -1941,6 +1989,7 @@ def run_sweep(
             pareto_x=pareto_x,
             pareto_y=pareto_y,
             fom_config=fom_config,
+            view_mode=view_mode or "absolute",
         )
         # Send only a small token + axes metadata to the browser; the full
         # grid lives in ``_SWEEP_CACHE`` and is fetched by downstream callbacks.
@@ -2043,11 +2092,13 @@ app.clientside_callback(
 @app.callback(
     Output("main-plot", "figure", allow_duplicate=True),
     Input("cfg-output-metric", "value"),
+    Input("cfg-view-mode", "value"),
     Input("cfg-threshold-enable", "value"),
     *[Input(f"cfg-threshold-{i}", "value") for i in range(5)],
     *[Input(f"cfg-threshold-color-{i}", "value") for i in range(5)],
     Input("pareto-x-axis-dropdown", "value"),
     Input("pareto-y-axis-dropdown", "value"),
+    Input("elasticity-trajectory-dropdown", "value"),
     State("sweep-result-store", "data"),
     State("view-type-store", "data"),
     State("num-thresholds-store", "data"),
@@ -2061,6 +2112,7 @@ app.clientside_callback(
 )
 def replot_on_output_change(
     output_key,
+    view_mode,
     threshold_enable,
     t0,
     t1,
@@ -2074,6 +2126,7 @@ def replot_on_output_change(
     tc4,
     pareto_x,
     pareto_y,
+    elasticity_trajectory,
     sweep_store,
     view_type,
     num_thresholds,
@@ -2087,10 +2140,13 @@ def replot_on_output_change(
     full = _get_sweep(sweep_store)
     if full is None:
         return dash.no_update
-    # Pareto axis changes only affect the pareto view; skip rebuilds for
-    # the other views to avoid re-rendering expensive 3-D figures.
+    # Pareto / elasticity dropdown changes only affect their respective
+    # views; skip rebuilds elsewhere so we don't re-render expensive 3-D
+    # figures on every trajectory toggle.
     if ctx.triggered_id in ("pareto-x-axis-dropdown", "pareto-y-axis-dropdown") \
             and view_type != "pareto":
+        return dash.no_update
+    if ctx.triggered_id == "elasticity-trajectory-dropdown" and view_type != "elasticity":
         return dash.no_update
     num_metrics = len(full.get("metric_keys", []))
     n_t = int(num_thresholds or 3)
@@ -2119,6 +2175,8 @@ def replot_on_output_change(
         merit_y_axis=merit_y_axis,
         merit_frozen_values=merit_frozen,
         merit_color_by=merit_color_by,
+        view_mode=view_mode or "absolute",
+        elasticity_trajectory=elasticity_trajectory,
     )
 
 
@@ -2616,12 +2674,14 @@ def toggle_custom_qasm_help_modal(open_clicks, close_clicks, is_open):
     State("sweep-result-store", "data"),
     State("num-metrics-store", "data"),
     State("cfg-output-metric", "value"),
+    State("cfg-view-mode", "value"),
     State("cfg-threshold-enable", "value"),
     *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
     *[State(f"cfg-threshold-color-{i}", "value") for i in range(5)],
     State("num-thresholds-store", "data"),
     State("pareto-x-axis-dropdown", "value"),
     State("pareto-y-axis-dropdown", "value"),
+    State("elasticity-trajectory-dropdown", "value"),
     State("fom-config-store", "data"),
     prevent_initial_call=True,
 )
@@ -2630,6 +2690,7 @@ def on_view_tab_click(
     sweep_store,
     num_metrics,
     output_key,
+    view_mode,
     threshold_enable,
     t0,
     t1,
@@ -2644,6 +2705,7 @@ def on_view_tab_click(
     num_thresholds,
     pareto_x,
     pareto_y,
+    elasticity_trajectory,
     fom_config,
 ):
     if not ctx.triggered_id or not any(n_clicks_list):
@@ -2674,6 +2736,8 @@ def on_view_tab_click(
         pareto_x=pareto_x,
         pareto_y=pareto_y,
         fom_config=fom_config,
+        view_mode=view_mode or "absolute",
+        elasticity_trajectory=elasticity_trajectory,
     )
     return fig, view_type, make_view_tab_bar(actual_metrics, view_type)
 
@@ -2726,6 +2790,7 @@ def export_csv(n_clicks, sweep_store):
     State("cfg-max-hot", "value"),
     State("cfg-max-workers", "value"),
     State("cfg-output-metric", "value"),
+    State("cfg-view-mode", "value"),
     State("cfg-threshold-enable", "value"),
     *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
     *[State(f"cfg-threshold-color-{i}", "value") for i in range(5)],
@@ -2770,6 +2835,7 @@ def on_save_session(n_clicks, *all_args):
     cfg_max_hot = all_args[idx]; idx += 1
     cfg_max_workers = all_args[idx]; idx += 1
     cfg_output_metric = all_args[idx]; idx += 1
+    cfg_view_mode = all_args[idx]; idx += 1
     cfg_threshold_enable = all_args[idx]; idx += 1
     t_vals = list(all_args[idx:idx + 5]); idx += 5
     tc_vals = list(all_args[idx:idx + 5]); idx += 5
@@ -2810,6 +2876,7 @@ def on_save_session(n_clicks, *all_args):
         cfg_max_hot=cfg_max_hot,
         cfg_max_workers=cfg_max_workers,
         cfg_output_metric=cfg_output_metric,
+        cfg_view_mode=cfg_view_mode,
         cfg_threshold_enable=cfg_threshold_enable,
         num_thresholds=num_thresholds,
         threshold_values=t_vals,
@@ -2863,6 +2930,7 @@ _CFG_OUTPUTS = [
     Output("cfg-max-hot", "value", allow_duplicate=True),
     Output("cfg-max-workers", "value", allow_duplicate=True),
     Output("cfg-output-metric", "value", allow_duplicate=True),
+    Output("cfg-view-mode", "value", allow_duplicate=True),
     Output("cfg-threshold-enable", "value", allow_duplicate=True),
 ]
 
@@ -2961,7 +3029,10 @@ def on_load_session(contents, filename):
         ctrls["performance"]["max_hot"],
         ctrls["performance"]["max_workers"],
         ctrls["thresholds"]["output_metric"],
-        ["yes"] if ctrls["thresholds"]["enable"] else [],
+        ctrls["thresholds"].get("view_mode", "absolute") or "absolute",
+        # Iso-levels always-on: the user-facing toggle was removed, so we
+        # ignore the saved value and force the gate open regardless.
+        ["yes"],
     ]
 
     t_vals = list(ctrls["thresholds"]["values"]) + [None] * 5
@@ -3037,6 +3108,7 @@ def on_load_session(contents, filename):
             view_type=view["view_type"],
             thresholds=thresh,
             threshold_colors=thresh_colors or None,
+            view_mode=ctrls["thresholds"].get("view_mode", "absolute") or "absolute",
         )
         sweep_store_out = _slim_sweep_for_browser(sweep_data)
         view_tab_out = make_view_tab_bar(ndim, view["view_type"])
@@ -3219,6 +3291,46 @@ def toggle_pareto_axis_visibility(view_type):
     if view_type == "pareto":
         return {"padding": "4px 16px 8px"}
     return {"display": "none"}
+
+
+@app.callback(
+    Output("elasticity-axis-container", "style"),
+    Input("view-type-store", "data"),
+    prevent_initial_call=False,
+)
+def toggle_elasticity_axis_visibility(view_type):
+    if view_type == "elasticity":
+        return {"padding": "4px 16px 8px"}
+    return {"display": "none"}
+
+
+# Populate the trajectory dropdown from the active sweep's numeric axes
+# (categorical axes can't be elasticised — derivatives need an ordered
+# coordinate). Default to the first axis when the prior selection is no
+# longer valid for this sweep.
+@app.callback(
+    Output("elasticity-trajectory-dropdown", "options"),
+    Output("elasticity-trajectory-dropdown", "value"),
+    Input("sweep-result-store", "data"),
+    State("elasticity-trajectory-dropdown", "value"),
+    prevent_initial_call=False,
+)
+def update_elasticity_trajectory_options(sweep_store, current_value):
+    full = _get_sweep(sweep_store)
+    if not full:
+        return [], None
+    metric_keys = list(full.get("metric_keys", []))
+    options = []
+    for mk in metric_keys:
+        m = METRIC_BY_KEY.get(mk)
+        if m is None:
+            continue  # categorical axes are excluded
+        options.append({"label": m.label, "value": mk})
+    if not options:
+        return [], None
+    valid_keys = {opt["value"] for opt in options}
+    value = current_value if current_value in valid_keys else options[0]["value"]
+    return options, value
 
 
 # ---------------------------------------------------------------------------
@@ -3709,9 +3821,10 @@ def replot_on_merit_view_change(
     State("sweep-result-store", "data"),
     State("view-type-store", "data"),
     State("cfg-output-metric", "value"),
+    State("cfg-view-mode", "value"),
     prevent_initial_call=True,
 )
-def on_frozen_axis_change(frozen_idx, sweep_store, view_type, output_key):
+def on_frozen_axis_change(frozen_idx, sweep_store, view_type, output_key, view_mode):
     if frozen_idx is None or sweep_store is None:
         raise dash.exceptions.PreventUpdate
     full = _get_sweep(sweep_store)
@@ -3723,7 +3836,10 @@ def on_frozen_axis_change(frozen_idx, sweep_store, view_type, output_key):
     out_key = output_key or "overall_fidelity"
     interp_grid = sweep_to_interp_grid(permuted, out_key)
     fs_cfg = frozen_slider_config(permuted)
-    fig = build_figure(3, permuted, out_key, view_type=view_type)
+    fig = build_figure(
+        3, permuted, out_key, view_type=view_type,
+        view_mode=view_mode or "absolute",
+    )
 
     new_min = fs_cfg["min"] if fs_cfg else dash.no_update
     new_max = fs_cfg["max"] if fs_cfg else dash.no_update

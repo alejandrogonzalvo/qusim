@@ -386,19 +386,17 @@ VIEW_TABS: dict[int, list[dict]] = {
     ],
     2: [
         {"value": "heatmap", "label": "Heatmap"},
-        {"value": "contour", "label": "Contour"},
     ],
     3: [
         {"value": "scatter3d", "label": "Scatter"},
         {"value": "isosurface", "label": "Isosurface"},
         {"value": "frozen_heatmap", "label": "Frozen Heat"},
-        {"value": "frozen_contour", "label": "Frozen Ctr"},
     ],
 }
 
 VIEW_TAB_DEFAULTS: dict[int, str] = {
     1: "line",
-    2: "contour",
+    2: "heatmap",
     3: "isosurface",
 }
 
@@ -411,6 +409,21 @@ ANALYSIS_TABS: list[dict] = [
     {"value": "importance", "label": "Importance"},
     {"value": "pareto", "label": "Pareto"},
     {"value": "correlation", "label": "Corr."},
+    {"value": "elasticity", "label": "Elasticity"},
     {"value": "merit", "label": "Merit"},
     {"value": "topology", "label": "Topology"},
 ]
+
+
+# View-mode toggle: transforms the underlying scalar field on every
+# dimensional view (Line / Heatmap / Isosurface / Frozen Heat). "Absolute"
+# is the unmodified output metric; "gradient_magnitude" replaces F with
+# |∇F|; "elasticity" replaces F with the dimensionless local elasticity
+# (only valid on 1-D Line views — for higher dimensions the user picks
+# which axis to elasticise via the dedicated Elasticity tab instead).
+VIEW_MODES: list[dict] = [
+    {"value": "absolute", "label": "Absolute"},
+    {"value": "gradient_magnitude", "label": "|∇F|  (gradient magnitude)"},
+    {"value": "elasticity", "label": "Elasticity  (1-D only)"},
+]
+DEFAULT_VIEW_MODE = "absolute"

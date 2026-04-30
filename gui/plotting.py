@@ -31,6 +31,33 @@ _LINE_COLOR = "#2B2B2B"
 _THRESHOLD_COLORS = ["#d73027", "#fc8d59", "#fee08b", "#91bfdb", "#4575b4"]
 _DEFAULT_THRESHOLDS = [0.3, 0.6, 0.9]
 
+# ---------------------------------------------------------------------------
+# Unified colorscales — every continuous-value plot (heatmap, scatter3d,
+# parallel coords, merit, isosurface fallback) draws from the same
+# red→amber→blue ramp. Discrete iso-level markers (``_THRESHOLD_COLORS``)
+# share the same five stops so contours land on visually consistent hues.
+# ---------------------------------------------------------------------------
+
+# Primary continuous scale: red (low) → amber (mid) → blue (high). Matches
+# ``_THRESHOLD_COLORS`` and reads "more is better" for fidelity / FoM.
+_COLORSCALE = [
+    [0.00, "#d73027"],
+    [0.25, "#fc8d59"],
+    [0.50, "#fee08b"],
+    [0.75, "#91bfdb"],
+    [1.00, "#4575b4"],
+]
+
+# Diverging variant for signed metrics (correlation, deltas) — same end
+# colours as ``_COLORSCALE`` but white at the midpoint so 0 reads neutral.
+_COLORSCALE_DIVERGING = [
+    [0.00, "#d73027"],
+    [0.25, "#fc8d59"],
+    [0.50, "#FFFFFF"],
+    [0.75, "#91bfdb"],
+    [1.00, "#4575b4"],
+]
+
 _LAYOUT_BASE = dict(
     paper_bgcolor=_BG,
     plot_bgcolor=_PLOT_BG,
@@ -137,7 +164,9 @@ def plot_1d(
 
 
 # ---------------------------------------------------------------------------
-# 2-D heatmap
+# 2-D heatmap (legacy no-iso-line variant, kept as a thin wrapper that adds
+# the iso-line overlay so any external caller migrating from this signature
+# gets the unified Heatmap rendering).
 # ---------------------------------------------------------------------------
 
 def plot_2d(
@@ -147,67 +176,16 @@ def plot_2d(
     metric_key1: str,
     metric_key2: str,
     output_key: str,
+    thresholds: list[float] | None = None,
+    threshold_colors: list[str] | None = None,
 ) -> go.Figure:
-    # Build Z matrix: shape (Ny, Nx) for heatmap (y-axis → rows)
-    z = np.zeros((len(y_values), len(x_values)))
-    for i, row in enumerate(grid):
-        for j, r in enumerate(row):
-            val = r.get(output_key, 0.0) if isinstance(r, dict) else getattr(r, output_key, 0.0)
-            z[j, i] = float(val)
-
-    m1 = METRIC_BY_KEY.get(metric_key1)
-    m2 = METRIC_BY_KEY.get(metric_key2)
-    x_log = m1.log_scale if m1 else False
-    y_log = m2.log_scale if m2 else False
-
-    x_plot = np.log10(x_values) if x_log else x_values
-    y_plot = np.log10(y_values) if y_log else y_values
-
-    zmin, zmax = (0.0, 1.0) if "fidelity" in output_key else (float(z.min()), float(z.max()))
-
-    _COLORSCALE = [
-        [0.0,  "#2B2B2B"],
-        [0.2,  "#5a5a5a"],
-        [0.4,  "#888888"],
-        [0.6,  "#B3B3B3"],
-        [0.8,  "#D4D4D4"],
-        [1.0,  "#F0F0F0"],
-    ]
-
-    fig = go.Figure(
-        go.Heatmap(
-            x=x_plot, y=y_plot, z=z,
-            zmin=zmin, zmax=zmax,
-            colorscale=_COLORSCALE,
-            hovertemplate=(
-                _axis_label(metric_key1) + ": %{x:.3g}<br>"
-                + _axis_label(metric_key2) + ": %{y:.3g}<br>"
-                + "<b>%{z:.4f}</b><extra></extra>"
-            ),
-            colorbar=dict(
-                title=dict(text=_OUTPUT_LABELS.get(output_key, output_key), side="right",
-                           font=dict(size=11, color=_TEXT_MUTED)),
-                tickfont=dict(color=_TEXT_MUTED, size=10),
-                bgcolor="rgba(0,0,0,0)",
-                outlinewidth=0,
-                thickness=14,
-                len=0.85,
-            ),
-        )
+    return plot_2d_contour(
+        x_values=x_values, y_values=y_values, grid=grid,
+        metric_key1=metric_key1, metric_key2=metric_key2,
+        output_key=output_key,
+        thresholds=thresholds, threshold_colors=threshold_colors,
     )
 
-    x_title = _axis_label(metric_key1) + (" (log\u2081\u2080)" if x_log else "")
-    y_title = _axis_label(metric_key2) + (" (log\u2081\u2080)" if y_log else "")
-
-    fig.update_layout(
-        **_LAYOUT_BASE,
-        xaxis=dict(title=dict(text=x_title, font=dict(size=12, color=_TEXT_MUTED)),
-                   gridcolor=_GRID_COLOR, tickfont=dict(size=10, color=_TEXT_MUTED)),
-        yaxis=dict(title=dict(text=y_title, font=dict(size=12, color=_TEXT_MUTED)),
-                   gridcolor=_GRID_COLOR, tickfont=dict(size=10, color=_TEXT_MUTED)),
-        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR, font_color=_TEXT_COLOR),
-    )
-    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -241,14 +219,6 @@ def plot_2d_contour(
 
     is_fidelity = "fidelity" in output_key
     zmin, zmax = (0.0, 1.0) if is_fidelity else (float(z.min()), float(z.max()))
-
-    _COLORSCALE = [
-        [0.0, "#d73027"],
-        [0.25, "#fc8d59"],
-        [0.5, "#fee08b"],
-        [0.75, "#91bfdb"],
-        [1.0, "#4575b4"],
-    ]
 
     fig = go.Figure()
 
@@ -378,15 +348,6 @@ def plot_3d(
     x_title = _axis_label(metric_key1) + (" (log₁₀)" if (m1 and m1.log_scale) else "")
     y_title = _axis_label(metric_key2) + (" (log₁₀)" if (m2 and m2.log_scale) else "")
     z_title = _axis_label(metric_key3) + (" (log₁₀)" if (m3 and m3.log_scale) else "")
-
-    _COLORSCALE = [
-        [0.0,  "#2B2B2B"],
-        [0.2,  "#5a5a5a"],
-        [0.4,  "#888888"],
-        [0.6,  "#B3B3B3"],
-        [0.8,  "#D4D4D4"],
-        [1.0,  "#F0F0F0"],
-    ]
 
     fig = go.Figure()
 
@@ -896,20 +857,12 @@ def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
 
     color_vals = data[:, color_col_idx].tolist() if color_col_idx is not None else None
 
-    _PARCOORDS_COLORSCALE = [
-        [0.0, "#d73027"],
-        [0.25, "#fc8d59"],
-        [0.5, "#fee08b"],
-        [0.75, "#91bfdb"],
-        [1.0, "#4575b4"],
-    ]
-
     fig = go.Figure(
         go.Parcoords(
             dimensions=dimensions,
             line=dict(
                 color=color_vals,
-                colorscale=_PARCOORDS_COLORSCALE,
+                colorscale=_COLORSCALE,
                 showscale=True,
                 colorbar=dict(
                     title=dict(text=_OUTPUT_LABELS.get(output_key, output_key),
@@ -1314,14 +1267,6 @@ def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
             c = _spearman_corr(data[:, out_idx], data[:, in_idx])
             corr[i, j] = c
 
-    _DIVERGING = [
-        [0.0, "#d73027"],
-        [0.25, "#fc8d59"],
-        [0.5, "#FFFFFF"],
-        [0.75, "#91bfdb"],
-        [1.0, "#4575b4"],
-    ]
-
     annotations = []
     for i in range(n_outputs):
         for j in range(n_inputs):
@@ -1337,7 +1282,7 @@ def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
             z=corr,
             x=x_labels, y=y_labels,
             zmin=-1.0, zmax=1.0,
-            colorscale=_DIVERGING,
+            colorscale=_COLORSCALE_DIVERGING,
             showscale=True,
             colorbar=dict(
                 title=dict(text="Spearman ρ", font=dict(size=11, color=_TEXT_MUTED)),
@@ -1355,6 +1300,213 @@ def plot_correlation(sweep_data: dict, output_key: str) -> go.Figure:
         annotations=annotations,
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Elasticity Comparison view (analysis tab) — one curve per parameter
+# overlaid on the chosen "trajectory" axis. Crossovers reveal regime
+# transitions (e.g. T1-limited vs gate-limited). Most useful for hardware
+# co-design papers because it answers "which parameter has the highest
+# leverage at each operating point?" in a single dimensionless plot.
+# ---------------------------------------------------------------------------
+
+# Up to 8 distinguishable hues for the per-parameter curves — sampled from
+# the unified red→blue ramp at evenly spaced stops so they match the rest
+# of the GUI palette while staying visually distinct.
+_ELASTICITY_LINE_COLORS = [
+    "#d73027", "#f46d43", "#fdae61", "#fee08b",
+    "#a8d4a0", "#91bfdb", "#4575b4", "#313695",
+]
+
+
+def plot_elasticity_comparison(
+    sweep_data: dict,
+    output_key: str,
+    trajectory_key: str | None = None,
+) -> go.Figure:
+    """Plot one elasticity curve per parameter against a chosen trajectory axis.
+
+    Each curve is the dimensionless local elasticity of *output_key* with
+    respect to that parameter, averaged over every sweep axis except the
+    trajectory. A horizontal "0" reference line is drawn so positive
+    (parameter helps) and negative (parameter hurts) regimes are obvious.
+    """
+    from gui.derivatives import elasticity_comparison, extract_grid_values
+
+    metric_keys = list(sweep_data.get("metric_keys", []))
+    if len(metric_keys) < 2:
+        return plot_empty(
+            "Elasticity needs ≥ 2 sweep axes — one trajectory plus at least "
+            "one parameter to compare against it."
+        )
+
+    # Pick the trajectory: caller-supplied if valid, otherwise the first axis.
+    if trajectory_key not in metric_keys:
+        trajectory_key = metric_keys[0]
+    trajectory_idx = metric_keys.index(trajectory_key)
+
+    ndim = len(metric_keys)
+    axes = _resolve_axes(sweep_data, ndim)
+
+    try:
+        F = extract_grid_values(sweep_data["grid"], ndim, output_key)
+        result = elasticity_comparison(
+            F, [np.asarray(a) for a in axes], metric_keys, trajectory_idx,
+        )
+    except Exception as exc:
+        return plot_empty(f"Elasticity error: {exc}")
+
+    traj_vals = result["trajectory_values"]
+    traj_metric = METRIC_BY_KEY.get(trajectory_key)
+    traj_log = bool(traj_metric and traj_metric.log_scale)
+
+    fig = go.Figure()
+
+    for idx, (param_key, curve) in enumerate(result["curves"].items()):
+        param_metric = METRIC_BY_KEY.get(param_key)
+        label = param_metric.label if param_metric else param_key
+        color = _ELASTICITY_LINE_COLORS[idx % len(_ELASTICITY_LINE_COLORS)]
+        fig.add_trace(go.Scatter(
+            x=traj_vals, y=curve,
+            mode="lines+markers",
+            line=dict(color=color, width=2, shape="spline", smoothing=0.4),
+            marker=dict(size=4, color=color, line=dict(width=0)),
+            name=label,
+            hovertemplate=(
+                f"<b>{label}</b><br>"
+                + _axis_label(trajectory_key) + ": %{x:.3g}<br>"
+                + "elasticity: <b>%{y:.3f}</b><extra></extra>"
+            ),
+        ))
+
+    # Zero reference line — separates "parameter helps" (above) from
+    # "parameter hurts" (below). Uses xref="paper" so it spans the full
+    # axis range no matter what the data covers.
+    fig.add_shape(
+        type="line", xref="paper", x0=0, x1=1, y0=0, y1=0,
+        line=dict(color=_GRID_COLOR, width=1.5, dash="dot"),
+    )
+
+    output_label = _OUTPUT_LABELS.get(output_key, output_key)
+    x_title = _axis_label(trajectory_key) + (" (log₁₀)" if traj_log else "")
+    y_title = (
+        f"Elasticity of {output_label}  ·  Δlog F / Δlog x"
+    )
+
+    xaxis_cfg = dict(
+        title=dict(text=x_title, font=dict(size=12, color=_TEXT_MUTED)),
+        gridcolor=_GRID_COLOR, zerolinecolor=_GRID_COLOR,
+        tickfont=dict(size=10, color=_TEXT_MUTED),
+    )
+    if traj_log:
+        xaxis_cfg["type"] = "log"
+
+    fig.update_layout(
+        **_LAYOUT_BASE,
+        xaxis=xaxis_cfg,
+        yaxis=dict(
+            title=dict(text=y_title, font=dict(size=12, color=_TEXT_MUTED)),
+            gridcolor=_GRID_COLOR, zerolinecolor=_TEXT_COLOR,
+            tickfont=dict(size=10, color=_TEXT_MUTED),
+        ),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_GRID_COLOR, font_color=_TEXT_COLOR),
+        legend=dict(
+            font=dict(size=10, color=_TEXT_COLOR),
+            bgcolor="rgba(255,255,255,0.8)", bordercolor=_GRID_COLOR, borderwidth=1,
+        ),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# View-mode transforms (Absolute / |∇F| / Elasticity)
+# ---------------------------------------------------------------------------
+
+# Synthetic output keys used by the derivative view modes — chosen to match
+# the ``__fom__`` convention so the existing plot dispatch (which switches on
+# ``output_key``) needs no knowledge of derivative semantics. Labels are set
+# per-figure so the colorbar / Y-axis carry the right title.
+_DERIV_OUTPUT_KEY = "__deriv__"
+
+
+def _rebuild_grid_with_field(
+    sweep_data: dict, values: np.ndarray, key: str = _DERIV_OUTPUT_KEY,
+) -> dict:
+    """Synthesize a new sweep_data whose grid stores ``values`` under ``key``.
+
+    Mirrors :func:`_rebuild_grid_with_fom` but for derivative outputs.
+    """
+    ndim = len(sweep_data["metric_keys"])
+    axes = _resolve_axes(sweep_data, ndim)
+    shape = tuple(len(ax) for ax in axes)
+    if values.shape != shape:
+        raise ValueError(
+            f"derivative shape {values.shape} != sweep grid shape {shape}",
+        )
+
+    def _build(idx: tuple[int, ...], d: int):
+        if d == ndim:
+            return {key: float(values[idx])}
+        return [_build(idx + (i,), d + 1) for i in range(shape[d])]
+
+    new_sweep = dict(sweep_data)
+    new_sweep["grid"] = _build((), 0)
+    new_sweep.pop("facets", None)
+    new_sweep.pop("facet_keys", None)
+    return new_sweep
+
+
+def _apply_view_mode(
+    sweep_data: dict, output_key: str, view_mode: str, num_metrics: int,
+) -> tuple[dict, str]:
+    """Apply the derivative view mode to ``sweep_data``.
+
+    Returns ``(new_sweep_data, new_output_key)``. When ``view_mode`` is
+    ``"absolute"`` (or invalid for the active dimensionality) the inputs are
+    returned unchanged.
+    """
+    from gui.derivatives import (
+        elasticity_1d, extract_grid_values, gradient_magnitude,
+    )
+
+    if view_mode == "absolute" or not view_mode:
+        return sweep_data, output_key
+
+    # Only N-D dimensional views (Line / Heatmap / Isosurface / Frozen) are
+    # transformed; analysis tabs (parallel / slices / pareto / corr) read the
+    # sweep table directly and are unaffected.
+    metric_keys = sweep_data.get("metric_keys", [])
+    ndim = min(num_metrics, len(metric_keys))
+    if ndim < 1:
+        return sweep_data, output_key
+
+    axes = _resolve_axes(sweep_data, ndim)
+    F = extract_grid_values(sweep_data["grid"], ndim, output_key)
+
+    if view_mode == "gradient_magnitude":
+        if ndim < 1:
+            return sweep_data, output_key
+        magnitudes = gradient_magnitude(F, [np.asarray(a) for a in axes], metric_keys[:ndim])
+        new_data = _rebuild_grid_with_field(sweep_data, magnitudes)
+        _OUTPUT_LABELS[_DERIV_OUTPUT_KEY] = (
+            f"|∇{_OUTPUT_LABELS.get(output_key, output_key)}|"
+        )
+        return new_data, _DERIV_OUTPUT_KEY
+
+    if view_mode == "elasticity":
+        # Only 1-D Line views support elasticity-as-a-mode; for higher
+        # dimensions the user picks a trajectory axis via the Elasticity tab.
+        if ndim != 1:
+            return sweep_data, output_key
+        elast = elasticity_1d(F, np.asarray(axes[0]), metric_keys[0])
+        new_data = _rebuild_grid_with_field(sweep_data, elast)
+        _OUTPUT_LABELS[_DERIV_OUTPUT_KEY] = (
+            f"Elasticity of {_OUTPUT_LABELS.get(output_key, output_key)}"
+        )
+        return new_data, _DERIV_OUTPUT_KEY
+
+    return sweep_data, output_key
 
 
 # ---------------------------------------------------------------------------
@@ -1401,7 +1553,6 @@ def _rebuild_grid_with_fom(sweep_data: dict, fom_values: np.ndarray) -> dict:
 # ---------------------------------------------------------------------------
 
 
-_MERIT_VIRIDIS = "Viridis"
 # Neutral grey shown in the heatmap where the FoM evaluated to NaN/Inf.
 _MERIT_NODATA_COLOR = "rgba(180,180,180,0.55)"
 
@@ -1698,7 +1849,7 @@ def plot_merit_heatmap(
     fig = go.Figure()
     fig.add_trace(go.Heatmap(
         x=x_unique, y=y_unique, z=z,
-        colorscale=_MERIT_VIRIDIS,
+        colorscale=_COLORSCALE,
         zmin=float(finite_z.min()), zmax=float(finite_z.max()),
         colorbar=dict(
             title=dict(text=fom_name, side="right",
@@ -1827,7 +1978,7 @@ def plot_merit_surface(
 
     # Surface contours: project FoM iso-lines onto the surface itself so the
     # height-colour duality stays readable. ``usecolormap=True`` keeps the
-    # projected lines aligned with the Viridis ramp.
+    # projected lines aligned with the shared ``_COLORSCALE`` ramp.
     contour_z_cfg = dict(
         show=True,
         usecolormap=True,
@@ -1840,7 +1991,7 @@ def plot_merit_surface(
         x=x_unique, y=y_unique, z=z,
         surfacecolor=z,
         cmin=zmin, cmax=zmax,
-        colorscale=_MERIT_VIRIDIS,
+        colorscale=_COLORSCALE,
         colorbar=dict(
             title=dict(text=fom_name, side="right",
                        font=dict(size=11, color=_TEXT_MUTED)),
@@ -2150,7 +2301,7 @@ def plot_merit_pareto(
         else:
             marker_kwargs.update(dict(
                 color=color_values[dom_mask],
-                colorscale=_MERIT_VIRIDIS,
+                colorscale=_COLORSCALE,
                 cmin=float(np.nanmin(color_values)),
                 cmax=float(np.nanmax(color_values)),
                 showscale=False,
@@ -2191,7 +2342,7 @@ def plot_merit_pareto(
         else:
             front_marker.update(dict(
                 color=color_values[front_mask],
-                colorscale=_MERIT_VIRIDIS,
+                colorscale=_COLORSCALE,
                 cmin=float(np.nanmin(color_values)),
                 cmax=float(np.nanmax(color_values)),
                 colorbar=dict(
@@ -2601,9 +2752,18 @@ def build_figure(
     merit_y_axis: str | None = None,
     merit_frozen_values: dict | None = None,
     merit_color_by: str | None = None,
+    view_mode: str = "absolute",
+    elasticity_trajectory: str | None = None,
 ) -> go.Figure:
     if sweep_data is None:
         return plot_empty()
+
+    # New "Elasticity Comparison" analysis view — handled before any other
+    # dispatch since it builds its own multi-line figure from the raw grid.
+    if view_type == "elasticity":
+        return plot_elasticity_comparison(
+            sweep_data, output_key, trajectory_key=elasticity_trajectory,
+        )
 
     # Merit view: custom FoM laid out over the sweep axes — handled before
     # facet dispatch because it builds its own flattened sweep internally.
@@ -2624,7 +2784,7 @@ def build_figure(
     # Faceted data → delegate to subplot grid builder for spatial views,
     # or flatten into a single dataset for analysis views.
     if "facets" in sweep_data and sweep_data["facets"]:
-        _analysis_views = {"parallel", "slices", "importance", "pareto", "correlation"}
+        _analysis_views = {"parallel", "slices", "importance", "pareto", "correlation", "elasticity"}
         if view_type in _analysis_views:
             sweep_data = _flatten_facets_for_analysis(sweep_data)
         else:
@@ -2636,6 +2796,30 @@ def build_figure(
             )
 
     _tc = threshold_colors
+
+    # Derivative view mode: replace F in the grid with |∇F| or local
+    # elasticity before dispatching, so every dimensional plotter renders
+    # the derivative without knowing it. Threshold iso-levels are passed
+    # through unchanged — they trace level sets of the *displayed* scalar
+    # field, so in derivative mode the same threshold values (e.g. 0.3) draw
+    # contours where |∇F| = 0.3 instead of where F = 0.3. Same legend
+    # toggle UX in both modes; the user reinterprets the threshold numbers
+    # against the colorbar that says "|∇Overall Fidelity|".
+    _is_dimensional_view = (
+        view_type is None
+        or view_type in ("isosurface", "scatter3d", "frozen_heatmap", "frozen_contour")
+    )
+    if (
+        view_mode and view_mode != "absolute"
+        and _is_dimensional_view
+        and num_metrics in (1, 2, 3)
+    ):
+        try:
+            sweep_data, output_key = _apply_view_mode(
+                sweep_data, output_key, view_mode, num_metrics,
+            )
+        except Exception as exc:
+            return plot_empty(f"Derivative error: {exc}")
 
     fig: go.Figure
 
@@ -2667,30 +2851,22 @@ def build_figure(
                     threshold_colors=_tc,
                 )
             elif num_metrics == 2:
-                if view_type == "contour":
-                    fig = plot_2d_contour(
-                        x_values=np.array(sweep_data["xs"]),
-                        y_values=np.array(sweep_data["ys"]),
-                        grid=sweep_data["grid"],
-                        metric_key1=sweep_data["metric_keys"][0],
-                        metric_key2=sweep_data["metric_keys"][1],
-                        output_key=output_key,
-                        thresholds=thresholds,
-                        threshold_colors=_tc,
-                    )
-                else:
-                    fig = plot_2d(
-                        x_values=np.array(sweep_data["xs"]),
-                        y_values=np.array(sweep_data["ys"]),
-                        grid=sweep_data["grid"],
-                        metric_key1=sweep_data["metric_keys"][0],
-                        metric_key2=sweep_data["metric_keys"][1],
-                        output_key=output_key,
-                    )
+                # Heatmap with iso-line overlay (the previous "contour" view —
+                # the no-iso-line variant was removed). Old saved sessions with
+                # ``view_type="contour"`` land here too.
+                fig = plot_2d_contour(
+                    x_values=np.array(sweep_data["xs"]),
+                    y_values=np.array(sweep_data["ys"]),
+                    grid=sweep_data["grid"],
+                    metric_key1=sweep_data["metric_keys"][0],
+                    metric_key2=sweep_data["metric_keys"][1],
+                    output_key=output_key,
+                    thresholds=thresholds,
+                    threshold_colors=_tc,
+                )
             elif num_metrics == 3 and view_type in ("frozen_heatmap", "frozen_contour"):
                 from gui.interpolation import (
                     frozen_slice,
-                    frozen_view_base,
                     sweep_to_interp_grid,
                 )
                 igrid = sweep_to_interp_grid(sweep_data, output_key)
@@ -2705,30 +2881,19 @@ def build_figure(
                     np.array(igrid["zs"]),
                     z_val,
                 )
-                base_view = frozen_view_base(view_type)
                 slice_grid = [[{output_key: float(slice_2d[j, i])}
                                for j in range(slice_2d.shape[0])]
                               for i in range(slice_2d.shape[1])]
-                if base_view == "contour":
-                    fig = plot_2d_contour(
-                        x_values=np.array(sweep_data["xs"]),
-                        y_values=np.array(sweep_data["ys"]),
-                        grid=slice_grid,
-                        metric_key1=sweep_data["metric_keys"][0],
-                        metric_key2=sweep_data["metric_keys"][1],
-                        output_key=output_key,
-                        thresholds=thresholds,
-                        threshold_colors=_tc,
-                    )
-                else:
-                    fig = plot_2d(
-                        x_values=np.array(sweep_data["xs"]),
-                        y_values=np.array(sweep_data["ys"]),
-                        grid=slice_grid,
-                        metric_key1=sweep_data["metric_keys"][0],
-                        metric_key2=sweep_data["metric_keys"][1],
-                        output_key=output_key,
-                    )
+                fig = plot_2d_contour(
+                    x_values=np.array(sweep_data["xs"]),
+                    y_values=np.array(sweep_data["ys"]),
+                    grid=slice_grid,
+                    metric_key1=sweep_data["metric_keys"][0],
+                    metric_key2=sweep_data["metric_keys"][1],
+                    output_key=output_key,
+                    thresholds=thresholds,
+                    threshold_colors=_tc,
+                )
             elif num_metrics == 3:
                 _3d_args = dict(
                     x_values=np.array(sweep_data["xs"]),

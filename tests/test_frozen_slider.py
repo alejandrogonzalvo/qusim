@@ -23,18 +23,11 @@ class TestFrozenViewTabs:
         values = [t["value"] for t in tabs_3d]
         assert "frozen_heatmap" in values
 
-    def test_frozen_contour_tab_exists_for_3_axes(self):
-        from gui.constants import VIEW_TABS
-        tabs_3d = VIEW_TABS[3]
-        values = [t["value"] for t in tabs_3d]
-        assert "frozen_contour" in values
-
     def test_no_frozen_tabs_for_2_axes(self):
         from gui.constants import VIEW_TABS
         tabs_2d = VIEW_TABS[2]
         values = [t["value"] for t in tabs_2d]
         assert "frozen_heatmap" not in values
-        assert "frozen_contour" not in values
 
     def test_no_frozen_tabs_for_1_axis(self):
         from gui.constants import VIEW_TABS
@@ -52,14 +45,16 @@ class TestResolveViewTypeFrozen:
         from gui.app import resolve_view_type
         assert resolve_view_type("frozen_heatmap", 3) == "frozen_heatmap"
 
-    def test_preserves_frozen_contour_in_3d(self):
+    def test_legacy_frozen_contour_falls_back_to_default(self):
+        """frozen_contour was removed (the no-iso-line variant); old saved
+        sessions referencing it should fall back to the 3D default."""
         from gui.app import resolve_view_type
-        assert resolve_view_type("frozen_contour", 3) == "frozen_contour"
+        assert resolve_view_type("frozen_contour", 3) == "isosurface"
 
     def test_frozen_heatmap_falls_back_when_switching_to_2d(self):
         from gui.app import resolve_view_type
         result = resolve_view_type("frozen_heatmap", 2)
-        assert result in ("heatmap", "contour")
+        assert result == "heatmap"
 
 
 # ---------------------------------------------------------------------------
@@ -81,24 +76,6 @@ class TestIsFrozenView:
         assert is_frozen_view("scatter3d") is False
         assert is_frozen_view("isosurface") is False
         assert is_frozen_view("line") is False
-
-
-# ---------------------------------------------------------------------------
-# frozen_view_base: map frozen view to its base 2D view type
-# ---------------------------------------------------------------------------
-
-class TestFrozenViewBase:
-    def test_frozen_heatmap_base(self):
-        from gui.interpolation import frozen_view_base
-        assert frozen_view_base("frozen_heatmap") == "heatmap"
-
-    def test_frozen_contour_base(self):
-        from gui.interpolation import frozen_view_base
-        assert frozen_view_base("frozen_contour") == "contour"
-
-    def test_non_frozen_returns_identity(self):
-        from gui.interpolation import frozen_view_base
-        assert frozen_view_base("heatmap") == "heatmap"
 
 
 # ---------------------------------------------------------------------------

@@ -230,6 +230,7 @@ def build_controls_dict(
     cfg_max_hot: int | None = None,
     cfg_max_workers: int | None = None,
     cfg_output_metric: str = "overall_fidelity",
+    cfg_view_mode: str = "absolute",
     cfg_threshold_enable: list | None = None,
     num_thresholds: int = 3,
     threshold_values: list | None = None,
@@ -278,6 +279,7 @@ def build_controls_dict(
         "noise": dict(noise_values),
         "thresholds": {
             "output_metric": cfg_output_metric,
+            "view_mode": cfg_view_mode or "absolute",
             "enable": bool(cfg_threshold_enable and "yes" in cfg_threshold_enable),
             "num_thresholds": int(num_thresholds or 3),
             "values": list(threshold_values),

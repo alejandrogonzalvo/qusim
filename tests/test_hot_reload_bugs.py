@@ -15,10 +15,6 @@ from gui.app import resolve_view_type, should_skip_poll, sweep_lock, sweep_gate
 class TestResolveViewType:
     """resolve_view_type(current_view, num_active) returns the view to display."""
 
-    def test_preserves_user_selected_view_same_dimensionality(self):
-        """If user switched to contour in 2D, hot reload should keep contour."""
-        assert resolve_view_type("contour", 2) == "contour"
-
     def test_preserves_scatter3d_when_user_selected_it(self):
         """If user switched to scatter3d in 3D, hot reload should keep it."""
         assert resolve_view_type("scatter3d", 3) == "scatter3d"
@@ -30,20 +26,25 @@ class TestResolveViewType:
         """Analysis views like parallel should be preserved across hot reloads."""
         assert resolve_view_type("parallel", 2) == "parallel"
 
+    def test_legacy_contour_falls_back_to_default(self):
+        """Old saved sessions with view_type='contour' (the no-iso-line variant
+        that was removed) should fall back to the 2D default ('heatmap')."""
+        assert resolve_view_type("contour", 2) == "heatmap"
+
     def test_falls_back_to_default_when_dimensionality_changes(self):
         """Switching from 2D to 3D should reset to the 3D default (isosurface)."""
         assert resolve_view_type("contour", 3) == "isosurface"
 
     def test_falls_back_to_default_when_3d_to_2d(self):
-        """Switching from 3D to 2D should reset to the 2D default (contour)."""
-        assert resolve_view_type("isosurface", 2) == "contour"
+        """Switching from 3D to 2D should reset to the 2D default (heatmap)."""
+        assert resolve_view_type("isosurface", 2) == "heatmap"
 
     def test_falls_back_to_default_when_view_is_none(self):
         """First run (no previous view) should use the default."""
         assert resolve_view_type(None, 3) == "isosurface"
 
     def test_falls_back_to_default_for_1d(self):
-        assert resolve_view_type(None, 1) == "parallel"
+        assert resolve_view_type(None, 1) == "line"
 
     def test_preserves_analysis_view_across_dimensionalities(self):
         """Analysis views (parallel, slices, importance, etc.) work for any dimensionality."""

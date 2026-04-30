@@ -14,6 +14,7 @@ from .constants import (
     CATEGORICAL_METRICS,
     CIRCUIT_TYPES,
     DEFAULT_SWEEP_AXES,
+    DEFAULT_VIEW_MODE,
     INTRACORE_TOPOLOGY_TYPES,
     MAX_COLD_COMPILATIONS,
     MAX_SWEEP_AXES,
@@ -26,6 +27,7 @@ from .constants import (
     ROUTING_ALGORITHM_OPTIONS,
     SWEEPABLE_METRICS,
     TOPOLOGY_TYPES,
+    VIEW_MODES,
     VIEW_TAB_DEFAULTS,
     VIEW_TABS,
 )
@@ -1122,20 +1124,39 @@ def _output_tab_children() -> list:
             style={"marginBottom": "10px"},
         ),
         _label(
+            "View mode",
+            "What every dimensional view (Line / Heatmap / Isosurface / "
+            "Frozen Heat) actually plots: the absolute output value, its "
+            "gradient magnitude |∇F| (a single scalar per cell summarising "
+            "how steep F is in any direction — low values mark robust "
+            "regions, high values mark sensitive ones), or — on 1-D Line "
+            "views only — the dimensionless local elasticity (x/F)·dF/dx, "
+            "i.e. the % change in F per % change in x. For multi-axis "
+            "elasticity comparison, use the dedicated Elasticity tab.",
+        ),
+        dcc.Dropdown(
+            id="cfg-view-mode",
+            options=VIEW_MODES,
+            value=DEFAULT_VIEW_MODE,
+            clearable=False,
+            className="dse-dropdown",
+            style={"marginBottom": "10px"},
+        ),
+        _label(
             "Iso-levels",
             "Threshold values overlaid on the plot as contour lines (2D) or "
             "nested isosurfaces (3D). Each row is a (value, colour) pair; +/− "
             "below adds or removes rows. Use to mark target performance bands.",
         ),
+        # Iso-levels are always shown on every applicable view. The hidden
+        # Checklist preserves the ``cfg-threshold-enable`` callback wiring
+        # (read by sweep / re-render / CSV / session callbacks) without
+        # exposing a user-toggleable control.
         dcc.Checklist(
             id="cfg-threshold-enable",
-            options=[{"label": " Show on non-3D views", "value": "yes"}],
-            value=[],
-            style={
-                "color": COLORS["text"],
-                "fontSize": "12px",
-                "marginBottom": "8px",
-            },
+            options=[{"label": "", "value": "yes"}],
+            value=["yes"],
+            style={"display": "none"},
         ),
         *_make_threshold_inputs(),
     ]

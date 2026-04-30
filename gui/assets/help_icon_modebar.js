@@ -31,13 +31,8 @@
         },
         "heatmap": {
             title: "Heatmap",
-            body: "Output metric on a 2D color grid over the two swept axes. Reads absolute values at any (X, Y); enable Iso-levels to overlay threshold contours.",
-            useFor: "Which (X, Y) corner gives the best metric? Where is the basin of acceptable performance, and how steeply does it drop off the edges?"
-        },
-        "contour": {
-            title: "Contour",
-            body: "Smoothed output metric drawn as filled iso-bands over two swept axes.",
-            useFor: "Where does the metric cross a threshold (the contour)? Which direction in (X, Y) gives the steepest improvement? Compare gradient magnitudes across the plane."
+            body: "Output metric on a 2D color grid over the two swept axes, with labelled iso-lines tracing every level set and threshold contours overlaid in your iso-level colours.",
+            useFor: "Which (X, Y) corner gives the best metric? Where does the metric cross a target threshold (the coloured contours), and which direction climbs fastest?"
         },
         "scatter3d": {
             title: "3D Scatter",
@@ -51,13 +46,8 @@
         },
         "frozen_heatmap": {
             title: "Frozen Heatmap",
-            body: "2D heatmap on the X–Y axes with the third axis pinned to the slider value below.",
-            useFor: "How does the (X, Y) landscape change as the third parameter sweeps? Useful for finding the slice of Z where the (X, Y) basin is widest."
-        },
-        "frozen_contour": {
-            title: "Frozen Contour",
-            body: "Filled iso-bands on the X–Y axes with the third axis pinned via the slider.",
-            useFor: "Same Z-slicing as Frozen Heat but emphasises threshold contours — find the Z value at which a target iso-line first appears or disappears."
+            body: "2D heatmap on the X–Y axes with the third axis pinned to the slider value below; labelled iso-lines and threshold contours overlay the colour map.",
+            useFor: "How does the (X, Y) landscape change as the third parameter sweeps? Find the Z value at which a target iso-line first appears or disappears."
         },
         "parallel": {
             title: "Parallel Coordinates",
@@ -83,6 +73,11 @@
             title: "Correlation Matrix",
             body: "Pairwise Pearson correlations between sweep axes and output metrics.",
             useFor: "Which axes are redundant (|r|≈1)? Which axes drive which metric most strongly? Spot positive vs negative couplings before designing a follow-up sweep."
+        },
+        "elasticity": {
+            title: "Elasticity Comparison",
+            body: "Dimensionless local elasticity (∂log F / ∂log x) of the output metric, plotted as one curve per parameter along a chosen trajectory axis. Use the leftmost sweep axis as the trajectory by default — every other parameter becomes its own curve, averaged over the remaining axes.",
+            useFor: "Which parameter has the most leverage on F at this operating point? Where does the dominant parameter change (regime crossovers — e.g. T1-limited switching to gate-limited)? A 1 % increase in x produces ‘elasticity %’ change in F, so curves are directly comparable across parameters with completely different units."
         },
         "merit:heatmap": {
             title: "Merit · Heatmap",

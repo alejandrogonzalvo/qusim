@@ -239,9 +239,10 @@ def sweep_to_interp_grid(sweep_data: dict, output_key: str) -> dict:
 # Frozen axis selection
 # ---------------------------------------------------------------------------
 
+# 2D heatmap view types (also accept legacy ``"contour"`` from old saved
+# sessions — both render via the same iso-line-overlay heatmap now).
 _2D_VIEWS = {"heatmap", "contour"}
 _FROZEN_VIEWS = {"frozen_heatmap", "frozen_contour"}
-_FROZEN_TO_BASE = {"frozen_heatmap": "heatmap", "frozen_contour": "contour"}
 
 
 def pick_frozen_axis(num_axes: int, view_type: str) -> int | None:
@@ -257,11 +258,6 @@ def pick_frozen_axis(num_axes: int, view_type: str) -> int | None:
 def is_frozen_view(view_type: str) -> bool:
     """Return True if the view type is a frozen-slider view."""
     return view_type in _FROZEN_VIEWS
-
-
-def frozen_view_base(view_type: str) -> str:
-    """Map a frozen view type to its underlying 2D view type."""
-    return _FROZEN_TO_BASE.get(view_type, view_type)
 
 
 def frozen_slider_config(sweep_data: dict) -> dict | None:

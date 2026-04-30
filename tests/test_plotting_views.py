@@ -126,23 +126,29 @@ class TestPlot2dContour:
 # ---------------------------------------------------------------------------
 
 class TestBuildFigureViewRouting:
-    def test_default_2d_returns_heatmap(self, sweep_data_store_2d):
+    def test_default_2d_returns_heatmap_with_contour(self, sweep_data_store_2d):
+        """The 2D default view is a heatmap with a labelled iso-line overlay
+        (the no-iso-line variant was removed in favour of one unified view)."""
         fig = build_figure(2, sweep_data_store_2d, "overall_fidelity")
         assert isinstance(fig, go.Figure)
         trace_types = [type(t).__name__ for t in fig.data]
         assert "Heatmap" in trace_types
+        assert "Contour" in trace_types
 
-    def test_contour_view_returns_contour(self, sweep_data_store_2d):
+    def test_legacy_contour_view_renders_unified_heatmap(self, sweep_data_store_2d):
+        """Old saved sessions with ``view_type="contour"`` render the same
+        unified heatmap-with-iso-lines as the new "heatmap" view."""
         fig = build_figure(2, sweep_data_store_2d, "overall_fidelity", view_type="contour")
         assert isinstance(fig, go.Figure)
         trace_types = [type(t).__name__ for t in fig.data]
+        assert "Heatmap" in trace_types
         assert "Contour" in trace_types
 
-    def test_heatmap_view_returns_plain_heatmap(self, sweep_data_store_2d):
+    def test_heatmap_view_includes_iso_lines(self, sweep_data_store_2d):
         fig = build_figure(2, sweep_data_store_2d, "overall_fidelity", view_type="heatmap")
         trace_types = [type(t).__name__ for t in fig.data]
         assert "Heatmap" in trace_types
-        assert "Contour" not in trace_types
+        assert "Contour" in trace_types
 
     def test_1d_ignores_view_type(self, sweep_data_store_1d):
         fig = build_figure(1, sweep_data_store_1d, "overall_fidelity", view_type="contour")
