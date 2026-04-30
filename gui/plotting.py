@@ -1492,6 +1492,28 @@ def plot_elasticity_comparison(
     except Exception as exc:
         return plot_empty(f"Elasticity error: {exc}")
 
+    # Degenerate case: F is NaN / saturated to zero across the entire grid
+    # (e.g. a deep circuit at low T1 — the engine reports F = 0 / NaN
+    # everywhere, so every elasticity cell is NaN and every curve is empty).
+    # Show the diagnostic explicitly instead of a silent empty plot.
+    finite_F = int(np.sum(np.isfinite(F) & (np.abs(F) > 1e-12)))
+    any_finite_curve = any(
+        np.isfinite(c).any() for c in result["curves"].values()
+    )
+    if not any_finite_curve:
+        if finite_F == 0:
+            return plot_empty(
+                "F is zero or NaN across the entire sweep grid — elasticity "
+                "is undefined here. Widen the sweep ranges or relax the noise "
+                "budget so at least some cells produce a non-trivial fidelity, "
+                "then this view will show one curve per parameter."
+            )
+        return plot_empty(
+            "All elasticity curves are NaN — the partial derivatives are "
+            "indeterminate at this operating point. Try a different "
+            "trajectory axis, or widen the sweep ranges."
+        )
+
     traj_vals = result["trajectory_values"]
     traj_metric = METRIC_BY_KEY.get(trajectory_key)
     traj_log = bool(traj_metric and traj_metric.log_scale)
@@ -2736,6 +2758,7 @@ def _build_faceted_figure(
     view_type: str | None = None,
     thresholds: list[float] | None = None,
     threshold_colors: list[str] | None = None,
+    view_mode: str = "absolute",
 ) -> go.Figure:
     """Build a subplot grid, one panel per facet."""
     from plotly.subplots import make_subplots
@@ -2761,15 +2784,49 @@ def _build_faceted_figure(
         vertical_spacing=v_spacing,
     )
 
-    # Compute global zmin/zmax for shared colorscale (2D views).
+    # Apply the derivative view mode per-facet *before* the per-panel
+    # recursion (and before the global zmin/zmax pass) so the recursive
+    # build_figure call below sees an already-transformed sweep_data with
+    # ``output_key="__deriv__"`` and short-circuits its own view_mode
+    # branch. Drops thresholds in derivative mode for the same reason as
+    # the non-faceted path — they're absolute-scale values.
+    transformed_facets = []
+    transformed_output_key = output_key
+    transformed_thresholds = thresholds
+    apply_mode = (
+        view_mode and view_mode != "absolute"
+        and num_metrics in (1, 2, 3)
+        and view_type not in {
+            "parallel", "slices", "importance", "pareto", "correlation",
+            "elasticity", "merit", "topology",
+        }
+    )
+    if apply_mode:
+        try:
+            for facet in facets:
+                tf, tk = _apply_view_mode(facet, output_key, view_mode, num_metrics)
+                transformed_facets.append(tf)
+                transformed_output_key = tk
+        except Exception:
+            transformed_facets = list(facets)
+            transformed_output_key = output_key
+    else:
+        transformed_facets = list(facets)
+
+    # Compute global zmin/zmax for shared colorscale (2D views) using the
+    # *transformed* output key so derivative-mode heatmaps share a coherent
+    # range across panels.
     global_zmin = float("inf")
     global_zmax = float("-inf")
     if num_metrics == 2:
-        for facet in facets:
+        for facet in transformed_facets:
             grid = facet.get("grid", [])
             for row_data in grid:
                 for cell in row_data:
-                    v = float(cell.get(output_key, 0.0)) if isinstance(cell, dict) else 0.0
+                    v = (
+                        float(cell.get(transformed_output_key, 0.0))
+                        if isinstance(cell, dict) else 0.0
+                    )
                     if v < global_zmin:
                         global_zmin = v
                     if v > global_zmax:
@@ -2779,17 +2836,20 @@ def _build_faceted_figure(
     # combined figure stays within the browser's WebGL/JSON limits.
     facet_3d_cap = _MAX_BROWSER_3D_POINTS // max(n_facets, 1) if is_3d else None
 
-    for idx, facet in enumerate(facets):
+    for idx, facet in enumerate(transformed_facets):
         r = idx // cols + 1
         c = idx % cols + 1
 
         # Build a single-facet figure, then transplant traces into the grid.
+        # ``view_mode="absolute"`` because we already transformed the facet's
+        # sweep_data above — the recursive call must not re-apply.
         panel_fig = build_figure(
-            num_metrics, facet, output_key,
+            num_metrics, facet, transformed_output_key,
             view_type=view_type,
-            thresholds=thresholds,
+            thresholds=transformed_thresholds,
             threshold_colors=threshold_colors,
             _3d_point_cap=facet_3d_cap,
+            view_mode="absolute",
         )
         for trace in panel_fig.data:
             if is_3d:
@@ -2966,6 +3026,7 @@ def build_figure(
                 view_type=view_type,
                 thresholds=thresholds,
                 threshold_colors=threshold_colors,
+                view_mode=view_mode or "absolute",
             )
 
     _tc = threshold_colors

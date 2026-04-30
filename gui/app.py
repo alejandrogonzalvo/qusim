@@ -58,6 +58,7 @@ from gui.constants import (
     VIEW_TAB_DEFAULTS,
     VIEW_TAB_DEFAULT_ND,
     VIEW_TABS,
+    view_modes_for_dim,
 )
 from gui.dse_engine import DSEEngine, SweepProgress
 from gui.interpolation import (
@@ -3320,8 +3321,55 @@ app.clientside_callback(
 # The interp-grid-store holds the precomputed 3D grid; frozenSlice extracts
 # a 2D plane at the slider value, then Plotly.react diffs the data in-place.
 
+# Server-side companion: when the user drags the frozen slider in a
+# derivative view mode, the clientside re-slicer skips (its interp-grid
+# is the absolute field). Rebuild the figure on the server so the
+# heatmap actually tracks the slider in |∇F| / mixed-partial modes too.
+@app.callback(
+    Output("main-plot", "figure", allow_duplicate=True),
+    Input("frozen-slider", "value"),
+    State("sweep-result-store", "data"),
+    State("view-type-store", "data"),
+    State("cfg-view-mode", "value"),
+    State("cfg-output-metric", "value"),
+    State("cfg-threshold-enable", "value"),
+    *[State(f"cfg-threshold-{i}", "value") for i in range(5)],
+    *[State(f"cfg-threshold-color-{i}", "value") for i in range(5)],
+    State("num-thresholds-store", "data"),
+    prevent_initial_call=True,
+)
+def replot_frozen_slider_in_derivative_mode(
+    frozen_val,
+    sweep_store, view_type, view_mode, output_key, threshold_enable,
+    t0, t1, t2, t3, t4, tc0, tc1, tc2, tc3, tc4, num_thresholds,
+):
+    if view_type not in ("frozen_heatmap", "frozen_contour"):
+        return dash.no_update
+    if not view_mode or view_mode == "absolute":
+        return dash.no_update  # clientside handler already updated the heatmap
+    full = _get_sweep(sweep_store)
+    if full is None:
+        return dash.no_update
+    n_t = int(num_thresholds or 3)
+    all_t = [t0, t1, t2, t3, t4][:n_t]
+    all_c = [tc0, tc1, tc2, tc3, tc4][:n_t]
+    thresh_vals = [v for v in all_t if v is not None]
+    thresh_colors = [all_c[i] for i, v in enumerate(all_t) if v is not None]
+    thresh = thresh_vals if threshold_enable and "yes" in threshold_enable else None
+    return build_figure(
+        len(full.get("metric_keys", [])),
+        full,
+        output_key or "overall_fidelity",
+        view_type=view_type,
+        thresholds=thresh,
+        threshold_colors=thresh_colors or None,
+        view_mode=view_mode,
+        frozen_z=frozen_val,
+    )
+
+
 app.clientside_callback(
-    """function(frozenVal, interpGrid, viewType) {
+    """function(frozenVal, interpGrid, viewType, viewMode) {
         if (!interpGrid || !interpGrid.values || interpGrid.ndim !== 3) {
             return [window.dash_clientside.no_update,
                     window.dash_clientside.no_update];
@@ -3330,10 +3378,23 @@ app.clientside_callback(
             return [window.dash_clientside.no_update,
                     window.dash_clientside.no_update];
         }
+        var v = frozenVal;
+        var label = (Math.abs(v) < 1e-3 || Math.abs(v) >= 1e5)
+            ? v.toExponential(2) : (Math.abs(v) < 10 ? v.toFixed(4) : v.toFixed(1));
+
+        // The cached interp-grid stores absolute fidelity values, so
+        // re-slicing it in derivative mode would silently revert the
+        // heatmap to absolute even though the colorbar still says |∇F|.
+        // In derivative mode we skip the in-place restyle and let the
+        // server-side replot handler re-render on the next user input;
+        // the slider label still updates so the drag feels responsive.
+        if (viewMode && viewMode !== "absolute") {
+            return [window.dash_clientside.no_update, label];
+        }
+
         var qi = window.qusimInterp;
         if (!qi) {
-            return [window.dash_clientside.no_update,
-                    window.dash_clientside.no_update];
+            return [window.dash_clientside.no_update, label];
         }
 
         var slice2d = qi.frozenSlice(
@@ -3349,10 +3410,6 @@ app.clientside_callback(
             Plotly.restyle(plotDiv, {z: [slice2d]}, [0]);
         }
 
-        var v = frozenVal;
-        var label = (Math.abs(v) < 1e-3 || Math.abs(v) >= 1e5)
-            ? v.toExponential(2) : (Math.abs(v) < 10 ? v.toFixed(4) : v.toFixed(1));
-
         return [window.dash_clientside.no_update, label];
     }""",
     Output("main-plot", "figure", allow_duplicate=True),
@@ -3360,6 +3417,7 @@ app.clientside_callback(
     Input("frozen-slider", "value"),
     State("interp-grid-store", "data"),
     State("view-type-store", "data"),
+    State("cfg-view-mode", "value"),
     prevent_initial_call=True,
 )
 
@@ -3435,6 +3493,26 @@ def toggle_correlation_mode_visibility(view_type):
 # (categorical axes can't be elasticised — derivatives need an ordered
 # coordinate). Default to the first axis when the prior selection is no
 # longer valid for this sweep.
+# View-mode dropdown filtering — hide derivative modes that don't make
+# sense for the current sweep dimensionality (e.g. d²F/dx² is 1-D only,
+# ∂²F/∂x∂y is 2-D only). Falls back to "absolute" if the previously
+# picked mode is no longer valid (e.g. user picked Elasticity in a 1-D
+# sweep then added a second axis).
+@app.callback(
+    Output("cfg-view-mode", "options"),
+    Output("cfg-view-mode", "value"),
+    Input("num-metrics-store", "data"),
+    State("cfg-view-mode", "value"),
+    prevent_initial_call=False,
+)
+def update_view_mode_options(num_metrics, current_value):
+    n = int(num_metrics or 1)
+    options = view_modes_for_dim(n)
+    valid = {opt["value"] for opt in options}
+    value = current_value if current_value in valid else "absolute"
+    return options, value
+
+
 @app.callback(
     Output("elasticity-trajectory-dropdown", "options"),
     Output("elasticity-trajectory-dropdown", "value"),

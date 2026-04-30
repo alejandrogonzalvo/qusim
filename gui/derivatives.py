@@ -424,18 +424,38 @@ def interaction_matrix(
 def extract_grid_values(
     grid, ndim: int, output_key: str,
 ) -> np.ndarray:
-    """Walk a nested-list sweep grid into an ndarray of the given output key.
+    """Walk a sweep grid into an ndarray of the given output key.
+
+    Handles three grid layouts the rest of the codebase produces:
+
+    * **Nested Python lists of dicts** (1-3D legacy / FoM-rebuild output).
+    * **Nested Python lists of dataclass-ish objects** with attribute access.
+    * **N-D numpy structured array** with ``numpy.void`` cells (the
+      ``_RESULT_DTYPE`` layout used by ``sweep_nd`` for 4-D and higher
+      sweeps — accessing a field needs ``cell[key]``, not ``getattr``).
 
     Returns shape ``(len(axis_0), len(axis_1), …, len(axis_{ndim-1}))`` with
     NaN substituted for missing cells.
     """
+    # Fast path for the structured-array layout — direct field slice
+    # avoids the per-cell Python recursion entirely.
+    if isinstance(grid, np.ndarray) and grid.dtype.names is not None:
+        if output_key in grid.dtype.names:
+            return np.asarray(grid[output_key], dtype=np.float64)
+        return np.full(grid.shape, np.nan, dtype=np.float64)
+
+    def _read(node):
+        if isinstance(node, dict):
+            v = node.get(output_key)
+        elif isinstance(node, np.void) and node.dtype.names is not None:
+            v = node[output_key] if output_key in node.dtype.names else None
+        else:
+            v = getattr(node, output_key, None)
+        return float(v) if v is not None else float("nan")
+
     def _walk(node, depth):
         if depth == ndim:
-            if isinstance(node, dict):
-                v = node.get(output_key)
-            else:
-                v = getattr(node, output_key, None)
-            return float(v) if v is not None else float("nan")
+            return _read(node)
         return [_walk(child, depth + 1) for child in node]
 
     nested = _walk(grid, 0)

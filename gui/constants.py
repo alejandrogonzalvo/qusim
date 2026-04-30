@@ -421,11 +421,26 @@ ANALYSIS_TABS: list[dict] = [
 # |∇F|; "elasticity" replaces F with the dimensionless local elasticity
 # (only valid on 1-D Line views — for higher dimensions the user picks
 # which axis to elasticise via the dedicated Elasticity tab instead).
+# Each entry carries the dimensionalities it applies to so the GUI can
+# filter the dropdown to only the modes that make sense for the active
+# sweep's number of axes. ``None`` means "any dimensionality".
 VIEW_MODES: list[dict] = [
-    {"value": "absolute", "label": "Absolute"},
-    {"value": "gradient_magnitude", "label": "|∇F|  (gradient magnitude)"},
-    {"value": "elasticity", "label": "Elasticity  (1-D only)"},
-    {"value": "second_derivative", "label": "d²F/dx²  (1-D only — marks inflection)"},
-    {"value": "mixed_partial", "label": "∂²F/∂x∂y  (2-D only — interaction map)"},
+    {"value": "absolute", "label": "Absolute", "dims": None},
+    {"value": "gradient_magnitude", "label": "|∇F|  (gradient magnitude)", "dims": None},
+    {"value": "elasticity", "label": "Elasticity", "dims": (1,)},
+    {"value": "second_derivative", "label": "d²F/dx²  (marks inflection)", "dims": (1,)},
+    {"value": "mixed_partial", "label": "∂²F/∂x∂y  (interaction map)", "dims": (2,)},
 ]
 DEFAULT_VIEW_MODE = "absolute"
+
+
+def view_modes_for_dim(num_metrics: int) -> list[dict]:
+    """Return the VIEW_MODES entries (sans the ``dims`` tag) that apply at
+    the given sweep dimensionality. Always includes ``Absolute`` so the
+    dropdown is never empty."""
+    out = []
+    for m in VIEW_MODES:
+        dims = m.get("dims")
+        if dims is None or num_metrics in dims:
+            out.append({"value": m["value"], "label": m["label"]})
+    return out or [{"value": "absolute", "label": "Absolute"}]
