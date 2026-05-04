@@ -6,4 +6,5 @@ __pycache__/
 *.json
 !tests/fixtures/**/*.json
 *.json.gz
+!gui/assets/examples/*.qusim.json.gz
 /*.png

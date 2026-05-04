@@ -974,12 +974,29 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                 value=1,
                 log_scale=False,
                 tooltip=(
-                    "Number of qubits per core dedicated to inter-core "
-                    "communication (EPR endpoints). "
-                    "Capped at floor(sqrt(qubits_per_core))."
+                    "Comm qubits per group (per inter-core link). Each of "
+                    "a core's G inter-core neighbours each reserves K + B "
+                    "slots (K comm + B buffer per group)."
                 ),
                 row_id="cfg-row-communication-qubits",
                 row_style=({"display": "none"} if "communication_qubits" in swept_keys else {}),
+            ),
+            slider_row(
+                label="Buffer qubits",
+                slider_id="cfg-buffer-qubits",
+                min=1,
+                max=1,
+                step=1,
+                value=1,
+                log_scale=False,
+                tooltip=(
+                    "Buffer qubits per group. Sits adjacent to comm slots "
+                    "as the local landing slot during teleportation. "
+                    "Capped by B ≤ K (comm qubits per group) and by "
+                    "data-slot feasibility."
+                ),
+                row_id="cfg-row-buffer-qubits",
+                row_style=({"display": "none"} if "buffer_qubits" in swept_keys else {}),
             ),
             html.Div(
                 id="cfg-row-cat-topology_type",
@@ -2060,133 +2077,205 @@ def build_topology_elements(
     communication_qubits: int,
     topology: str,
     intracore_topology: str = "all_to_all",
+    buffer_qubits: int = 1,
 ) -> list:
     """Build the Cytoscape ``elements`` array for the multi-core topology view.
 
-    Nodes carry explicit ``position`` fields so the consumer can use a
-    ``preset`` Cytoscape layout — that gives a deterministic, low-crossing
-    drawing that honours the selected topology (grid intra-core renders as
-    an actual 2-D grid, ring as a circle, linear as a row, etc.) instead of
-    the lumpy clusters a force-directed solver produces.
+    Each core lays out its qubits as
+    ``[D data, group_0, group_1, …, group_{G-1}]`` where ``G`` is the
+    number of inter-core neighbours and each group contributes ``K`` comm
+    slots followed by ``1`` buffer slot.  ``communication_qubits`` is the
+    *per-group* count ``K`` (matching the dse_pau convention), so a ring
+    core (G = 2) hosts ``2K`` comm qubits and ``2`` buffer qubits.
 
-    Each core has ``qubits_per_core`` total qubits, of which
-    ``communication_qubits`` are dedicated to inter-core teleportation;
-    the rest are data qubits.  Intra-core edges follow ``intracore_topology``
-    over the per-core qubit list (data first, then comm — mirrors the
-    engine's ``_add_intracore_edges`` ordering).  Inter-core edges connect
-    communication qubits across cores per ``topology``.
+    Visual placement: every qubit (data, comm, buffer) sits in the
+    per-core local grid that ``intracore_topology`` defines — the core's
+    shape is a fixed square (or whatever the topology dictates).  For a
+    grid intra-core topology, comm qubits cluster on the **left** and
+    **right** edges of the local grid (one per group; further groups
+    spill onto the top/bottom edges) and the buffer of each group sits
+    on an interior cell **adjacent** to one of its comm qubits.
+
+    Intra-core edges follow ``intracore_topology`` over the full slot
+    list (matching the engine's coupling map exactly), so what you see
+    is what the simulator routes through.
+
+    Inter-core edges pair comm qubit ``i`` of one core's
+    group-toward-partner with comm qubit ``i`` of the partner's
+    group-toward-this — so each comm qubit hosts exactly one inter-core
+    link.
     """
     import math
+    from gui.dse_engine import (
+        inter_core_neighbors as _nbrs_for_view,
+        inter_core_edges,
+        clamp_k_for_topology,
+        assign_core_slots,
+    )
 
     num_cores = max(1, int(num_cores or 1))
     num_qubits = max(num_cores, int(num_qubits or num_cores))
-    qubits_per_core = max(1, num_qubits // num_cores)
-    comm_max = max(1, math.isqrt(qubits_per_core))
-    communication_qubits = max(1, min(int(communication_qubits or 1), comm_max))
-    # At least one data qubit per core (clamp comm so data >= 1).
-    if communication_qubits >= qubits_per_core:
-        communication_qubits = max(1, qubits_per_core - 1)
-    data_per_core = qubits_per_core - communication_qubits
 
-    # Per-core coordinates (centred at origin), then offset by core centres.
-    local_pos = _local_qubit_positions(qubits_per_core, intracore_topology)
-    if local_pos:
-        max_extent = max(max(abs(x), abs(y)) for x, y in local_pos)
+    # Per-core sizes mirror the engine's distribution (uneven by remainder).
+    base = num_qubits // num_cores
+    remainder = num_qubits % num_cores
+    core_sizes = [base + (1 if c < remainder else 0) for c in range(num_cores)]
+
+    nbrs = list(_nbrs_for_view(num_cores, topology))
+    groups_per_core = [len(n) for n in nbrs]
+
+    from gui.dse_engine import clamp_b_for_topology
+    B_req = max(1, int(buffer_qubits or 1))
+    K = clamp_k_for_topology(
+        num_qubits, num_cores, topology, int(communication_qubits or 1),
+        b_per_group=B_req,
+    )
+    if num_cores < 2:
+        K = 0  # No inter-core links → no comm/buffer qubits.
+
+    B = clamp_b_for_topology(
+        num_qubits, num_cores, topology, K, B_req,
+    ) if K >= 1 else 0
+
+    intracore_topology = (intracore_topology or "all_to_all").lower()
+
+    # Resolve per-core role assignments (data / comm / buffer slots).
+    per_core_layout = [
+        assign_core_slots(core_sizes[c], intracore_topology,
+                          groups_per_core[c] if K >= 1 else 0,
+                          K if K >= 1 else 0,
+                          b_per_group=B if K >= 1 else 0)
+        for c in range(num_cores)
+    ]
+
+    # Local positions for the *full* per-core grid (so the shape is fixed).
+    local_pos_per_core = [
+        _local_qubit_positions(core_sizes[c], intracore_topology)
+        for c in range(num_cores)
+    ]
+    if local_pos_per_core and local_pos_per_core[0]:
+        max_extent = max(
+            max(abs(x), abs(y))
+            for poss in local_pos_per_core for x, y in poss
+        )
     else:
         max_extent = _NODE_SPACING
     core_box = max(_NODE_SPACING * 3, max_extent * 2 + _NODE_SPACING * _CORE_GAP)
     cores_xy = _core_centres(num_cores, topology, core_box)
 
-    # Per-core rotation so the comm-qubit row faces the centroid of the
-    # core's inter-core neighbours — keeps the bundle of K×K bipartite
-    # links between cores visually clean instead of crossing through the
-    # data area.
-    from gui.dse_engine import inter_core_neighbors as _nbrs_for_view  # avoid cycle
-    _per_core_nbrs = _nbrs_for_view(num_cores, topology)
-    partners_per_core: list[list[int]] = list(_per_core_nbrs)
+    # Per-core rotation: align "right edge" (group 1's home for G=2) with
+    # the direction toward partner 1 — this orients the comm rows of each
+    # core toward their partners across the chip, so inter-core lines run
+    # cleanly along chip-radial directions instead of zig-zagging.  Always
+    # snap to a multiple of 90° so the per-core grid stays *square-aligned*
+    # (a non-cardinal angle rotates a square grid into a diamond, which
+    # makes "comm on left/right edges" look like "comm clustered in
+    # corners"; the user-visible result is hard to read).
+    snap_to_cardinal = True
 
-    # The "natural" comm-qubit centroid in local coords — we rotate this
-    # vector to the target direction.  For all current intracore layouts
-    # (grid / linear / ring) the comm cells sit at the trailing end of the
-    # ordered list, which puts the default centroid in the lower half.
-    comm_local = local_pos[data_per_core:] if data_per_core < len(local_pos) else []
-    if comm_local and len(comm_local) > 0:
-        _cmx = sum(p[0] for p in comm_local) / len(comm_local)
-        _cmy = sum(p[1] for p in comm_local) / len(comm_local)
-        if abs(_cmx) > 1e-9 or abs(_cmy) > 1e-9:
-            default_angle = math.atan2(_cmy, _cmx)
-        else:
-            default_angle = math.pi / 2
-    else:
-        default_angle = math.pi / 2
-
-    snap_to_cardinal = (intracore_topology or "all_to_all").lower() == "grid"
-
-    def _rotated_positions(c: int) -> list[tuple[float, float]]:
-        if num_cores < 2 or not partners_per_core[c]:
-            return local_pos
+    def _rotation_for_core(c: int) -> float:
+        if num_cores < 2 or groups_per_core[c] == 0 or K < 1:
+            return 0.0
         cx, cy = cores_xy[c]
-        px = sum(cores_xy[p][0] for p in partners_per_core[c]) / len(partners_per_core[c])
-        py = sum(cores_xy[p][1] for p in partners_per_core[c]) / len(partners_per_core[c])
-        dx, dy = px - cx, py - cy
+        # We want group 0 to face partner 0 and group 1 to face partner 1.
+        # In the unrotated grid, group 0 lives on the LEFT edge (-x) and
+        # group 1 on the RIGHT edge (+x), so the natural orientation is
+        # angle 0 = +x toward partner 1.
+        partner_1 = nbrs[c][0] if groups_per_core[c] == 1 else nbrs[c][1]
+        pcx, pcy = cores_xy[partner_1]
+        dx, dy = pcx - cx, pcy - cy
         if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-            # Centroid coincides with this core — symmetric partners on
-            # opposite sides (e.g. linear interior cores).  Leave comm at
-            # the default location; per-qubit placement might do better
-            # but adds complexity for an edge case.
-            return local_pos
+            return 0.0
         target = math.atan2(dy, dx)
-        rotation = target - default_angle
         if snap_to_cardinal:
             quarter = math.pi / 2
-            rotation = round(rotation / quarter) * quarter
-        cr, sr = math.cos(rotation), math.sin(rotation)
-        return [(cr * x - sr * y, sr * x + cr * y) for x, y in local_pos]
+            target = round(target / quarter) * quarter
+        return target
 
     elements: list = []
 
-    # Nodes: data + comm qubits per core, with explicit positions.
+    # ---- Nodes: data + comm + buffer, all at their local grid positions ----
     for c in range(num_cores):
         cx, cy = cores_xy[c]
-        positions_c = _rotated_positions(c)
-        for q in range(data_per_core):
-            lx, ly = positions_c[q]
+        layout = per_core_layout[c]
+        local_pos = local_pos_per_core[c]
+        rotation = _rotation_for_core(c)
+        cr, sr = math.cos(rotation), math.sin(rotation)
+
+        def _rot(p):
+            x, y = p
+            return (cr * x - sr * y, sr * x + cr * y)
+
+        # Resolve role for each slot.
+        slot_role: list[tuple[str, int | None, int | None]] = [
+            ("data", None, None) for _ in range(core_sizes[c])
+        ]
+        for q in layout["data"]:
+            slot_role[q] = ("data", None, None)
+        for g, grp in enumerate(layout["groups"]):
+            for k_idx, q in enumerate(grp["comm"]):
+                slot_role[q] = ("comm", g, k_idx)
+            for b_idx, buf_q in enumerate(grp["buffer"]):
+                if 0 <= buf_q < core_sizes[c]:
+                    slot_role[buf_q] = ("buffer", g, b_idx)
+
+        for q in range(core_sizes[c]):
+            role, g, k_idx = slot_role[q]
+            lx, ly = _rot(local_pos[q])
+            if role == "data":
+                node_id = f"c{c}_d{q}"
+                label = f"c{c} d{q}"
+            elif role == "comm":
+                node_id = f"c{c}_g{g}_k{k_idx}"
+                label = f"c{c} k{k_idx}"
+            else:  # buffer
+                node_id = f"c{c}_g{g}_b{k_idx}"
+                label = f"c{c} buf{g}.{k_idx}" if k_idx > 0 else f"c{c} buf{g}"
+            data_dict = {
+                "id": node_id,
+                "label": label,
+                "core": c,
+                "qtype": role,
+                "slot": q,
+            }
+            if g is not None:
+                data_dict["group"] = g
             elements.append({
-                "data": {
-                    "id": f"c{c}_d{q}",
-                    "label": f"c{c} d{q}",
-                    "core": c,
-                    "qtype": "data",
-                },
+                "data": data_dict,
                 "position": {"x": cx + lx, "y": cy + ly},
-                "classes": "data",
-            })
-        for k in range(communication_qubits):
-            lx, ly = positions_c[data_per_core + k]
-            elements.append({
-                "data": {
-                    "id": f"c{c}_k{k}",
-                    "label": f"c{c} k{k}",
-                    "core": c,
-                    "qtype": "comm",
-                },
-                "position": {"x": cx + lx, "y": cy + ly},
-                "classes": "comm",
+                "classes": role,
             })
 
-    # Intra-core edges per the selected intracore_topology.  IDs ordered
-    # data-then-comm to match the engine's offset-based layout (any pattern
-    # other than all_to_all therefore connects the comm qubits at the end of
-    # the per-core list, which is what the routing/distance matrix sees).
-    intracore_topology = (intracore_topology or "all_to_all").lower()
-    for c in range(num_cores):
-        ids = (
-            [f"c{c}_d{q}" for q in range(data_per_core)]
-            + [f"c{c}_k{k}" for k in range(communication_qubits)]
+    # ---- Intra-core edges: full ``intracore_topology`` over slot order -----
+    # This matches the engine's _add_intracore_edges so the visualization
+    # mirrors the actual coupling map.  We need a slot-index → cytoscape
+    # node-id map per core.
+    def _slot_to_id(c: int, slot: int) -> str:
+        role, g, k_idx = (
+            ("data", None, None) if slot in per_core_layout[c]["data"]
+            else _resolve_role(c, slot)
         )
-        size = len(ids)
+        if role == "data":
+            return f"c{c}_d{slot}"
+        if role == "comm":
+            return f"c{c}_g{g}_k{k_idx}"
+        return f"c{c}_g{g}_b{k_idx}"
+
+    def _resolve_role(c: int, slot: int):
+        for g, grp in enumerate(per_core_layout[c]["groups"]):
+            for k_idx, q in enumerate(grp["comm"]):
+                if q == slot:
+                    return ("comm", g, k_idx)
+            for b_idx, q in enumerate(grp["buffer"]):
+                if q == slot:
+                    return ("buffer", g, b_idx)
+        return ("data", None, None)
+
+    for c in range(num_cores):
+        size = core_sizes[c]
         if size < 2:
             continue
+        ids = [_slot_to_id(c, q) for q in range(size)]
         if intracore_topology == "all_to_all":
             for i in range(size):
                 for j in range(i + 1, size):
@@ -2207,9 +2296,8 @@ def build_topology_elements(
                     "classes": "intra",
                 })
         elif intracore_topology == "grid":
-            side = math.isqrt(size)
-            if side * side < size:
-                side += 1
+            from gui.dse_engine import _grid_side
+            side = _grid_side(size)
             for q in range(size):
                 row, col = divmod(q, side)
                 if col + 1 < side and q + 1 < size:
@@ -2223,7 +2311,6 @@ def build_topology_elements(
                         "classes": "intra",
                     })
         else:
-            # Unknown: fall back to all_to_all.
             for i in range(size):
                 for j in range(i + 1, size):
                     elements.append({
@@ -2231,20 +2318,16 @@ def build_topology_elements(
                         "classes": "intra",
                     })
 
-    if num_cores < 2 or communication_qubits == 0:
+    # ---- Inter-core edges: K parallel one-to-one links per neighbour pair --
+    if num_cores < 2 or K < 1:
         return elements
-
-    # Mirror the engine's coupling-map: every comm qubit on core c is
-    # connected to every comm qubit on each of c's inter-core neighbours
-    # (full K×K bipartite per neighbour pair).
-    from gui.dse_engine import inter_core_edges  # imported here to avoid cycles
-    for (a_core, a_k), (b_core, b_k) in inter_core_edges(
-        num_cores, communication_qubits, topology,
+    for (a_core, a_g, a_k), (b_core, b_g, b_k) in inter_core_edges(
+        num_cores, K, topology,
     ):
         elements.append({
             "data": {
-                "source": f"c{a_core}_k{a_k}",
-                "target": f"c{b_core}_k{b_k}",
+                "source": f"c{a_core}_g{a_g}_k{a_k}",
+                "target": f"c{b_core}_g{b_g}_k{b_k}",
             },
             "classes": "inter",
         })
@@ -2283,6 +2366,20 @@ _TOPOLOGY_STYLESHEET = [
             "height": 18,
             "border-width": 1.5,
             "border-color": "#1d4ed8",
+        },
+    },
+    # Buffer qubits: reserved per-group teleportation buffer, drawn in a
+    # darker grey + square shape so they're clearly distinct from the
+    # light-grey data qubit circles.
+    {
+        "selector": ".buffer",
+        "style": {
+            "background-color": "#6b7280",
+            "shape": "round-rectangle",
+            "width": 14,
+            "height": 14,
+            "border-width": 1.5,
+            "border-color": "#374151",
         },
     },
     # When the fidelity overlay is active each node carries a ``fidelity``

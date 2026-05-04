@@ -224,36 +224,291 @@ def inter_core_neighbors(num_cores: int, inter_topology: str) -> list[list[int]]
     return [sorted(set(n)) for n in nbrs]
 
 
+def core_groups_for(num_cores: int, inter_topology: str) -> list[list[int]]:
+    """Per-core *ordered* list of partner cores — one entry per inter-core link.
+
+    A core's ``g``-th group of comm qubits is dedicated to the ``g``-th
+    partner returned here.  Ordering is the sorted neighbour list (already
+    deterministic in :func:`inter_core_neighbors`).
+    """
+    return inter_core_neighbors(num_cores, inter_topology)
+
+
+def num_comm_groups(num_cores: int, inter_topology: str) -> list[int]:
+    """Number of comm-qubit groups per core (= number of inter-core neighbours)."""
+    return [len(g) for g in core_groups_for(num_cores, inter_topology)]
+
+
+def core_slot_layout(core_size: int, num_groups: int, k_per_group: int) -> dict:
+    """Legacy slot layout — kept for back-compat callers.
+
+    The layout places data first, then ``G`` consecutive groups of
+    ``K`` comm + ``1`` buffer slots in slot-order.  New code should use
+    :func:`assign_core_slots` instead, which respects the
+    "comm on edge, buffer adjacent to comm" placement rules and works
+    for grid intra-core topologies.
+    """
+    G = max(0, int(num_groups))
+    K = max(0, int(k_per_group))
+    reserved = G * (K + 1)
+    data_count = core_size - reserved
+    feasible = data_count >= 1 and G >= 0 and K >= 0
+
+    def comm_slot(g: int, k: int) -> int:
+        return data_count + g * (K + 1) + k
+
+    def buffer_slot(g: int) -> int:
+        return data_count + g * (K + 1) + K
+
+    return {
+        "data_count": data_count,
+        "reserved": reserved,
+        "feasible": feasible,
+        "comm_slot": comm_slot,
+        "buffer_slot": buffer_slot,
+    }
+
+
+def _grid_side(core_size: int) -> int:
+    import math
+    side = math.isqrt(core_size)
+    if side * side < core_size:
+        side += 1
+    return side
+
+
+def _grid_neighbours(slot: int, side: int, core_size: int) -> list[int]:
+    """4-neighbours of ``slot`` in a side×side grid (row-major), filtered to
+    valid slots (0 ≤ neighbour < core_size)."""
+    row, col = divmod(slot, side)
+    out = []
+    for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        nr, nc = row + dr, col + dc
+        if 0 <= nr < side and 0 <= nc < side:
+            n = nr * side + nc
+            if 0 <= n < core_size:
+                out.append(n)
+    return out
+
+
+def assign_core_slots(
+    core_size: int,
+    intracore_topology: str,
+    num_groups: int,
+    k_per_group: int,
+    b_per_group: int = 1,
+) -> dict:
+    """Decide which local slot each role (data / comm / buffer) occupies.
+
+    Returns a dict::
+
+      {
+        "data": [slot_idx, ...],
+        "groups": [
+          {"comm": [slot_idx, ...], "buffer": [slot_idx, ...]},
+          ...
+        ],
+        "data_count": int,
+        "feasible": bool,
+      }
+
+    Each group reserves ``K`` comm + ``B`` buffer slots (``B ≤ K`` by
+    rule).  For grid intra-core, comm slots are pinned to a side edge
+    (left / right / top / bottom in priority order) and buffer slots
+    are picked from cells **adjacent** (4-neighbourhood) to the comm
+    column, preferring interior cells for visual cleanliness.
+
+    For non-grid intra-core (linear / ring / all-to-all) we use a
+    slot-order fallback (data first, then per-group [K comm + B buffer]).
+    """
+    G = max(0, int(num_groups))
+    K = max(0, int(k_per_group))
+    B = max(1, int(b_per_group or 1)) if K > 0 else 0
+    reserved = G * (K + B)
+    data_count = core_size - reserved
+    intra = (intracore_topology or "all_to_all").lower()
+    # ``all_to_all`` shares the row-major grid layout (the local-positions
+    # helper falls through to the grid case), so apply the same
+    # edge-aware placement rules here.
+    use_grid_layout = intra in ("grid", "all_to_all")
+
+    if G == 0 or K == 0 or not use_grid_layout:
+        # Slot-order fallback — also covers K=0 / single-core paths and
+        # genuinely non-grid layouts (linear, ring) where "edge" isn't a
+        # meaningful concept.
+        groups = []
+        offset = max(0, data_count)
+        for _ in range(G):
+            comm = list(range(offset, offset + K))
+            offset += K
+            buffer = list(range(offset, offset + B))
+            offset += B
+            groups.append({"comm": comm, "buffer": buffer})
+        data_slots = list(range(max(0, data_count)))
+        return {
+            "data": data_slots,
+            "groups": groups,
+            "data_count": max(0, data_count),
+            "feasible": data_count >= 1,
+        }
+
+    # ---- grid intra-core: pick edge slots per group + adjacent buffer ----
+    side = _grid_side(core_size)
+    rows_per_side = side
+    cols_per_side = side
+    left_edge = [r * side for r in range(rows_per_side)
+                 if r * side < core_size]
+    right_edge = [r * side + (cols_per_side - 1) for r in range(rows_per_side)
+                  if r * side + (cols_per_side - 1) < core_size]
+    top_edge = [c for c in range(cols_per_side) if c < core_size]
+    bottom_edge = [(rows_per_side - 1) * side + c for c in range(cols_per_side)
+                   if (rows_per_side - 1) * side + c < core_size]
+    side_options = [left_edge, right_edge, top_edge, bottom_edge]
+    edge_set = set().union(left_edge, right_edge, top_edge, bottom_edge)
+
+    used_comm: set[int] = set()
+    used_buffer: set[int] = set()
+    groups_out: list[dict] = []
+
+    def _centre_dist(s: int) -> float:
+        r, c = divmod(s, side)
+        return abs(r - (side - 1) / 2) + abs(c - (side - 1) / 2)
+
+    for g in range(G):
+        # Pick this group's preferred side; cycle through if more than 4 groups.
+        side_slots = side_options[g % len(side_options)]
+        avail = [s for s in side_slots
+                 if s not in used_comm and s not in used_buffer]
+        if K > len(avail):
+            extras = [
+                s for s in range(core_size)
+                if s not in used_comm and s not in used_buffer
+                and s not in avail
+            ]
+            avail = avail + extras
+        start = max(0, (len(avail) - K) // 2)
+        comm_slots = list(avail[start:start + K])
+        for s in comm_slots:
+            used_comm.add(s)
+
+        # Buffer slots: pick B distinct cells adjacent to *any* comm in
+        # this group, preferring interior cells.  Once interior options
+        # are exhausted, allow any free adjacent cell, then any free
+        # cell anywhere (last-resort fallback).
+        buf_slots: list[int] = []
+        candidates: list[int] = []
+        seen = set()
+        for cs in comm_slots:
+            for n in _grid_neighbours(cs, side, core_size):
+                if n in used_comm or n in used_buffer or n in seen:
+                    continue
+                seen.add(n)
+                candidates.append(n)
+
+        def _buf_key(s: int) -> tuple[int, int]:
+            on_edge = 1 if s in edge_set else 0
+            return (on_edge, int(_centre_dist(s) * 100))
+
+        candidates.sort(key=_buf_key)
+        for s in candidates:
+            if len(buf_slots) >= B:
+                break
+            buf_slots.append(s)
+            used_buffer.add(s)
+
+        if len(buf_slots) < B:
+            # Fall back to any free cell so we always emit B buffers.
+            for s in range(core_size):
+                if len(buf_slots) >= B:
+                    break
+                if s in used_comm or s in used_buffer:
+                    continue
+                buf_slots.append(s)
+                used_buffer.add(s)
+
+        groups_out.append({
+            "comm": comm_slots,
+            "buffer": buf_slots,
+        })
+
+    data_slots = [s for s in range(core_size)
+                  if s not in used_comm and s not in used_buffer]
+    return {
+        "data": data_slots,
+        "groups": groups_out,
+        "data_count": len(data_slots),
+        "feasible": len(data_slots) >= 1,
+    }
+
+
 def inter_core_edges(
     num_cores: int,
     communication_qubits: int,
     inter_topology: str,
-) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+) -> list[tuple[tuple[int, int, int], tuple[int, int, int]]]:
     """Comm-qubit-to-comm-qubit edges across the multi-core fabric.
 
-    Each comm qubit on core ``c`` connects to **every** comm qubit on each
-    of ``c``'s neighbouring cores (defined by ``inter_topology``).  With
-    ``K`` comm qubits per core, each unordered pair of neighbouring cores
-    therefore contributes ``K × K`` inter-core edges — a full bipartite
-    sub-graph between the two cores' comm-qubit sets.
+    Each comm qubit hosts **exactly one** inter-core link.  A core with
+    ``G`` neighbours therefore exposes ``G`` *groups* of comm qubits — one
+    per partner core — and the slider value ``K`` is the number of comm
+    qubits in each group (so the per-core comm count is ``G·K``).  For
+    every unordered pair of neighbouring cores ``(c, c')`` we pair comm
+    qubit ``i`` of ``c``'s group-toward-``c'`` with comm qubit ``i`` of
+    ``c'``'s group-toward-``c``, giving ``K`` parallel cross-links between
+    them (e.g. ring with ``K=2`` becomes two concentric rings).
 
     Returns
     -------
-    list of ``((core_a, comm_idx_a), (core_b, comm_idx_b))`` edges.
+    list of ``((core_a, group_a, k), (core_b, group_b, k))`` edges, where
+    ``group_a`` is core ``a``'s group index dedicated to core ``b`` (and
+    vice versa) and ``k`` is the same comm-qubit index on both ends.
     """
     if num_cores < 2 or communication_qubits < 1:
         return []
     K = int(communication_qubits)
     nbrs = inter_core_neighbors(num_cores, inter_topology)
-    edges: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    # Cache c2 → group index lookups
+    group_of: list[dict[int, int]] = [
+        {n: g for g, n in enumerate(nbrs[c])} for c in range(num_cores)
+    ]
+    edges: list[tuple[tuple[int, int, int], tuple[int, int, int]]] = []
     for c in range(num_cores):
         for c2 in nbrs[c]:
             if c2 <= c:
                 continue
-            for ki in range(K):
-                for kj in range(K):
-                    edges.append(((c, ki), (c2, kj)))
+            g_a = group_of[c][c2]
+            g_b = group_of[c2][c]
+            for k in range(K):
+                edges.append(((c, g_a, k), (c2, g_b, k)))
     return edges
+
+
+def _max_K_for_layout(core_size: int, num_groups: int, b_per_group: int = 1) -> int:
+    """Largest ``K`` (comm per group) that leaves at least one data qubit
+    given ``B`` buffer qubits per group.
+
+    Each group reserves ``K + B`` slots, so we need
+    ``core_size − G·(K+B) ≥ 1`` ⇒ ``K ≤ ⌊(core_size − 1)/G⌋ − B``.
+    Returns 0 when no positive ``K`` is feasible.
+    """
+    if num_groups <= 0:
+        return 0
+    B = max(1, int(b_per_group or 1))
+    return max(0, (core_size - 1) // num_groups - B)
+
+
+def _max_B_for_layout(core_size: int, num_groups: int, k_per_group: int) -> int:
+    """Largest feasible ``B`` (buffers per group) given ``K``.
+
+    Bounded by both architectural feasibility (``K + B ≤ ⌊(qpc−1)/G⌋``)
+    and the per-group rule (``B ≤ K``) — buffer count never exceeds
+    the comm count of the same group.
+    """
+    if num_groups <= 0 or k_per_group <= 0:
+        return 0
+    K = max(1, int(k_per_group))
+    arch_cap = (core_size - 1) // num_groups - K
+    return max(0, min(K, arch_cap))
 
 
 def _build_topology(
@@ -262,15 +517,19 @@ def _build_topology(
     topology_type: str,
     intracore_topology: str = "all_to_all",
     communication_qubits: int = 1,
+    buffer_qubits: int = 1,
 ) -> tuple[CouplingMap, dict[int, int]]:
     """Build full_coupling_map and core_mapping for the given topology.
 
-    The last ``communication_qubits`` qubits of each core are designated as
-    EPR endpoints.  Inter-core edges follow :func:`inter_core_edges`: each
-    comm qubit on core ``c`` is connected to every comm qubit on each of
-    ``c``'s inter-topology neighbours (full ``K × K`` bipartite per
-    neighbour pair) — modelling a photonic-switch network where any comm
-    qubit on one side can be entangled with any comm qubit on the other.
+    Each core lays out its qubits as
+    ``[D data slots, group_0, group_1, …, group_{G-1}]`` where ``G`` is
+    the number of inter-core neighbours and each group is ``K`` comm
+    slots followed by ``1`` buffer slot.  Inter-core links pair comm
+    qubit ``i`` of one core's group-toward-partner with comm qubit ``i``
+    of the partner's group-toward-this — so each comm qubit hosts
+    exactly one inter-core link (see :func:`inter_core_edges`).  Buffer
+    slots are reserved (no inter-core edges); they participate in the
+    intra-core topology only.
 
     Qubits are distributed across cores so that physical count == logical
     count exactly.  With 7 qubits and 3 cores the sizes are [3, 2, 2].
@@ -300,14 +559,36 @@ def _build_topology(
         offset += size
 
     if num_cores > 1:
-        # Clamp K to leave at least one data qubit in the smallest core.
-        smallest = min(core_sizes)
-        K = max(1, min(int(communication_qubits or 1), max(1, smallest - 1)))
-        for (a_core, a_k), (b_core, b_k) in inter_core_edges(num_cores, K, topology_type):
-            p_a = core_offsets[a_core] + core_sizes[a_core] - K + a_k
-            p_b = core_offsets[b_core] + core_sizes[b_core] - K + b_k
-            cm.add_edge(p_a, p_b)
-            cm.add_edge(p_b, p_a)
+        groups_per_core = num_comm_groups(num_cores, topology_type)
+        B_req = max(1, int(buffer_qubits or 1))
+        K_caps = [
+            _max_K_for_layout(core_sizes[c], groups_per_core[c],
+                              b_per_group=B_req)
+            for c in range(num_cores)
+            if groups_per_core[c] > 0
+        ]
+        K_max = min(K_caps) if K_caps else 0
+        K = min(int(communication_qubits or 1), max(0, K_max))
+        if K >= 1:
+            B_caps = [
+                _max_B_for_layout(core_sizes[c], groups_per_core[c], K)
+                for c in range(num_cores)
+                if groups_per_core[c] > 0
+            ]
+            B_max = min(B_caps) if B_caps else 0
+            B = min(B_req, max(1, B_max))
+            per_core_layout = [
+                assign_core_slots(core_sizes[c], intracore_topology,
+                                  groups_per_core[c], K, b_per_group=B)
+                for c in range(num_cores)
+            ]
+            for (a_core, a_g, a_k), (b_core, b_g, b_k) in inter_core_edges(
+                num_cores, K, topology_type,
+            ):
+                p_a = core_offsets[a_core] + per_core_layout[a_core]["groups"][a_g]["comm"][a_k]
+                p_b = core_offsets[b_core] + per_core_layout[b_core]["groups"][b_g]["comm"][b_k]
+                cm.add_edge(p_a, p_b)
+                cm.add_edge(p_b, p_a)
 
     return cm, core_mapping
 
@@ -372,9 +653,93 @@ class CachedMapping:
 # Noise param helpers
 # ---------------------------------------------------------------------------
 
+# --- dse_pau-equivalent teleportation cost decomposition ---------------------
+#
+# dse_pau models a single teleportation hop as the following gate sequence
+# (see ``dse_pau/utils.py:646-679`` `get_operational_fidelity_depol`):
+#
+#   1. Generate EPR pair          → fidelity sqrt(1 − EPR_error)
+#   2. Source-side preprocessing  → 1 CNOT (Bell measurement)
+#                                   + 1 single-qubit gate (Hadamard)
+#                                   + 1 measurement
+#   3. Classical send             → no fidelity cost (latency only)
+#   4. Destination postprocessing → 1 single-qubit gate (X/Z correction)
+#                                   + 3 CNOTs (SWAP into the buffer qubit)
+#
+# Total per hop: 4 two-qubit gates + 2 single-qubit gates + 1 measurement
+# + 1 EPR generation, plus the classical-comm latency.
+#
+# We bundle these into a single ``teleportation_error_per_hop`` /
+# ``teleportation_time_per_hop`` pair so the existing Rust noise model can
+# stay product-of-fidelities without per-qubit η-tracking.  This is an
+# approximation — it agrees with dse_pau in the small-error limit and to
+# first order otherwise, but skips the asymmetric-depolarisation η coupling
+# between the qubit and its EPR/buffer partner that dse_pau models.
+
+_TELE_PROTOCOL_TWO_GATE_COUNT = 4   # 1 (preprocess CNOT) + 3 (buffer SWAP)
+_TELE_PROTOCOL_SINGLE_GATE_COUNT = 2  # 1 H (preprocess) + 1 X/Z (correction)
+_TELE_PROTOCOL_MEAS_COUNT = 1       # Bell measurement on the source side
+
+
+def _derived_tele_error(p: dict) -> float:
+    """Bundled per-hop teleportation fidelity loss derived from constituents.
+
+    .. note::
+        With the η-coupled depolarising-channel model now in the Rust
+        noise core, the *bundled* number is no longer used to compute
+        per-hop routing fidelity directly — Rust applies the protocol
+        gate-by-gate.  This bundle is kept as a back-compat / reporting
+        knob (it shows up in the GUI's "Teleport Error/Hop" readout)
+        and as a fallback for legacy callers that override
+        ``teleportation_error_per_hop`` directly.
+
+    Per-hop bundle (small-error linearisation of the η model):
+        F_hop ≈ √(1 − EPR_err)
+                · (1 − (2/3)·ε_2q)^4    ← per-qubit marginal of CNOT
+                · (1 − ε_1q)^2
+                · (1 − ε_meas)
+    The (2/3)·ε factor on each CNOT is the per-qubit marginal of a
+    d=4 depolarising channel under the η formula (see
+    ``src/noise/mod.rs::eta_cnot_update``).
+    """
+    epr_err = max(0.0, float(p.get("epr_error_per_hop", 0.0)))
+    sq_err = max(0.0, float(p.get("single_gate_error", 0.0)))
+    tq_err = max(0.0, float(p.get("two_gate_error", 0.0)))
+    meas_err = max(0.0, float(p.get("measurement_error", 0.0)))
+    f = (
+        max(0.0, 1.0 - epr_err) ** 0.5
+        * (1.0 - (2.0 / 3.0) * tq_err) ** _TELE_PROTOCOL_TWO_GATE_COUNT
+        * (1.0 - sq_err) ** _TELE_PROTOCOL_SINGLE_GATE_COUNT
+        * (1.0 - meas_err) ** _TELE_PROTOCOL_MEAS_COUNT
+    )
+    return max(0.0, min(1.0, 1.0 - f))
+
+
+def _derived_tele_time(p: dict) -> float:
+    """Per-hop teleportation latency derived from the protocol gate budget."""
+    return (
+        float(p.get("epr_time_per_hop", 0.0))
+        + _TELE_PROTOCOL_TWO_GATE_COUNT * float(p.get("two_gate_time", 0.0))
+        + _TELE_PROTOCOL_SINGLE_GATE_COUNT * float(p.get("single_gate_time", 0.0))
+        + _TELE_PROTOCOL_MEAS_COUNT * float(p.get("measurement_time", 0.0))
+    )
+
+
 def _merge_noise(overrides: dict) -> dict:
-    """Return NOISE_DEFAULTS with any overrides applied."""
-    return {**NOISE_DEFAULTS, **overrides}
+    """Return NOISE_DEFAULTS with any overrides applied, deriving the bundled
+    teleportation cost from constituent EPR / gate / measurement parameters.
+
+    The derivation runs unless the caller *explicitly* set
+    ``teleportation_error_per_hop`` or ``teleportation_time_per_hop`` —
+    that escape hatch lets test fixtures and benchmarks pin a known
+    bundled value without going through the protocol-cost model.
+    """
+    merged = {**NOISE_DEFAULTS, **overrides}
+    if "teleportation_error_per_hop" not in overrides:
+        merged["teleportation_error_per_hop"] = _derived_tele_error(merged)
+    if "teleportation_time_per_hop" not in overrides:
+        merged["teleportation_time_per_hop"] = _derived_tele_time(merged)
+    return merged
 
 
 # Scalar result fields kept in the N-D sweep grid. The per-qubit ``*_grid``
@@ -462,6 +827,117 @@ def _expand_qubits_alias(cfg: dict) -> None:
     cfg["num_logical_qubits"] = n
 
 
+def total_reserved_slots(num_qubits: int, num_cores: int,
+                         topology_type: str, k_per_group: int,
+                         b_per_group: int = 1) -> int:
+    """Total non-data slots reserved across the chip = Σ_c G(c)·(K+B).
+
+    A core with ``G`` inter-core neighbours reserves ``G·(K+B)`` slots
+    (``K`` comm + ``B`` buffer per group).  Summed over all cores this is
+    the chip-wide capacity stolen from the data pool.
+    """
+    nc = max(1, int(num_cores or 1))
+    K = max(0, int(k_per_group or 0))
+    B = max(1, int(b_per_group or 1))
+    if nc < 2 or K < 1:
+        # Single core has no inter-core links; with K=0 nothing is reserved.
+        return 0
+    groups = num_comm_groups(nc, topology_type or "ring")
+    return sum(groups) * (K + B)
+
+
+def max_data_slots(num_qubits: int, num_cores: int,
+                   topology_type: str, k_per_group: int,
+                   b_per_group: int = 1) -> int:
+    """Number of data (non-comm, non-buffer) slots available chip-wide."""
+    nq = max(1, int(num_qubits or 1))
+    return max(0, nq - total_reserved_slots(
+        nq, num_cores, topology_type, k_per_group, b_per_group,
+    ))
+
+
+def clamp_k_for_topology(num_qubits: int, num_cores: int,
+                         topology_type: str, requested_k: int,
+                         b_per_group: int = 1) -> int:
+    """Clamp slider value ``K`` so every core keeps ≥ 1 data slot.
+
+    With ``B`` buffers per group, the cap shrinks: each group reserves
+    ``K+B`` slots, so ``K ≤ ⌊(qpc−1)/G⌋ − B``.
+    """
+    nq = max(1, int(num_qubits or 1))
+    nc = max(1, int(num_cores or 1))
+    nc = min(nc, nq)
+    base = nq // nc
+    remainder = nq % nc
+    core_sizes = [base + (1 if c < remainder else 0) for c in range(nc)]
+    if nc < 2:
+        # No inter-core links, comm slots aren't physically meaningful.
+        return 1
+    groups = num_comm_groups(nc, topology_type or "ring")
+    B = max(1, int(b_per_group or 1))
+    K_caps = [
+        _max_K_for_layout(core_sizes[c], groups[c], b_per_group=B)
+        for c in range(nc) if groups[c] > 0
+    ]
+    K_max = min(K_caps) if K_caps else 0
+    return max(1, min(int(requested_k or 1), max(1, K_max)))
+
+
+def clamp_b_for_topology(num_qubits: int, num_cores: int,
+                         topology_type: str, k_per_group: int,
+                         requested_b: int) -> int:
+    """Clamp slider value ``B`` so every core keeps ≥ 1 data slot AND
+    ``B ≤ K`` (per-group rule: buffers never exceed comm count)."""
+    nq = max(1, int(num_qubits or 1))
+    nc = max(1, int(num_cores or 1))
+    nc = min(nc, nq)
+    base = nq // nc
+    remainder = nq % nc
+    core_sizes = [base + (1 if c < remainder else 0) for c in range(nc)]
+    if nc < 2:
+        return 1
+    K = max(1, int(k_per_group or 1))
+    groups = num_comm_groups(nc, topology_type or "ring")
+    B_caps = [
+        _max_B_for_layout(core_sizes[c], groups[c], K)
+        for c in range(nc) if groups[c] > 0
+    ]
+    B_max = min(B_caps) if B_caps else 0
+    return max(1, min(int(requested_b or 1), max(1, B_max)))
+
+
+def _clamp_cfg_comm_and_logical(cfg: dict) -> None:
+    """In-place: clamp ``communication_qubits``, ``buffer_qubits``, and
+    ``num_logical_qubits`` to the architectural caps for the current
+    (num_qubits, num_cores, topology_type) combination.
+
+    Each of a core's ``G`` inter-core neighbours reserves ``K+B`` slots
+    (K comm + B buffer per group), so logical qubits can use only
+    ``num_qubits − Σ_c G(c)·(K+B)`` slots.  The per-group rule
+    ``B ≤ K`` is also enforced here.
+    """
+    nq = int(cfg.get("num_qubits", 1) or 1)
+    nc = int(cfg.get("num_cores", 1) or 1)
+    topo = cfg.get("topology_type") or "ring"
+    B = int(cfg.get("buffer_qubits", 1) or 1)
+    if "communication_qubits" in cfg:
+        cfg["communication_qubits"] = clamp_k_for_topology(
+            nq, nc, topo, int(cfg["communication_qubits"] or 1),
+            b_per_group=B,
+        )
+    K = int(cfg.get("communication_qubits", 1) or 1)
+    if "buffer_qubits" in cfg:
+        cfg["buffer_qubits"] = clamp_b_for_topology(
+            nq, nc, topo, K, int(cfg["buffer_qubits"] or 1),
+        )
+        B = cfg["buffer_qubits"]
+    if "num_logical_qubits" in cfg:
+        cap = max(2, min(nq, max_data_slots(nq, nc, topo, K, B) or nq))
+        cfg["num_logical_qubits"] = max(
+            2, min(int(cfg["num_logical_qubits"]), cap)
+        )
+
+
 def _resolve_cell_cold_cfg(
     cold_config: dict, swept: dict[str, float],
 ) -> dict:
@@ -471,22 +947,13 @@ def _resolve_cell_cold_cfg(
     ``_eval_cold_batch`` so the captured per-cell cold cfg matches what
     the engine actually compiled with.
     """
-    import math as _math
     cfg = dict(cold_config)
     for k, v in swept.items():
         if k in DSEEngine.COLD_PATH_KEYS:
             cfg[k] = int(v) if k in DSEEngine.INTEGER_KEYS else v
     _expand_qubits_alias(cfg)
     cfg["num_cores"] = min(int(cfg.get("num_cores", 1)), int(cfg.get("num_qubits", 1)))
-    if "communication_qubits" in cfg:
-        qpc = max(1, int(cfg["num_qubits"]) // max(1, int(cfg["num_cores"])))
-        cfg["communication_qubits"] = max(
-            1, min(int(cfg["communication_qubits"] or 1), _math.isqrt(qpc))
-        )
-    if "num_logical_qubits" in cfg:
-        cfg["num_logical_qubits"] = max(
-            2, min(int(cfg["num_logical_qubits"]), int(cfg["num_qubits"]))
-        )
+    _clamp_cfg_comm_and_logical(cfg)
     return cfg
 
 
@@ -660,6 +1127,7 @@ class DSEEngine:
         intracore_topology: str = "all_to_all",
         routing_algorithm: str = "hqa_sabre",
         communication_qubits: int = 1,
+        buffer_qubits: int = 1,
         num_logical_qubits: Optional[int] = None,
         custom_qasm: Optional[str] = None,
     ) -> CachedMapping:
@@ -672,10 +1140,10 @@ class DSEEngine:
         to build the circuit; defaults to ``num_qubits`` when omitted, and
         is clamped to ``[2, num_qubits]``.
 
-        ``communication_qubits`` carves the last K qubits of each core out
-        as EPR endpoints; the inter-core coupling map is built from
-        per-comm-qubit pairings so K controls how many parallel
-        teleportation slots exist between neighbouring cores.
+        ``communication_qubits`` (K) carves out per-group EPR endpoints
+        on each core; ``buffer_qubits`` (B) reserves additional buffer
+        slots adjacent to each comm group (B ≤ K by rule).  Each core
+        with ``G`` neighbours therefore reserves ``G·(K+B)`` total slots.
         """
         if circuit_type == "custom":
             if not custom_qasm:
@@ -698,7 +1166,8 @@ class DSEEngine:
         )
         config_key = (
             circuit_type, num_qubits, num_cores, topology_type, intracore_topology,
-            placement_policy, seed, routing_algorithm, int(communication_qubits or 1),
+            placement_policy, seed, routing_algorithm,
+            int(communication_qubits or 1), int(buffer_qubits or 1),
             int(num_logical_qubits), qasm_fingerprint,
         )
         if self._cache is not None and self._cache.config_key == config_key:
@@ -710,6 +1179,7 @@ class DSEEngine:
                 intracore_topology, seed, noise, config_key,
                 num_logical_qubits=num_logical_qubits,
                 communication_qubits=communication_qubits,
+                buffer_qubits=buffer_qubits,
                 custom_qasm=custom_qasm,
             )
 
@@ -722,6 +1192,7 @@ class DSEEngine:
             num_qubits, num_cores, topology_type,
             intracore_topology=intracore_topology,
             communication_qubits=communication_qubits,
+            buffer_qubits=buffer_qubits,
         )
 
         actual_qubits = transp.num_qubits
@@ -746,6 +1217,8 @@ class DSEEngine:
             single_gate_time=merged["single_gate_time"],
             two_gate_time=merged["two_gate_time"],
             teleportation_time_per_hop=merged["teleportation_time_per_hop"],
+            epr_error_per_hop=merged["epr_error_per_hop"],
+            measurement_error=merged["measurement_error"],
             t1=merged["t1"],
             t2=merged["t2"],
             dynamic_decoupling=False,
@@ -812,6 +1285,7 @@ class DSEEngine:
         config_key: tuple,
         num_logical_qubits: Optional[int] = None,
         communication_qubits: int = 1,
+        buffer_qubits: int = 1,
         custom_qasm: Optional[str] = None,
     ) -> CachedMapping:
         """Cold path using TeleSABRE routing. Writes QASM + device JSON to
@@ -851,6 +1325,7 @@ class DSEEngine:
         device_json = _build_telesabre_device_json(
             num_qubits, num_cores, topology_type, intracore_topology,
             communication_qubits=communication_qubits,
+            buffer_qubits=buffer_qubits,
         )
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
@@ -907,6 +1382,7 @@ class DSEEngine:
         full_coupling_map, core_mapping = _build_topology(
             num_qubits, num_cores, topology_type, intracore_topology=intracore_topology,
             communication_qubits=communication_qubits,
+            buffer_qubits=buffer_qubits,
         )
         num_cores_actual = max(core_mapping.values()) + 1 if core_mapping else 1
         dist_mat = _compute_distance_matrix(full_coupling_map, core_mapping, num_cores_actual)
@@ -952,6 +1428,8 @@ class DSEEngine:
             single_gate_time=merged["single_gate_time"],
             two_gate_time=merged["two_gate_time"],
             teleportation_time_per_hop=merged["teleportation_time_per_hop"],
+            epr_error_per_hop=merged["epr_error_per_hop"],
+            measurement_error=merged["measurement_error"],
             t1=merged["t1"],
             t2=merged["t2"],
             dynamic_decoupling=merged.get("dynamic_decoupling", False),
@@ -1026,10 +1504,15 @@ class DSEEngine:
 
     COLD_PATH_KEYS = frozenset({
         "qubits",  # virtual alias: expands to num_qubits == num_logical_qubits
-        "num_qubits", "num_cores", "communication_qubits", "num_logical_qubits",
+        "num_qubits", "num_cores", "communication_qubits", "buffer_qubits",
+        "num_logical_qubits",
         "circuit_type", "topology_type", "intracore_topology", "routing_algorithm",
     })
-    INTEGER_KEYS = frozenset({"qubits", "num_qubits", "num_cores", "communication_qubits", "num_logical_qubits", "classical_link_width", "classical_routing_cycles"})
+    INTEGER_KEYS = frozenset({
+        "qubits", "num_qubits", "num_cores", "communication_qubits",
+        "buffer_qubits", "num_logical_qubits",
+        "classical_link_width", "classical_routing_cycles",
+    })
 
     def _memory_capped_max_hot(self, max_hot: int | None) -> tuple[int, int]:
         """Clamp a requested ``max_hot`` to what current RAM can hold.
@@ -1193,20 +1676,10 @@ class DSEEngine:
                 hot_noise[k] = v
         _expand_qubits_alias(cfg)
         cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
-        # Clamp communication_qubits to [1, floor(sqrt(qubits_per_core))] so the
-        # same value flowing in from a sweep axis can't outrun a smaller
-        # qubits_per_core for the current cell.
-        if "communication_qubits" in cfg:
-            qpc = max(1, int(cfg["num_qubits"]) // max(1, int(cfg["num_cores"])))
-            cfg["communication_qubits"] = max(
-                1, min(int(cfg["communication_qubits"] or 1), _math.isqrt(qpc))
-            )
-        # Clamp num_logical_qubits ≤ num_qubits when sweeping physical or
-        # logical drops below 2.
-        if "num_logical_qubits" in cfg:
-            cfg["num_logical_qubits"] = max(
-                2, min(int(cfg["num_logical_qubits"]), int(cfg["num_qubits"]))
-            )
+        # Clamp communication_qubits to the architectural cap and
+        # num_logical_qubits to the remaining data-slot count for the
+        # current topology / cores / num_qubits.
+        _clamp_cfg_comm_and_logical(cfg)
         cached = self.run_cold(**cfg, noise=hot_noise)
         # Return the full dict (per-qubit grids included) so callers that
         # need them can capture before stripping.  ``_result_to_row`` reads
@@ -1766,22 +2239,13 @@ def _eval_cold_batch(
     engine = DSEEngine()
 
     # Apply cold-path overrides from the first swept dict (all share the same cold keys)
-    import math as _math
     cfg = dict(cold_config)
     for k, v in swept_list[0].items():
         if k in DSEEngine.COLD_PATH_KEYS:
             cfg[k] = int(v)
     _expand_qubits_alias(cfg)
     cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
-    if "communication_qubits" in cfg:
-        qpc = max(1, int(cfg["num_qubits"]) // max(1, int(cfg["num_cores"])))
-        cfg["communication_qubits"] = max(
-            1, min(int(cfg["communication_qubits"] or 1), _math.isqrt(qpc))
-        )
-    if "num_logical_qubits" in cfg:
-        cfg["num_logical_qubits"] = max(
-            2, min(int(cfg["num_logical_qubits"]), int(cfg["num_qubits"]))
-        )
+    _clamp_cfg_comm_and_logical(cfg)
 
     # Build the noise dicts for each swept point
     noise_dicts = []
@@ -1869,6 +2333,7 @@ def _build_telesabre_device_json(
     topology_type: str,
     intracore_topology: str,
     communication_qubits: int = 1,
+    buffer_qubits: int = 1,
 ) -> dict:
     """Build a TeleSABRE-format device JSON dict from DSE topology parameters.
 
@@ -1929,16 +2394,42 @@ def _build_telesabre_device_json(
             for q in range(size - 1):
                 intra_edges.append([off + q, off + q + 1])
 
-    # Inter-core edges: every comm qubit connects to every comm qubit on
-    # each neighbouring core (full K×K bipartite per neighbour pair).
-    # Comm qubits live in the last K slots of each core.
+    # Inter-core edges: each comm qubit hosts exactly one inter-core link.
+    # A core's qubits are laid out as ``[D data, group_0, group_1, ...]``
+    # with each group = ``K`` comm + ``1`` buffer slots; inter_core_edges
+    # pairs comm qubit ``k`` of one core's group-toward-partner with comm
+    # qubit ``k`` of the partner's group-toward-this.
     inter_edges = []
     if num_cores > 1:
-        K = max(1, min(int(communication_qubits or 1), max(1, qubits_per_core - 1)))
-        for (a_core, a_k), (b_core, b_k) in inter_core_edges(num_cores, K, topology_type):
-            p1 = offsets[a_core] + qubits_per_core - K + a_k
-            p2 = offsets[b_core] + qubits_per_core - K + b_k
-            inter_edges.append([p1, p2])
+        groups_per_core = num_comm_groups(num_cores, topology_type)
+        B_req = max(1, int(buffer_qubits or 1))
+        K_caps = [
+            _max_K_for_layout(qubits_per_core, groups_per_core[c],
+                              b_per_group=B_req)
+            for c in range(num_cores)
+            if groups_per_core[c] > 0
+        ]
+        K_max = min(K_caps) if K_caps else 0
+        K = min(int(communication_qubits or 1), max(0, K_max))
+        if K >= 1:
+            B_caps = [
+                _max_B_for_layout(qubits_per_core, groups_per_core[c], K)
+                for c in range(num_cores)
+                if groups_per_core[c] > 0
+            ]
+            B_max = min(B_caps) if B_caps else 0
+            B = min(B_req, max(1, B_max))
+            per_core_layout = [
+                assign_core_slots(qubits_per_core, intracore_topology,
+                                  groups_per_core[c], K, b_per_group=B)
+                for c in range(num_cores)
+            ]
+            for (a_core, a_g, a_k), (b_core, b_g, b_k) in inter_core_edges(
+                num_cores, K, topology_type,
+            ):
+                p1 = offsets[a_core] + per_core_layout[a_core]["groups"][a_g]["comm"][a_k]
+                p2 = offsets[b_core] + per_core_layout[b_core]["groups"][b_g]["comm"][b_k]
+                inter_edges.append([p1, p2])
 
     # Simple grid node positions
     side = math.isqrt(total_qubits)

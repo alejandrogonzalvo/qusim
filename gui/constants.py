@@ -60,14 +60,35 @@ SWEEPABLE_METRICS: List[MetricDef] = [
         description="Per-gate error probability for two-qubit operations",
     ),
     MetricDef(
-        key="teleportation_error_per_hop",
-        label="Teleport Error/Hop",
+        key="epr_error_per_hop",
+        label="EPR Error/Hop",
         slider_min=-5, slider_max=-1,
         slider_default_low=-3, slider_default_high=-1,
         num_steps=50, log_scale=True, unit="",
         is_cold_path=False,
-        description="Fidelity loss per inter-core teleportation hop",
+        description=(
+            "Per-hop EPR generation error.  Dominant term in the "
+            "teleportation cost (matches dse_pau ``EPR_error``)."
+        ),
     ),
+    MetricDef(
+        key="measurement_error",
+        label="Meas. Error",
+        slider_min=-6, slider_max=-1,
+        slider_default_low=-5, slider_default_high=-3,
+        num_steps=50, log_scale=True, unit="",
+        is_cold_path=False,
+        description=(
+            "Mid-circuit measurement error charged once per "
+            "teleportation hop (Bell measurement on the source side)."
+        ),
+    ),
+    # NOTE: ``teleportation_error_per_hop`` is no longer a directly-swept
+    # axis — it's *derived* from the EPR / gate / measurement constituents
+    # in ``_merge_noise`` so that sweeping any constituent affects the
+    # bundled cost the way dse_pau's protocol model would.  Programmatic
+    # callers can still override it via the ``noise={"teleportation_error_per_hop": …}``
+    # kwarg as an escape hatch.
     MetricDef(
         key="t1",
         label="T1 (Relaxation)",
@@ -105,14 +126,26 @@ SWEEPABLE_METRICS: List[MetricDef] = [
         description="Two-qubit gate execution time in nanoseconds",
     ),
     MetricDef(
-        key="teleportation_time_per_hop",
-        label="Teleport Time/Hop",
-        slider_min=2, slider_max=5,
-        slider_default_low=3, slider_default_high=4,
+        key="epr_time_per_hop",
+        label="EPR Time/Hop",
+        slider_min=1, slider_max=4,
+        slider_default_low=2, slider_default_high=3,
         num_steps=40, log_scale=True, unit="ns",
         is_cold_path=False,
-        description="Inter-core teleportation time per hop in nanoseconds",
+        description="Per-hop EPR generation latency in nanoseconds.",
     ),
+    MetricDef(
+        key="measurement_time",
+        label="Meas. Time",
+        slider_min=1, slider_max=3,
+        slider_default_low=1, slider_default_high=2,
+        num_steps=40, log_scale=True, unit="ns",
+        is_cold_path=False,
+        description="Mid-circuit measurement latency in nanoseconds.",
+    ),
+    # NOTE: ``teleportation_time_per_hop`` is derived from the constituents
+    # below, mirroring the dse_pau protocol cost.  See the comment on
+    # ``teleportation_error_per_hop`` above.
     MetricDef(
         key="readout_mitigation_factor",
         label="Readout Mitigation",
@@ -197,8 +230,21 @@ SWEEPABLE_METRICS: List[MetricDef] = [
         num_steps=4, log_scale=False, unit="",
         is_cold_path=True,
         description=(
-            "Number of qubits per core dedicated to inter-core communication "
-            "(EPR endpoints). Capped at floor(sqrt(qubits_per_core))."
+            "Comm qubits per group (per inter-core link). Each core's "
+            "G inter-core neighbours each reserve K + B slots (K comm + "
+            "B buffer per group)."
+        ),
+    ),
+    MetricDef(
+        key="buffer_qubits",
+        label="Buffer Qubits",
+        slider_min=1, slider_max=16,
+        slider_default_low=1, slider_default_high=1,
+        num_steps=4, log_scale=False, unit="",
+        is_cold_path=True,
+        description=(
+            "Buffer qubits per group. Bounded above by communication "
+            "qubits (B ≤ K) and by data-slot feasibility."
         ),
     ),
 ]
@@ -212,21 +258,33 @@ MAX_SWEEP_AXES = len(SWEEPABLE_METRICS)
 
 DEFAULT_SWEEP_AXES = ["t1", "t2", "two_gate_time"]
 
-# Default scalar noise values shown in the right panel
+# Default scalar noise values shown in the right panel.
+#
+# ``teleportation_error_per_hop`` and ``teleportation_time_per_hop`` are
+# *derived* from the constituent gate / EPR / measurement parameters in
+# ``_merge_noise`` (matching the dse_pau protocol cost: 1 EPR + 1 CNOT +
+# 1 H + 1 meas on the source side, 1 X/Z + 3 CNOTs on the destination
+# side for the SWAP into the buffer).  They appear here only as fallback
+# values for callers that override them directly.
 NOISE_DEFAULTS = {
     "single_gate_error": 1e-4,
     "two_gate_error": 1e-3,
+    "epr_error_per_hop": 9e-3,
+    "measurement_error": 1e-3,
     "teleportation_error_per_hop": 1e-2,
     "t1": 100_000.0,
     "t2": 50_000.0,
     "single_gate_time": 20.0,
     "two_gate_time": 100.0,
+    "epr_time_per_hop": 130.0,
+    "measurement_time": 40.0,
     "teleportation_time_per_hop": 1_000.0,
     "readout_mitigation_factor": 0.0,
     "classical_link_width": 0,
     "classical_clock_freq_hz": 200e6,
     "classical_routing_cycles": 2,
     "communication_qubits": 1,
+    "buffer_qubits": 1,
     "num_logical_qubits": 16,
 }
 

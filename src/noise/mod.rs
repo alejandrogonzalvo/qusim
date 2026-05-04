@@ -15,6 +15,14 @@ pub struct ArchitectureParams {
     pub single_gate_time: f64,
     pub two_gate_time: f64,
     pub teleportation_time_per_hop: f64,
+    /// EPR-pair generation error per hop (dse_pau-equivalent ``EPR_error``).
+    /// Used by the η-coupled teleportation cost model: the EPR partner
+    /// fidelity is initialized to ``sqrt(1 − epr_error_per_hop)`` for the
+    /// first CNOT of the protocol.
+    pub epr_error_per_hop: f64,
+    /// Mid-circuit measurement error charged once per teleportation hop
+    /// (dse_pau-equivalent ``meas_error``).
+    pub measurement_error: f64,
     pub t1: f64,
     pub t2: f64,
     /// Per-qubit single-gate error rates. Falls back to scalar `single_gate_error` if None.
@@ -52,6 +60,8 @@ impl Default for ArchitectureParams {
             single_gate_time: 20.0,
             two_gate_time: 100.0,
             teleportation_time_per_hop: 1000.0,
+            epr_error_per_hop: 9e-3,
+            measurement_error: 1e-3,
             t1: 100_000.0,
             t2: 50_000.0,
             single_gate_error_per_qubit: None,
@@ -167,9 +177,40 @@ fn depolarization_lambda(gate_error: f64, d: f64) -> f64 {
 }
 
 /// Teleportation fidelity decays exponentially with network distance.
+///
+/// Used by the *legacy* multiplicative teleportation model — kept so existing
+/// fixtures and benchmarks that pass `teleportation_error_per_hop` directly
+/// (bypassing the η-coupled protocol cost) still match their original numbers.
 #[inline]
 fn teleportation_fidelity(error_per_hop: f64, distance: i32) -> f64 {
     (1.0 - error_per_hop).powi(distance)
+}
+
+/// Apply one η-coupled CNOT update to a (qubit, partner) fidelity pair.
+///
+/// Mirrors dse_pau's depolarising-channel formula
+/// (see ``dse_pau/utils.py:637-643``):
+/// ```text
+/// η  = ½·( √((1−λ)·(f₁+f₂)² + λ)  −  √(1−λ)·(f₁+f₂) )
+/// f₁ ← √(1−λ)·f₁ + η
+/// f₂ ← √(1−λ)·f₂ + η
+/// ```
+/// where ``λ = (4/3)·ε`` is the d=4 depolarisation parameter.
+#[inline]
+fn eta_cnot_update(f1: &mut f64, f2: &mut f64, two_gate_error: f64) {
+    let lam = depolarization_lambda(two_gate_error, 4.0);
+    let sqrt_1_lam = (1.0 - lam).sqrt();
+    let sum = *f1 + *f2;
+    let eta = 0.5 * (((1.0 - lam) * sum * sum + lam).sqrt() - sqrt_1_lam * sum);
+    *f1 = sqrt_1_lam * *f1 + eta;
+    *f2 = sqrt_1_lam * *f2 + eta;
+}
+
+/// Apply one 1Q depolarising-channel update (matches dse_pau line 634).
+#[inline]
+fn depol_1q_update(f: &mut f64, single_gate_error: f64) {
+    let lam = depolarization_lambda(single_gate_error, 2.0);
+    *f = (1.0 - lam) * *f + lam / 2.0;
 }
 
 /// Idle-qubit decoherence from T1 relaxation and T2 dephasing (paper Eq. 41).
@@ -582,9 +623,8 @@ fn process_sabre_swaps(
 
     for &(q1, q2) in swaps {
         let error = params.two_gate_error_for(q1, q2);
-        let f_swap = gate_fidelity(3.0 * error); // SWAP is ~3 CX gates
         let time = params.two_gate_time * 3.0;
-        
+
         let start = if q1 < timeline.len() && q2 < timeline.len() {
             timeline[q1].max(timeline[q2])
         } else if q1 < timeline.len() {
@@ -598,16 +638,71 @@ fn process_sabre_swaps(
         if q1 < timeline.len() {
             apply_idle_decoherence(q1, start - timeline[q1], params, layer_coh_grid);
             timeline[q1] = start + time;
-            layer_routing_grid[q1] *= f_swap;
         }
         if q2 < timeline.len() {
             apply_idle_decoherence(q2, start - timeline[q2], params, layer_coh_grid);
             timeline[q2] = start + time;
-            layer_routing_grid[q2] *= f_swap;
         }
-        layer_routing_fidelity *= f_swap;
+
+        // SWAP = 3 sequential CNOTs.  Each CNOT couples (q1, q2) via the
+        // η formula on their *routing* fidelities — matching dse_pau's
+        // per-CNOT depolarising-channel update on a single qubit array.
+        if q1 < layer_routing_grid.len() && q2 < layer_routing_grid.len() {
+            let f1_before = layer_routing_grid[q1];
+            let f2_before = layer_routing_grid[q2];
+            let mut f1 = f1_before;
+            let mut f2 = f2_before;
+            for _ in 0..3 {
+                eta_cnot_update(&mut f1, &mut f2, error);
+            }
+            layer_routing_grid[q1] = f1;
+            layer_routing_grid[q2] = f2;
+            if f1_before > 0.0 {
+                layer_routing_fidelity *= f1 / f1_before;
+            }
+            if f2_before > 0.0 {
+                layer_routing_fidelity *= f2 / f2_before;
+            }
+        }
     }
     layer_routing_fidelity
+}
+
+/// Apply the dse_pau teledata protocol cost (see ``dse_pau/utils.py:646-679``)
+/// to a single qubit's routing fidelity for `distance` consecutive hops.
+///
+/// Per hop:
+///   1. EPR generation       → partner fidelity `√(1 − epr_error_per_hop)`
+///   2. Source preprocessing → 1 CNOT (η-coupled with EPR partner)
+///                           + 1 H gate (1Q depol)
+///                           + 1 measurement (×(1 − meas_error))
+///   3. Destination postproc → 1 X/Z correction (1Q depol)
+///                           + 3 CNOTs forming the SWAP into the buffer
+///                             (η-coupled with the buffer, which starts at 1)
+#[inline]
+fn apply_teleportation_protocol(
+    f_q: &mut f64,
+    distance: i32,
+    params: &ArchitectureParams,
+) {
+    let epr_init = (1.0 - params.epr_error_per_hop).max(0.0).sqrt();
+    let two_err = params.two_gate_error;
+    let one_err = params.single_gate_error;
+    let meas_err = params.measurement_error;
+    for _ in 0..distance.max(0) {
+        // (1) EPR partner — ephemeral, lives only for the prep CNOT.
+        let mut epr_fid = epr_init;
+        eta_cnot_update(f_q, &mut epr_fid, two_err);
+        // (2) Source-side H + Bell measurement.
+        depol_1q_update(f_q, one_err);
+        *f_q *= 1.0 - meas_err;
+        // (3) Destination X/Z correction + 3-CNOT SWAP into the buffer.
+        depol_1q_update(f_q, one_err);
+        let mut buf_fid = 1.0;
+        for _ in 0..3 {
+            eta_cnot_update(f_q, &mut buf_fid, two_err);
+        }
+    }
 }
 
 #[inline]
@@ -626,9 +721,15 @@ fn process_teleportations(
         let hop_classical_time = event.network_distance as f64 * classical_time;
         timeline[event.qubit] += quantum_time + hop_classical_time;
 
-        let f = teleportation_fidelity(params.teleportation_error_per_hop, event.network_distance);
-        layer_routing_grid[event.qubit] *= f;
-        layer_routing_fidelity *= f;
+        if event.qubit < layer_routing_grid.len() {
+            let f_before = layer_routing_grid[event.qubit];
+            let mut f_q = f_before;
+            apply_teleportation_protocol(&mut f_q, event.network_distance, params);
+            layer_routing_grid[event.qubit] = f_q;
+            if f_before > 0.0 {
+                layer_routing_fidelity *= f_q / f_before;
+            }
+        }
     }
     layer_routing_fidelity
 }

@@ -69,8 +69,13 @@ class MultiCoreOrchestrator:
         for foreign cores to act as parking space for inactive virtual qubits.
         """
         topologies = []
-        nq = max([max(edge) for edge in self.full_coupling_map.get_edges()]) + 1 if self.full_coupling_map.get_edges() else len(self.core_mapping)
-        
+        # Total physical qubit count comes from the core_mapping (one entry
+        # per physical qubit) rather than from edge endpoints — when the
+        # architecture has no inter-core edges (e.g. K=0 in a small ring)
+        # or sparse intra-core edges, the highest-indexed qubit can be
+        # absent from the edge list and would underestimate ``nq``.
+        nq = (max(self.core_mapping.keys()) + 1) if self.core_mapping else 0
+
         for c in range(self.num_cores):
             topologies.append(self._build_single_core_topology(c, nq))
             

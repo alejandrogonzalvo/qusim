@@ -61,6 +61,10 @@ from gui.constants import (
     view_modes_for_dim,
 )
 from gui.dse_engine import DSEEngine, SweepProgress
+from gui.examples import (
+    example_options as _example_options,
+    example_path as _example_path,
+)
 from gui.interpolation import (
     frozen_slider_config,
     is_frozen_view,
@@ -369,15 +373,8 @@ def _compute_per_qubit_for_cell(
         else:
             hot_noise[key] = v
     cfg["num_cores"] = min(int(cfg["num_cores"]), int(cfg["num_qubits"]))
-    if "communication_qubits" in cfg:
-        qpc = max(1, int(cfg["num_qubits"]) // max(1, int(cfg["num_cores"])))
-        cfg["communication_qubits"] = max(
-            1, min(int(cfg["communication_qubits"] or 1), math.isqrt(qpc))
-        )
-    if "num_logical_qubits" in cfg:
-        cfg["num_logical_qubits"] = max(
-            2, min(int(cfg["num_logical_qubits"]), int(cfg["num_qubits"]))
-        )
+    from gui.dse_engine import _clamp_cfg_comm_and_logical as _clamp_cfg
+    _clamp_cfg(cfg)
 
     cached = _engine.run_cold(**cfg, noise=hot_noise)
     full = _engine.run_hot(cached, hot_noise)
@@ -390,6 +387,7 @@ def _compute_per_qubit_for_cell(
         "num_cores": int(cfg["num_cores"]),
         "num_logical_qubits": int(cfg.get("num_logical_qubits", cfg["num_qubits"])),
         "communication_qubits": int(cfg.get("communication_qubits", 1)),
+        "buffer_qubits": int(cfg.get("buffer_qubits", 1)),
         "topology_type": cfg.get("topology_type", "ring"),
         "intracore_topology": cfg.get("intracore_topology", "all_to_all"),
         "cell_idx": tuple(safe_idx),
@@ -580,6 +578,19 @@ def _topbar() -> html.Div:
             html.Div(
                 style={"display": "flex", "alignItems": "center", "gap": "12px"},
                 children=[
+                    html.Div(
+                        style={"width": "240px"},
+                        children=dcc.Dropdown(
+                            id="examples-dropdown",
+                            className="dse-dropdown",
+                            options=_example_options(),
+                            value=None,
+                            placeholder="Load example…",
+                            clearable=True,
+                            searchable=False,
+                            style={"fontSize": "12px"},
+                        ),
+                    ),
                     html.Button(
                         "Save",
                         id="save-btn",
@@ -1696,6 +1707,7 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     State("cfg-num-qubits", "value"),
     State("cfg-num-cores", "value"),
     State("cfg-communication-qubits", "value"),
+    State("cfg-buffer-qubits", "value"),
     State("cfg-num-logical-qubits", "value"),
     State("cfg-topology", "value"),
     State("cfg-intracore-topology", "value"),
@@ -1744,6 +1756,7 @@ def run_sweep(
     num_qubits = all_args[idx]; idx += 1
     num_cores = all_args[idx]; idx += 1
     communication_qubits = all_args[idx]; idx += 1
+    buffer_qubits = all_args[idx]; idx += 1
     num_logical_qubits = all_args[idx]; idx += 1
     topology = all_args[idx]; idx += 1
     intracore_topology = all_args[idx]; idx += 1
@@ -1848,6 +1861,7 @@ def run_sweep(
             "num_logical_qubits": max(2, min(_logi, _phys)),
             "num_cores": int(num_cores or 4),
             "communication_qubits": int(communication_qubits or 1),
+            "buffer_qubits": int(buffer_qubits or 1),
             "topology_type": topology or "ring",
             "placement_policy": placement or "random",
             "seed": int(seed or 42),
@@ -2322,23 +2336,29 @@ _METRIC_WARN_VISIBLE_STYLE = {
 }
 
 
-def _comm_qubits_clamp_warning(num_qubits: int, cores_values, comm_max=None):
+def _comm_qubits_clamp_warning(num_qubits: int, cores_values,
+                               topology_type: str | None = None,
+                               comm_max=None):
     """Build a dynamic warning that lists per-cores comm-qubit caps.
 
     Returns ``None`` when there is nothing to warn about — either because we
     don't have a concrete cores range to evaluate, or because the swept
     ``communication_qubits`` range never exceeds the architectural cap for
     any cores value (so no cell would actually be clamped).
+
+    Cap = ``⌊(qubits_per_core − 1) / G⌋ − 1`` where G is the number of
+    inter-core neighbours of a core under the selected topology — every
+    group reserves K + 1 slots (K comm + 1 buffer per group).
     """
-    import math
+    from gui.dse_engine import clamp_k_for_topology
     if not cores_values:
         return None
     nq = max(1, int(num_qubits or 16))
+    topo = topology_type or "ring"
     pairs = []
     for c in cores_values:
         ci = max(1, int(c))
-        qpc = max(1, nq // ci)
-        cap = max(1, math.isqrt(qpc))
+        cap = clamp_k_for_topology(nq, ci, topo, 10_000)
         pairs.append((ci, cap))
     if comm_max is not None:
         try:
@@ -2368,15 +2388,16 @@ def _comm_qubits_clamp_warning(num_qubits: int, cores_values, comm_max=None):
             label = f"{cores_lo} core{'s' if cores_lo != 1 else ''}"
         else:
             label = f"{cores_lo}–{cores_hi} cores"
-        bullets.append(html.Li(f"{label} → comm qubits ≤ {cap}"))
+        bullets.append(html.Li(f"{label} → comm qubits/group ≤ {cap}"))
     return html.Div([
         html.Div(
             "Not every (cores, comm qubits) pair is realizable. "
-            "Each cell caps comm qubits at ⌊√(N/cores)⌋ "
-            "(num qubits per core must hold both data and EPR endpoints).",
+            "Comm qubits is the per-link/per-group count: each core's "
+            "G inter-core neighbours each reserve K + 1 slots "
+            "(K comm + 1 buffer), so K must leave at least one data slot.",
             style={"fontWeight": "600", "marginBottom": "4px"},
         ),
-        html.Div(f"With N = {nq} physical qubits, the per-cores cap is:"),
+        html.Div(f"With N = {nq} physical qubits ({topo} topology), the per-cores cap is:"),
         html.Ul(bullets, style={"margin": "4px 0 4px 0", "paddingLeft": "18px"}),
         html.Div(
             "Cells exceeding the cap are silently clamped, producing "
@@ -2415,11 +2436,12 @@ for _idx in range(MAX_METRICS):
         Output(f"metric-help-{_idx}", "style"),
         Input("cfg-num-qubits", "value"),
         Input("cfg-num-cores", "value"),
+        Input("cfg-topology", "value"),
         *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
         *[Input(f"metric-slider-{i}", "value") for i in range(MAX_METRICS)],
         prevent_initial_call=False,
     )
-    def _update_metric_hint(cfg_num_qubits, cfg_num_cores, *args, _i=_idx):
+    def _update_metric_hint(cfg_num_qubits, cfg_num_cores, cfg_topology, *args, _i=_idx):
         all_dropdowns = list(args[:MAX_METRICS])
         all_sliders = list(args[MAX_METRICS:])
         metric_key = all_dropdowns[_i] if _i < len(all_dropdowns) else None
@@ -2438,7 +2460,8 @@ for _idx in range(MAX_METRICS):
                 else None
             )
             warning = _comm_qubits_clamp_warning(
-                cfg_num_qubits, cores_values, comm_max=comm_max,
+                cfg_num_qubits, cores_values,
+                topology_type=cfg_topology, comm_max=comm_max,
             )
             if warning is not None:
                 return warning, _METRIC_WARN_VISIBLE_STYLE
@@ -2454,31 +2477,43 @@ def _arch_clamped_max(
     comm_qubits: float | int | None = None,
     routing_algorithm: str | None = None,
     routing_axis_active: bool = False,
+    topology_type: str | None = None,
+    buffer_qubits: float | int | None = None,
 ) -> float:
     """Cap a sweep slider's max to the architectural limit, if any.
 
-    Two metrics carry architectural caps:
+    Three metrics carry architectural caps:
 
-    * ``communication_qubits`` is bounded by ``floor(sqrt(qubits_per_core))``
-      (TeleSABRE's K×K bipartite inter-core fabric cost grows quadratically;
-      anything larger collapses onto the clamp inside the engine and wastes
-      sweep budget).
-    * ``num_logical_qubits`` is bounded by physical qubits in HQA mode and
-      by ``num_phys − num_cores × comm_qubits`` (the data-slot count) when
-      TeleSABRE is in play. When the routing algorithm is itself a sweep
-      axis, the stricter TeleSABRE bound wins so every cell stays valid.
+    * ``communication_qubits`` (per-group K) is bounded by
+      ``⌊(qubits_per_core − 1)/G⌋ − B`` where ``G`` is the number of
+      inter-core neighbours of a core under the selected topology and
+      ``B`` is the per-group buffer count.
+    * ``buffer_qubits`` (per-group B) is bounded by
+      ``min(K, ⌊(qubits_per_core − 1)/G⌋ − K)``.
+    * ``num_logical_qubits`` is bounded by the chip-wide data slot count
+      ``num_qubits − Σ_c G(c)·(K+B)``.
     """
-    import math as _math
+    from gui.dse_engine import clamp_k_for_topology, clamp_b_for_topology
     if metric_key == "communication_qubits":
         nq = int(num_qubits) if num_qubits else 16
         nc = max(1, int(num_cores) if num_cores else 1)
-        qpc = max(1, nq // nc)
-        cap = max(1, _math.isqrt(qpc))
+        topo = topology_type or "ring"
+        B = max(1, int(buffer_qubits or 1))
+        cap = clamp_k_for_topology(nq, nc, topo, 10_000, b_per_group=B)
+        return float(min(slider_max, max(slider_min, float(cap))))
+    if metric_key == "buffer_qubits":
+        nq = int(num_qubits) if num_qubits else 16
+        nc = max(1, int(num_cores) if num_cores else 1)
+        topo = topology_type or "ring"
+        K = max(1, int(comm_qubits or 1))
+        cap = clamp_b_for_topology(nq, nc, topo, K, 10_000)
         return float(min(slider_max, max(slider_min, float(cap))))
     if metric_key == "num_logical_qubits":
         cap = _logical_qubits_max(
             num_qubits, num_cores, comm_qubits,
             routing_algorithm, routing_axis_active,
+            topology_type=topology_type,
+            buffer_qubits=buffer_qubits or 1,
         )
         return float(min(slider_max, max(slider_min, float(cap))))
     return slider_max
@@ -2527,13 +2562,15 @@ for _idx in range(MAX_METRICS):
         State("cfg-num-qubits", "value"),
         State("cfg-num-cores", "value"),
         State("cfg-communication-qubits", "value"),
+        State("cfg-buffer-qubits", "value"),
         State("cfg-routing-algorithm", "value"),
+        State("cfg-topology", "value"),
         State({"type": "metric-dropdown", "index": ALL}, "value"),
         prevent_initial_call=True,
     )
     def _reconfigure_slider(
         metric_key, suppress, num_qubits, num_cores,
-        comm_qubits, routing_algorithm, sweep_axis_keys,
+        comm_qubits, buffer_qubits, routing_algorithm, topology_type, sweep_axis_keys,
         _i=_idx,
     ):
         no = dash.no_update
@@ -2543,10 +2580,9 @@ for _idx in range(MAX_METRICS):
         if m is None:
             return (no, no, no, no, no, no)
         # Clamp the registry max to the architectural limit when the metric
-        # has one (comm_qubits is bounded by floor(sqrt(qubits/cores)),
-        # num_logical_qubits by data-slot capacity under TeleSABRE). Without
-        # this the user can sweep [1, 16] but values past the clamp all
-        # collapse onto the clamp inside the engine, wasting cells.
+        # has one. ``communication_qubits``, ``buffer_qubits``, and
+        # ``num_logical_qubits`` all carry per-topology architectural caps
+        # (see ``_arch_clamped_max``).
         routing_axis_active = "routing_algorithm" in (sweep_axis_keys or [])
         smin, smax = float(m.slider_min), float(m.slider_max)
         smax = _arch_clamped_max(
@@ -2554,6 +2590,8 @@ for _idx in range(MAX_METRICS):
             comm_qubits=comm_qubits,
             routing_algorithm=routing_algorithm,
             routing_axis_active=routing_axis_active,
+            topology_type=topology_type,
+            buffer_qubits=buffer_qubits,
         )
         marks = (
             _log_marks(smin, smax, m.unit)
@@ -2595,7 +2633,9 @@ for _idx in range(MAX_METRICS):
         Input("cfg-num-qubits", "value"),
         Input("cfg-num-cores", "value"),
         Input("cfg-communication-qubits", "value"),
+        Input("cfg-buffer-qubits", "value"),
         Input("cfg-routing-algorithm", "value"),
+        Input("cfg-topology", "value"),
         Input({"type": "metric-dropdown", "index": ALL}, "value"),
         State(f"metric-dropdown-{_idx}", "value"),
         State(f"metric-slider-{_idx}", "value"),
@@ -2603,8 +2643,8 @@ for _idx in range(MAX_METRICS):
         prevent_initial_call=True,
     )
     def _reclamp_axis_to_arch(
-        num_qubits, num_cores, comm_qubits, routing_algorithm,
-        sweep_axis_keys,
+        num_qubits, num_cores, comm_qubits, buffer_qubits, routing_algorithm,
+        topology_type, sweep_axis_keys,
         metric_key, current_value, current_max,
         _i=_idx,
     ):
@@ -2621,6 +2661,8 @@ for _idx in range(MAX_METRICS):
             comm_qubits=comm_qubits,
             routing_algorithm=routing_algorithm,
             routing_axis_active=routing_axis_active,
+            topology_type=topology_type,
+            buffer_qubits=buffer_qubits,
         )
         if current_max is not None and abs(float(current_max) - new_max) < 1e-9:
             # No-op: cap unchanged for the current architecture.
@@ -3046,6 +3088,7 @@ def export_csv(n_clicks, sweep_store):
     State("cfg-num-qubits", "value"),
     State("cfg-num-cores", "value"),
     State("cfg-communication-qubits", "value"),
+    State("cfg-buffer-qubits", "value"),
     State("cfg-num-logical-qubits", "value"),
     State("cfg-topology", "value"),
     State("cfg-intracore-topology", "value"),
@@ -3091,6 +3134,7 @@ def on_save_session(n_clicks, *all_args):
     cfg_num_qubits = all_args[idx]; idx += 1
     cfg_num_cores = all_args[idx]; idx += 1
     cfg_communication_qubits = all_args[idx]; idx += 1
+    cfg_buffer_qubits = all_args[idx]; idx += 1
     cfg_num_logical_qubits = all_args[idx]; idx += 1
     cfg_topology = all_args[idx]; idx += 1
     cfg_intracore_topology = all_args[idx]; idx += 1
@@ -3246,21 +3290,44 @@ def _value_to_slider(val: float, log_scale: bool) -> float:
     Output("fom-numerator", "value", allow_duplicate=True),
     Output("fom-denominator", "value", allow_duplicate=True),
     Output("fom-intermediates", "value", allow_duplicate=True),
+    Output("examples-dropdown", "value", allow_duplicate=True),
     Input("session-upload", "contents"),
+    Input("examples-dropdown", "value"),
     State("session-upload", "filename"),
     prevent_initial_call=True,
 )
-def on_load_session(contents, filename):
+def on_load_session(contents, example_id, filename):
     import base64
     from gui.session import load as session_load, apply_session, SessionError
 
-    if contents is None:
+    triggered = ctx.triggered_id
+    if triggered == "examples-dropdown":
+        if not example_id:
+            raise dash.exceptions.PreventUpdate
+        try:
+            raw = _example_path(example_id).read_bytes()
+        except OSError as exc:
+            banner = _build_error_banner_children(
+                "Failed to load example",
+                f"{exc}.  Run `python scripts/generate_example_sessions.py` "
+                f"to (re)build the example bundles.",
+            )
+            return _load_error_return(banner)
+        filename = f"example: {example_id}"
+    elif triggered == "session-upload":
+        if contents is None:
+            raise dash.exceptions.PreventUpdate
+        # ``contents`` has shape 'data:<mime>;base64,<payload>'.
+        try:
+            _, b64 = contents.split(",", 1)
+            raw = base64.b64decode(b64)
+        except (ValueError, OSError) as exc:
+            banner = _build_error_banner_children("Failed to load session", str(exc))
+            return _load_error_return(banner)
+    else:
         raise dash.exceptions.PreventUpdate
 
-    # ``contents`` has shape 'data:<mime>;base64,<payload>'.
     try:
-        _, b64 = contents.split(",", 1)
-        raw = base64.b64decode(b64)
         session = session_load(raw)
         result = apply_session(session)
     except (SessionError, ValueError, OSError) as exc:
@@ -3407,6 +3474,7 @@ def on_load_session(contents, filename):
         banner_children,
         banner_style,
         fom_dict, fom_name_out, fom_num_out, fom_den_out, fom_inter_out,
+        None,  # examples-dropdown reset so the next pick re-fires
     )
 
 
@@ -3415,8 +3483,9 @@ def on_load_session(contents, filename):
 # view-type, frozen-axis.
 _LOAD_SCALAR_OUTPUTS = 5
 # Count of trailing Outputs: status-bar, banner.children, banner.style,
-# fom-config-store, fom-name, fom-numerator, fom-denominator, fom-intermediates.
-_LOAD_TRAILING_OUTPUTS = 8
+# fom-config-store, fom-name, fom-numerator, fom-denominator, fom-intermediates,
+# examples-dropdown.
+_LOAD_TRAILING_OUTPUTS = 9
 _LOAD_SWEEP_OUTPUTS = 13  # figure, sweep-store, interp, view-tabs, frozen-style, frozen-min/max/val, sweep-dirty, sweep-processed, session-loaded-tick, suppress-cascade, session-name
 
 
@@ -3432,10 +3501,12 @@ def _load_error_return(banner_children):
         + _LOAD_TRAILING_OUTPUTS
     )
     stub = [dash.no_update] * outputs_total
-    # Trailing order: status-bar, banner.children, banner.style, then 5 FoM outputs.
-    stub[-8] = "Load failed"
-    stub[-7] = banner_children
-    stub[-6] = _error_banner_visible_style()
+    # Trailing order (last 9): status-bar, banner.children, banner.style,
+    # 5 FoM outputs, examples-dropdown.
+    stub[-9] = "Load failed"
+    stub[-8] = banner_children
+    stub[-7] = _error_banner_visible_style()
+    stub[-1] = None  # reset the dropdown so the user can retry
     return tuple(stub)
 
 
@@ -4362,6 +4433,7 @@ _bind_slider_input("cfg-num-logical-qubits", log_scale=False)
 _bind_slider_input("cfg-num-qubits", log_scale=False)
 _bind_slider_input("cfg-num-cores", log_scale=False)
 _bind_slider_input("cfg-communication-qubits", log_scale=False)
+_bind_slider_input("cfg-buffer-qubits", log_scale=False)
 for _m in _SWEEPABLE_METRICS:
     _bind_slider_input(f"noise-{_m.key}", log_scale=_m.log_scale)
 
@@ -4375,24 +4447,25 @@ def _logical_qubits_max(
     num_qubits: int, num_cores: int, comm_qubits: int,
     routing_algorithm: str | None,
     routing_axis_active: bool,
+    topology_type: str | None = None,
+    buffer_qubits: int = 1,
 ) -> int:
     """Compute the highest logical-qubit count the slider should allow.
 
-    HQA can place logical qubits in any of the ``num_qubits`` physical
-    slots — comm qubits are part of routing but not exclusive. TeleSABRE
-    reserves ``num_cores × comm_qubits`` physical slots as comm-only and
-    places logical qubits in the remaining data slots. When the user is
-    sweeping the routing axis (so the same configuration must be valid
-    under both algorithms), the stricter TeleSABRE bound wins.
+    Comm + buffer qubits are reserved capacity per the per-link
+    convention: each core dedicates ``G·(K+B)`` slots (G inter-core
+    neighbours, K comm + B buffer per group).  Logical qubits can only
+    live in data slots, so this bound applies to **both** HQA and
+    TeleSABRE — comm qubits aren't usable for computation under either.
     """
+    from gui.dse_engine import max_data_slots
     phys = max(2, int(num_qubits or 16))
     cores = max(1, int(num_cores or 1))
     k = max(0, int(comm_qubits or 0))
-    if routing_axis_active or (routing_algorithm or "hqa") == "telesabre":
-        # TeleSABRE: data slots = phys − comm-reserved slots
-        data_slots = phys - cores * k
-        return max(2, min(phys, data_slots))
-    return phys
+    b = max(1, int(buffer_qubits or 1))
+    topo = topology_type or "ring"
+    data_slots = max_data_slots(phys, cores, topo, k, b)
+    return max(2, min(phys, max(2, data_slots)))
 
 
 @app.callback(
@@ -4402,20 +4475,24 @@ def _logical_qubits_max(
     Input("cfg-num-qubits", "value"),
     Input("cfg-num-cores", "value"),
     Input("cfg-communication-qubits", "value"),
+    Input("cfg-buffer-qubits", "value"),
     Input("cfg-routing-algorithm", "value"),
+    Input("cfg-topology", "value"),
     Input({"type": "metric-dropdown", "index": ALL}, "value"),
     State("cfg-num-logical-qubits", "value"),
     prevent_initial_call=True,
 )
 def _clamp_logical_to_physical(
-    num_qubits, num_cores, comm_qubits, routing_algorithm,
-    sweep_axis_keys, current_logical,
+    num_qubits, num_cores, comm_qubits, buffer_qubits, routing_algorithm,
+    topology_type, sweep_axis_keys, current_logical,
 ):
     from gui.components import _minmax_marks
     routing_axis_active = "routing_algorithm" in (sweep_axis_keys or [])
     new_max = _logical_qubits_max(
         num_qubits, num_cores, comm_qubits,
         routing_algorithm, routing_axis_active,
+        topology_type=topology_type,
+        buffer_qubits=buffer_qubits or 1,
     )
     cur = int(current_logical) if current_logical else new_max
     clamped = max(2, min(cur, new_max))
@@ -4423,7 +4500,8 @@ def _clamp_logical_to_physical(
 
 
 # ---------------------------------------------------------------------------
-# Callback: dynamic max for cfg-communication-qubits = floor(sqrt(N/Cores))
+# Callback: dynamic max for cfg-communication-qubits — per-group K capped so
+# every core keeps ≥ 1 data slot after reserving G·(K+B) for comm + buffer.
 # ---------------------------------------------------------------------------
 
 
@@ -4433,18 +4511,52 @@ def _clamp_logical_to_physical(
     Output("cfg-communication-qubits", "value", allow_duplicate=True),
     Input("cfg-num-qubits", "value"),
     Input("cfg-num-cores", "value"),
+    Input("cfg-topology", "value"),
+    Input("cfg-buffer-qubits", "value"),
     State("cfg-communication-qubits", "value"),
     prevent_initial_call=True,
 )
-def _update_comm_qubits_bound(num_qubits, num_cores, current):
-    import math
+def _update_comm_qubits_bound(num_qubits, num_cores, topology_type,
+                              buffer_qubits, current):
     from gui.components import _minmax_marks
+    from gui.dse_engine import clamp_k_for_topology
     nq = int(num_qubits) if num_qubits else 16
     nc = max(1, int(num_cores) if num_cores else 1)
-    qpc = max(1, nq // nc)
-    new_max = max(1, math.isqrt(qpc))
+    topo = topology_type or "ring"
+    B = max(1, int(buffer_qubits or 1))
+    new_max = clamp_k_for_topology(nq, nc, topo, 10_000, b_per_group=B)
     cur = int(current) if current else 1
-    clamped = max(1, min(cur, new_max))
+    clamped = clamp_k_for_topology(nq, nc, topo, cur, b_per_group=B)
+    return new_max, _minmax_marks(1, new_max, log_scale=False), clamped
+
+
+# ---------------------------------------------------------------------------
+# Callback: dynamic max for cfg-buffer-qubits = min(K, ⌊(qpc−1)/G⌋ − K)
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("cfg-buffer-qubits", "max"),
+    Output("cfg-buffer-qubits", "marks"),
+    Output("cfg-buffer-qubits", "value", allow_duplicate=True),
+    Input("cfg-num-qubits", "value"),
+    Input("cfg-num-cores", "value"),
+    Input("cfg-topology", "value"),
+    Input("cfg-communication-qubits", "value"),
+    State("cfg-buffer-qubits", "value"),
+    prevent_initial_call=True,
+)
+def _update_buffer_qubits_bound(num_qubits, num_cores, topology_type,
+                                comm_qubits, current):
+    from gui.components import _minmax_marks
+    from gui.dse_engine import clamp_b_for_topology
+    nq = int(num_qubits) if num_qubits else 16
+    nc = max(1, int(num_cores) if num_cores else 1)
+    topo = topology_type or "ring"
+    K = max(1, int(comm_qubits or 1))
+    new_max = clamp_b_for_topology(nq, nc, topo, K, 10_000)
+    cur = int(current) if current else 1
+    clamped = clamp_b_for_topology(nq, nc, topo, K, cur)
     return new_max, _minmax_marks(1, new_max, log_scale=False), clamped
 
 
@@ -4753,7 +4865,7 @@ def _topology_axis_value_to_slider(
     prevent_initial_call=True,
 )
 def _topology_clamp_comm_qubits_slider(slider_vals, sweep_store, facet_idx):
-    import math
+    from gui.dse_engine import clamp_k_for_topology
     n = len(slider_vals)
     no_change = ([dash.no_update] * n, [dash.no_update] * n, [dash.no_update] * n)
     full = _get_sweep(sweep_store) if sweep_store else None
@@ -4778,8 +4890,8 @@ def _topology_clamp_comm_qubits_slider(slider_vals, sweep_store, facet_idx):
         num_cores = max(1, int(cold_cfg.get("num_cores", 1) or 1))
 
     num_qubits = max(1, int(cold_cfg.get("num_qubits", 16) or 16))
-    qpc = max(1, num_qubits // num_cores)
-    valid_cap = max(1, math.isqrt(qpc))
+    topology_type = cold_cfg.get("topology_type") or "ring"
+    valid_cap = clamp_k_for_topology(num_qubits, num_cores, topology_type, 10_000)
 
     comm_axis = axis_values[comm_d]
     new_max_idx = 0
@@ -4824,6 +4936,7 @@ def _topology_clamp_comm_qubits_slider(slider_vals, sweep_store, facet_idx):
     Input("cfg-num-qubits", "value"),
     Input("cfg-num-cores", "value"),
     Input("cfg-communication-qubits", "value"),
+    Input("cfg-buffer-qubits", "value"),
     Input("cfg-topology", "value"),
     Input("cfg-intracore-topology", "value"),
     Input("topology-overlay-metric", "value"),
@@ -4833,7 +4946,7 @@ def _topology_clamp_comm_qubits_slider(slider_vals, sweep_store, facet_idx):
     prevent_initial_call=False,
 )
 def _rebuild_topology_graph(
-    num_qubits, num_cores, comm_qubits, topology, intracore_topology,
+    num_qubits, num_cores, comm_qubits, buffer_qubits, topology, intracore_topology,
     overlay_metric, facet_idx, axis_slider_vals, sweep_store,
 ):
     def _build_default_elements() -> list:
@@ -4843,6 +4956,7 @@ def _rebuild_topology_graph(
             communication_qubits=comm_qubits or 1,
             topology=topology or "ring",
             intracore_topology=intracore_topology or "all_to_all",
+            buffer_qubits=buffer_qubits or 1,
         )
 
     def _clear_fidelity(els: list) -> list:
@@ -4900,6 +5014,7 @@ def _rebuild_topology_graph(
         intracore_topology=cell.get(
             "intracore_topology", intracore_topology or "all_to_all"
         ),
+        buffer_qubits=int(cell.get("buffer_qubits", buffer_qubits or 1)),
     )
 
     # Always clear first so a shrinking ``nlog`` (e.g. switching to a facet
@@ -5074,7 +5189,7 @@ def _topology_hover_label(node_data):
     core = node_data.get("core", "?")
     qtype = node_data.get("qtype", "?")
     label = node_data.get("label", "")
-    descriptor = "comm" if qtype == "comm" else "data"
+    descriptor = {"comm": "comm", "buffer": "buffer", "data": "data"}.get(qtype, "data")
     head = f"core c{core}  ·  {descriptor} qubit {label}"
 
     if qtype != "data" or "fid_overall" not in node_data:
