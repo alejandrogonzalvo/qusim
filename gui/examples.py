@@ -25,10 +25,12 @@ class ExampleSpec:
     label: str
     description: str = ""
 
-    # Numeric sweep axes: list of (metric_key, slider_low, slider_high).
+    # Sweep axes mix two row shapes:
+    #   numeric:     ``(metric_key, slider_low, slider_high)``
+    #   categorical: ``(metric_key, [value, value, …])``
     # ``slider_low``/``slider_high`` are slider positions: log10 exponents
     # for log-scale metrics, raw values for linear ones.
-    sweep_axes: list[tuple[str, float, float]] = field(default_factory=list)
+    sweep_axes: list[tuple] = field(default_factory=list)
 
     # Fixed circuit / topology config (cold path).
     cold_config: dict = field(default_factory=dict)
@@ -48,27 +50,57 @@ class ExampleSpec:
     # its default budgets (SWEEP_POINTS_*).
     max_cold: int | None = None
     max_hot: int | None = None
+    # Worker pool size for the parallel cold-path. None lets the scheduler
+    # decide based on available memory; pin to 1 for examples that
+    # individually need a lot of RAM (128-qubit QFT compiles).
+    max_workers: int | None = None
 
 
-# Five canned sessions, one per dimensionality the GUI exposes plus an extra
-# 2-D view. Names lead with the dimensionality + the headline graph property
-# so the user can pick the visualisation they want without reading
-# descriptions.
+# Quiet-noise baseline. The architectural examples crank gate / coherence
+# noise way down so that the *architectural* differences (cores, comm
+# slots, routing strategy) drive the fidelity variation rather than noise
+# floor swamping everything at large qubit counts. Examples that *do*
+# sweep noise (the 4-D one) override these per-axis.
+_LOW_NOISE: dict = {
+    "single_gate_error": 1e-6,
+    "two_gate_error": 1e-5,
+    "epr_error_per_hop": 5e-3,
+    "measurement_error": 1e-4,
+    "t1": 1e8,
+    "t2": 5e7,
+    "single_gate_time": 20.0,
+    "two_gate_time": 50.0,
+    "epr_time_per_hop": 150.0,
+}
+
+
+# Five canned sessions covering 1-D through 4-D. Each one is built around
+# *architectural* sweep axes (qubits, cores, comm slots, routing strategy,
+# circuit type) — the dimensions where the design space actually has
+# tension. The 4-D example folds in a single noise channel so the loaded
+# session shows what real DSE feels like.
+#
+# Names lead with the dimensionality + the headline graph property so the
+# user can pick a visualisation without reading the descriptions.
 EXAMPLES: list[ExampleSpec] = [
     ExampleSpec(
-        id="1d_cores_sweet_spot",
-        label="1D — Cores: sweet spot",
+        id="1d_cores_sweet_spot_qft64",
+        label="1D — Cores sweet spot (QFT-64, line)",
         description=(
-            "Adding cores reduces intra-core swap depth on a constrained "
-            "linear chip but pays inter-core EPR cost. Fidelity peaks at an "
-            "intermediate core count instead of growing monotonically."
+            "Sweep over partition count for a 64-qubit QFT on a 64-physical "
+            "ring of linear-chain cores. cores=1 is the trivial winner "
+            "(fully on-chip routing); cores=2 collapses because the 2-core "
+            "ring is degenerate (one inter-core link carries all traffic); "
+            "cores=4–6 recover much of the lost fidelity by spreading the "
+            "EPR pressure. The d²F/dx² view (mode picker on the right) "
+            "highlights the sharp inflection between cores=1 and cores=2."
         ),
-        sweep_axes=[("num_cores", 1, 4)],
+        sweep_axes=[("num_cores", 1, 6)],
         cold_config={
             "circuit_type": "qft",
-            "num_qubits": 24,
-            "num_logical_qubits": 8,
-            "num_cores": 2,
+            "num_qubits": 64,
+            "num_logical_qubits": 64,
+            "num_cores": 4,
             "communication_qubits": 1,
             "buffer_qubits": 1,
             "topology_type": "ring",
@@ -77,74 +109,32 @@ EXAMPLES: list[ExampleSpec] = [
             "routing_algorithm": "hqa_sabre",
             "seed": 42,
         },
-        fixed_noise={
-            "single_gate_error": 1e-4,
-            "two_gate_error": 5e-4,
-            "epr_error_per_hop": 5e-3,
-            "measurement_error": 1e-3,
-            "t1": 5e5,
-            "t2": 2e5,
-            "two_gate_time": 80.0,
-            "epr_time_per_hop": 150.0,
-        },
+        fixed_noise=_LOW_NOISE,
         view_type="line",
         output_metric="overall_fidelity",
-        max_cold=4,
+        max_cold=6,
+        max_workers=1,
     ),
     ExampleSpec(
-        id="2d_two_gate_error_vs_t1",
-        label="2D — 2Q error × T1 (speed-accuracy)",
+        id="2d_cores_qubits",
+        label="2D — Cores × Qubits (architecture heatmap)",
         description=(
-            "Heatmap of overall fidelity over the dominant noise pair on a "
-            "single-core 6-qubit GHZ. Two regimes meet on a diagonal iso-"
-            "fidelity ridge: the lower-left (gate-error-limited) and upper-"
-            "right (T1-limited) corners frame the trade-off."
+            "Joint sweep over partition count and algorithm size on QFT "
+            "with linear intra-core chips. The heatmap reveals where "
+            "splitting starts to pay off and how the cores=2 trough widens "
+            "as the algorithm grows. cores=1 wins outright at small "
+            "scales; many small chips beat a single large chip past ~64 "
+            "qubits."
         ),
         sweep_axes=[
-            ("two_gate_error", -5, -2),
-            ("t1", 3.5, 6.5),
-        ],
-        cold_config={
-            "circuit_type": "ghz",
-            "num_qubits": 8,
-            "num_logical_qubits": 6,
-            "num_cores": 1,
-            "communication_qubits": 1,
-            "buffer_qubits": 1,
-            "topology_type": "ring",
-            "intracore_topology": "all_to_all",
-            "placement_policy": "spectral",
-            "routing_algorithm": "hqa_sabre",
-            "seed": 42,
-        },
-        fixed_noise={
-            "single_gate_error": 1e-4,
-            "measurement_error": 5e-4,
-            "t2": 5e4,
-            "two_gate_time": 80.0,
-            "single_gate_time": 20.0,
-        },
-        view_type="heatmap",
-        output_metric="overall_fidelity",
-    ),
-    ExampleSpec(
-        id="2d_two_gate_error_vs_cores",
-        label="2D — 2Q error × Cores (cores affordability)",
-        description=(
-            "Heatmap pairs the dominant noise channel with the architecture's "
-            "cold-path core count. Low gate error tolerates more cores (extra "
-            "EPR overhead doesn't dominate); high gate error pushes the iso-"
-            "fidelity ridge toward fewer, larger cores."
-        ),
-        sweep_axes=[
-            ("two_gate_error", -5, -2),
-            ("num_cores", 1, 4),
+            ("num_cores", 1, 6),
+            ("qubits", 16, 128),
         ],
         cold_config={
             "circuit_type": "qft",
-            "num_qubits": 24,
-            "num_logical_qubits": 12,
-            "num_cores": 2,
+            "num_qubits": 64,
+            "num_logical_qubits": 64,
+            "num_cores": 4,
             "communication_qubits": 1,
             "buffer_qubits": 1,
             "topology_type": "ring",
@@ -153,37 +143,101 @@ EXAMPLES: list[ExampleSpec] = [
             "routing_algorithm": "hqa_sabre",
             "seed": 42,
         },
-        fixed_noise={
-            "single_gate_error": 1e-4,
-            "epr_error_per_hop": 5e-3,
-            "measurement_error": 1e-3,
-            "t1": 5e5,
-            "t2": 2e5,
-            "epr_time_per_hop": 150.0,
-            "two_gate_time": 80.0,
-        },
+        fixed_noise=_LOW_NOISE,
         view_type="heatmap",
         output_metric="overall_fidelity",
-        max_cold=4,
+        max_cold=36,
+        max_workers=1,
     ),
     ExampleSpec(
-        id="3d_two_gate_error_t1_cores",
-        label="3D — 2Q error × T1 × Cores (isosurface)",
+        id="2d_facet_routing_cores_qubits",
+        label="2D faceted — HQA+Sabre vs TeleSABRE × Cores × Qubits",
         description=(
-            "Fidelity volume over the dominant noise pair plus the core "
-            "count. Frozen-heatmap views slice along the cores axis to show "
-            "how the (error, T1) iso-fidelity ridge shifts with topology."
+            "Side-by-side cores × qubits heatmaps for the two routing "
+            "algorithms. TeleSABRE's joint inter/intra-core scheduler vs "
+            "HQA + Sabre's two-stage pipeline produce visibly different "
+            "regions of best fidelity, especially at higher core counts."
         ),
         sweep_axes=[
-            ("two_gate_error", -5, -2),
-            ("t1", 4, 6.5),
-            ("num_cores", 1, 4),
+            ("routing_algorithm", ["hqa_sabre", "telesabre"]),
+            ("num_cores", 2, 6),
+            ("qubits", 32, 128),
         ],
         cold_config={
-            "circuit_type": "ghz",
-            "num_qubits": 24,
-            "num_logical_qubits": 8,
-            "num_cores": 2,
+            "circuit_type": "qft",
+            "num_qubits": 64,
+            "num_logical_qubits": 64,
+            "num_cores": 4,
+            "communication_qubits": 1,
+            "buffer_qubits": 1,
+            "topology_type": "ring",
+            "intracore_topology": "linear",
+            "placement_policy": "spectral",
+            "routing_algorithm": "hqa_sabre",
+            "seed": 42,
+        },
+        fixed_noise=_LOW_NOISE,
+        view_type="heatmap",
+        output_metric="overall_fidelity",
+        max_cold=20,
+        max_workers=1,
+    ),
+    ExampleSpec(
+        id="3d_comm_cores_qubits",
+        label="3D — Comm × Cores × Qubits (DSE cube)",
+        description=(
+            "Three architectural axes form the full DSE cube: how many "
+            "comm slots per group, how many cores, and at what scale. "
+            "Frozen-heatmap slices along the qubits axis show where extra "
+            "comm slots actually pay off; in the rest of the volume they "
+            "only steal data slots from the algorithm."
+        ),
+        sweep_axes=[
+            ("communication_qubits", 1, 3),
+            ("num_cores", 2, 6),
+            ("qubits", 32, 128),
+        ],
+        cold_config={
+            "circuit_type": "qft",
+            "num_qubits": 64,
+            "num_logical_qubits": 64,
+            "num_cores": 4,
+            "communication_qubits": 1,
+            "buffer_qubits": 1,
+            "topology_type": "ring",
+            "intracore_topology": "linear",
+            "placement_policy": "spectral",
+            "routing_algorithm": "hqa_sabre",
+            "seed": 42,
+        },
+        fixed_noise=_LOW_NOISE,
+        view_type="frozen_heatmap",
+        frozen_axis=2,
+        output_metric="overall_fidelity",
+        max_cold=48,
+        max_workers=1,
+    ),
+    ExampleSpec(
+        id="4d_circuit_cores_qubits_2qerr",
+        label="4D — Circuit × Cores × Qubits × 2Q error (parallel)",
+        description=(
+            "Four-axis scan that mixes architecture (cores, qubits), "
+            "algorithm (QFT vs GHZ vs random), and the dominant noise "
+            "channel (2Q gate error). Parallel coordinates expose which "
+            "circuits soak up extra cores cleanly (GHZ) and which collapse "
+            "early as 2Q error rises (QFT)."
+        ),
+        sweep_axes=[
+            ("circuit_type", ["qft", "ghz", "random"]),
+            ("num_cores", 2, 6),
+            ("qubits", 32, 128),
+            ("two_gate_error", -5, -3.3),
+        ],
+        cold_config={
+            "circuit_type": "qft",
+            "num_qubits": 64,
+            "num_logical_qubits": 64,
+            "num_cores": 4,
             "communication_qubits": 1,
             "buffer_qubits": 1,
             "topology_type": "ring",
@@ -193,52 +247,14 @@ EXAMPLES: list[ExampleSpec] = [
             "seed": 42,
         },
         fixed_noise={
-            "single_gate_error": 1e-4,
-            "epr_error_per_hop": 5e-3,
-            "measurement_error": 5e-4,
-            "t2": 1e5,
-            "two_gate_time": 80.0,
-            "epr_time_per_hop": 150.0,
-        },
-        view_type="isosurface",
-        frozen_axis=2,
-        output_metric="overall_fidelity",
-        max_cold=4,
-    ),
-    ExampleSpec(
-        id="4d_noise_parallel",
-        label="4D — 1Q × 2Q × T1 × Meas (parallel)",
-        description=(
-            "Four-axis hot-path scan over the dominant noise channels on a "
-            "small two-core GHZ. Parallel coordinates expose how each noise "
-            "source trades against the others against overall fidelity."
-        ),
-        sweep_axes=[
-            ("single_gate_error", -5, -2),
-            ("two_gate_error", -5, -2),
-            ("t1", 3.5, 6.5),
-            ("measurement_error", -5, -2),
-        ],
-        cold_config={
-            "circuit_type": "ghz",
-            "num_qubits": 16,
-            "num_logical_qubits": 8,
-            "num_cores": 2,
-            "communication_qubits": 1,
-            "buffer_qubits": 1,
-            "topology_type": "ring",
-            "intracore_topology": "all_to_all",
-            "placement_policy": "spectral",
-            "routing_algorithm": "hqa_sabre",
-            "seed": 42,
-        },
-        fixed_noise={
-            "epr_error_per_hop": 5e-3,
-            "t2": 5e4,
-            "two_gate_time": 80.0,
+            **_LOW_NOISE,
+            # 2Q error is on the sweep axis — drop the baseline override
+            # so the engine reads it from each cell.
         },
         view_type="parallel",
         output_metric="overall_fidelity",
+        max_cold=20,
+        max_workers=1,
     ),
 ]
 

@@ -22,7 +22,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import itertools
+
 from gui.constants import (  # noqa: E402
+    CAT_METRIC_BY_KEY,
     METRIC_BY_KEY,
     NOISE_DEFAULTS,
     SWEEPABLE_METRICS,
@@ -36,6 +39,11 @@ from gui.session import (  # noqa: E402
     collect_session,
     dump,
 )
+
+
+def _is_categorical_axis(ax: tuple) -> bool:
+    """``True`` for ``(key, [values])`` rows, ``False`` for ``(key, lo, hi)``."""
+    return len(ax) == 2 and isinstance(ax[1], list)
 
 
 def _value_to_slider(val: float, log_scale: bool) -> float:
@@ -104,8 +112,14 @@ def _build_controls(spec: ExampleSpec) -> dict:
     n_axes = len(spec.sweep_axes)
 
     dropdown_vals = [ax[0] for ax in spec.sweep_axes]
-    slider_vals = [[ax[1], ax[2]] for ax in spec.sweep_axes]
-    checklist_vals = [None] * n_axes
+    slider_vals = [
+        None if _is_categorical_axis(ax) else [ax[1], ax[2]]
+        for ax in spec.sweep_axes
+    ]
+    checklist_vals = [
+        list(ax[1]) if _is_categorical_axis(ax) else None
+        for ax in spec.sweep_axes
+    ]
 
     return build_controls_dict(
         num_metrics=n_axes,
@@ -156,14 +170,16 @@ def _engine_cold_config(spec: ExampleSpec) -> dict:
     return cc
 
 
-def _run_sweep(spec: ExampleSpec, engine: DSEEngine) -> dict:
-    cold_cfg = _engine_cold_config(spec)
-    noise = _build_engine_noise(spec)
-
-    sweep_axes = [(ax[0], float(ax[1]), float(ax[2])) for ax in spec.sweep_axes]
-    keys = [ax[0] for ax in sweep_axes]
+def _run_one_sweep(
+    engine: DSEEngine,
+    cold_cfg: dict,
+    noise: dict,
+    numeric_axes: list[tuple],
+    spec: ExampleSpec,
+) -> dict:
+    """Run a single (sub-)sweep over the numeric axes and return its sweep_data."""
+    keys = [ax[0] for ax in numeric_axes]
     has_cold = engine._has_cold(*keys)
-
     cached = (
         None if has_cold
         else engine.run_cold(**cold_cfg, noise=noise)
@@ -174,29 +190,78 @@ def _run_sweep(spec: ExampleSpec, engine: DSEEngine) -> dict:
     # which doesn't accept them.
     result = engine.sweep_nd(
         cached=cached,
-        sweep_axes=sweep_axes,
+        sweep_axes=numeric_axes,
         fixed_noise=noise,
         cold_config=cold_cfg,
         progress_callback=None,
         parallel=has_cold,
         keep_per_qubit_grids=False,
-        max_workers=1,
+        max_workers=spec.max_workers,
         max_cold=spec.max_cold,
         max_hot=spec.max_hot,
     )
-    sweep_data = result.to_sweep_data()
-    if "grid" in sweep_data:
-        sweep_data["grid"] = _grid_to_jsonable(sweep_data["grid"], result.ndim)
-    sweep_data.pop("per_qubit_data", None)
-    return sweep_data
+    sd = result.to_sweep_data()
+    if "grid" in sd:
+        sd["grid"] = _grid_to_jsonable(sd["grid"], result.ndim)
+    sd.pop("per_qubit_data", None)
+    return sd
 
 
-def _interesting(sweep_data: dict, output: str = "overall_fidelity") -> tuple[float, float]:
-    """Compute (min, max) of the output field across the sweep — sanity
-    check that the chosen ranges actually traverse interesting regions."""
-    grid = sweep_data["grid"]
+def _run_sweep(spec: ExampleSpec, engine: DSEEngine) -> dict:
+    """Run the spec's sweep, fanning out over categorical axes if any."""
+    cold_cfg = _engine_cold_config(spec)
+    noise = _build_engine_noise(spec)
+
+    numeric: list[tuple] = []
+    categorical: list[tuple] = []
+    for ax in spec.sweep_axes:
+        if _is_categorical_axis(ax):
+            categorical.append((ax[0], list(ax[1])))
+        else:
+            numeric.append((ax[0], float(ax[1]), float(ax[2])))
+
+    if not categorical:
+        return _run_one_sweep(engine, cold_cfg, noise, numeric, spec)
+
+    # Faceted sweep: one cold_config per cartesian combo of categorical
+    # values, mirroring how the GUI's run_sweep callback assembles facets.
+    cat_keys = [k for k, _ in categorical]
+    cat_vals = [vals for _, vals in categorical]
+    facet_results: list[dict] = []
+    for combo in itertools.product(*cat_vals):
+        fc = dict(cold_cfg)
+        label_dict: dict[str, str] = {}
+        for cat_key, cat_value in zip(cat_keys, combo):
+            cat_def = CAT_METRIC_BY_KEY[cat_key]
+            fc[cat_def.cold_config_key] = cat_value
+            label_dict[cat_key] = next(
+                (o["label"] for o in cat_def.options if o["value"] == cat_value),
+                cat_value,
+            )
+        sd = _run_one_sweep(engine, fc, noise, numeric, spec)
+        facet_results.append({"label": label_dict, **sd})
+
+    if len(facet_results) == 1:
+        return facet_results[0]
+    return {
+        "metric_keys": facet_results[0].get("metric_keys", []),
+        "facets": facet_results,
+        "facet_keys": cat_keys,
+    }
+
+
+def _collect_outputs(sweep_data: dict, output: str) -> list[float]:
+    """Walk a sweep_data (possibly faceted) and collect every cell's output."""
+    if "facets" in sweep_data:
+        out: list[float] = []
+        for fc in sweep_data["facets"]:
+            out.extend(_collect_outputs(fc, output))
+        return out
+    grid = sweep_data.get("grid")
+    if grid is None:
+        return []
     if isinstance(grid, list):
-        flat = []
+        flat: list[float] = []
 
         def walk(g):
             if isinstance(g, list):
@@ -208,13 +273,19 @@ def _interesting(sweep_data: dict, output: str = "overall_fidelity") -> tuple[fl
                     flat.append(float(v))
 
         walk(grid)
-        if not flat:
-            return (0.0, 0.0)
-        return (min(flat), max(flat))
+        return flat
     if isinstance(grid, np.ndarray) and grid.dtype.names:
-        col = grid[output].ravel()
-        return (float(col.min()), float(col.max()))
-    return (0.0, 0.0)
+        return list(grid[output].ravel().astype(float))
+    return []
+
+
+def _interesting(sweep_data: dict, output: str = "overall_fidelity") -> tuple[float, float]:
+    """Compute (min, max) of the output field across the sweep — sanity
+    check that the chosen ranges actually traverse interesting regions."""
+    flat = _collect_outputs(sweep_data, output)
+    if not flat:
+        return (0.0, 0.0)
+    return (min(flat), max(flat))
 
 
 def _generate_one(spec: ExampleSpec, engine: DSEEngine, out_dir: Path) -> None:
