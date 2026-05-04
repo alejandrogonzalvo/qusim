@@ -2496,49 +2496,58 @@ def make_topology_view_panel() -> html.Div:
                                             "padding": "12px 14px 26px",
                                         },
                                         children=[
+                                            html.Span(
+                                                id={"type": "topology-axis-label", "index": i},
+                                                style={
+                                                    "fontSize": "11px",
+                                                    "fontWeight": "600",
+                                                    "color": COLORS["text_muted"],
+                                                    "textTransform": "uppercase",
+                                                    "letterSpacing": "0.05em",
+                                                    "display": "block",
+                                                    "marginBottom": "10px",
+                                                },
+                                                children="",
+                                            ),
                                             html.Div(
                                                 style={
                                                     "display": "flex",
-                                                    "alignItems": "baseline",
-                                                    "justifyContent": "space-between",
-                                                    "marginBottom": "10px",
+                                                    "alignItems": "center",
+                                                    "gap": "10px",
                                                 },
                                                 children=[
-                                                    html.Span(
-                                                        id={"type": "topology-axis-label", "index": i},
-                                                        style={
-                                                            "fontSize": "11px",
-                                                            "fontWeight": "600",
-                                                            "color": COLORS["text_muted"],
-                                                            "textTransform": "uppercase",
-                                                            "letterSpacing": "0.05em",
-                                                        },
-                                                        children="",
+                                                    html.Div(
+                                                        dcc.Slider(
+                                                            id={"type": "topology-axis-slider", "index": i},
+                                                            min=0, max=1, step=1, value=0,
+                                                            marks={},
+                                                            # The slider's value
+                                                            # is the 0-based cell
+                                                            # index, not a user-
+                                                            # readable magnitude,
+                                                            # so we hide Dash's
+                                                            # default input chip
+                                                            # and the rc-slider
+                                                            # tooltip — the
+                                                            # axis-magnitude chip
+                                                            # to the right is
+                                                            # the canonical
+                                                            # readout.
+                                                            updatemode="drag",
+                                                            included=False,
+                                                            allow_direct_input=False,
+                                                            className="dse-slider",
+                                                        ),
+                                                        style={"flex": "1", "minWidth": 0},
                                                     ),
-                                                    html.Span(
+                                                    dcc.Input(
                                                         id={"type": "topology-axis-value", "index": i},
-                                                        style={
-                                                            "fontSize": "11px",
-                                                            "color": COLORS["accent"],
-                                                            "fontFamily": "'JetBrains Mono', 'SF Mono', monospace",
-                                                        },
+                                                        type="text",
+                                                        debounce=True,
+                                                        spellCheck=False,
+                                                        className="slider-value-chip",
                                                     ),
                                                 ],
-                                            ),
-                                            dcc.Slider(
-                                                id={"type": "topology-axis-slider", "index": i},
-                                                min=0, max=1, step=1, value=0,
-                                                marks={},
-                                                # No tooltip: the slider's
-                                                # value is the 0-based cell
-                                                # index, which is meaningless
-                                                # to the user.  The actual
-                                                # axis magnitude is shown by
-                                                # ``topology-axis-value`` on
-                                                # the row above.
-                                                updatemode="drag",
-                                                included=False,
-                                                className="dse-slider",
                                             ),
                                         ],
                                     ),

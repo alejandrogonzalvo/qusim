@@ -2308,20 +2308,141 @@ _METRIC_HINT_VISIBLE_STYLE = {
     "display": "block",
 }
 
+_METRIC_WARN_VISIBLE_STYLE = {
+    "fontSize": "11px",
+    "color": FEEDBACK_COLORS["warning"]["text"],
+    "background": FEEDBACK_COLORS["warning"]["bg"],
+    "border": f"1px solid {FEEDBACK_COLORS['warning']['border']}",
+    "borderLeft": f"3px solid {FEEDBACK_COLORS['warning']['border']}",
+    "borderRadius": "4px",
+    "padding": "6px 8px",
+    "marginBottom": "10px",
+    "lineHeight": "1.4",
+    "display": "block",
+}
+
+
+def _comm_qubits_clamp_warning(num_qubits: int, cores_values, comm_max=None):
+    """Build a dynamic warning that lists per-cores comm-qubit caps.
+
+    Returns ``None`` when there is nothing to warn about — either because we
+    don't have a concrete cores range to evaluate, or because the swept
+    ``communication_qubits`` range never exceeds the architectural cap for
+    any cores value (so no cell would actually be clamped).
+    """
+    import math
+    if not cores_values:
+        return None
+    nq = max(1, int(num_qubits or 16))
+    pairs = []
+    for c in cores_values:
+        ci = max(1, int(c))
+        qpc = max(1, nq // ci)
+        cap = max(1, math.isqrt(qpc))
+        pairs.append((ci, cap))
+    if comm_max is not None:
+        try:
+            cm = int(round(float(comm_max)))
+        except (TypeError, ValueError):
+            cm = None
+        if cm is not None and all(cm <= cap for _, cap in pairs):
+            return None
+    pairs.sort()
+    # Group consecutive cores values that share the same cap.
+    groups: list[list[tuple[int, int]]] = []
+    cur: list[tuple[int, int]] = []
+    for ci, cap in pairs:
+        if cur and cur[-1][1] == cap and ci == cur[-1][0] + 1:
+            cur.append((ci, cap))
+        else:
+            if cur:
+                groups.append(cur)
+            cur = [(ci, cap)]
+    if cur:
+        groups.append(cur)
+    bullets = []
+    for grp in groups:
+        cap = grp[0][1]
+        cores_lo, cores_hi = grp[0][0], grp[-1][0]
+        if cores_lo == cores_hi:
+            label = f"{cores_lo} core{'s' if cores_lo != 1 else ''}"
+        else:
+            label = f"{cores_lo}–{cores_hi} cores"
+        bullets.append(html.Li(f"{label} → comm qubits ≤ {cap}"))
+    return html.Div([
+        html.Div(
+            "Not every (cores, comm qubits) pair is realizable. "
+            "Each cell caps comm qubits at ⌊√(N/cores)⌋ "
+            "(num qubits per core must hold both data and EPR endpoints).",
+            style={"fontWeight": "600", "marginBottom": "4px"},
+        ),
+        html.Div(f"With N = {nq} physical qubits, the per-cores cap is:"),
+        html.Ul(bullets, style={"margin": "4px 0 4px 0", "paddingLeft": "18px"}),
+        html.Div(
+            "Cells exceeding the cap are silently clamped, producing "
+            "duplicate sweep points.",
+            style={"color": COLORS["text_muted"], "fontStyle": "italic"},
+        ),
+    ])
+
+
+def _cores_values_from_axes(metric_key_per_axis, slider_val_per_axis,
+                            cfg_num_cores) -> list[int]:
+    """Return the list of cores values that the current sweep visits.
+
+    If ``num_cores`` is itself an axis we materialise its swept integer set
+    from the range slider; otherwise we fall back to the right-panel cold
+    value so the warning still shows the cap for the user's actual config.
+    """
+    if "num_cores" in metric_key_per_axis:
+        i = metric_key_per_axis.index("num_cores")
+        sv = slider_val_per_axis[i] if i < len(slider_val_per_axis) else None
+        m = METRIC_BY_KEY.get("num_cores")
+        if isinstance(sv, (list, tuple)) and len(sv) >= 2 and m is not None:
+            lo = max(int(m.slider_min), int(round(float(sv[0]))))
+            hi = min(int(m.slider_max), int(round(float(sv[1]))))
+            if hi < lo:
+                lo, hi = hi, lo
+            return list(range(max(1, lo), max(1, hi) + 1))
+    fallback = max(1, int(cfg_num_cores) if cfg_num_cores else 1)
+    return [fallback]
+
 
 for _idx in range(MAX_METRICS):
 
     @app.callback(
         Output(f"metric-help-{_idx}", "children"),
         Output(f"metric-help-{_idx}", "style"),
-        Input(f"metric-dropdown-{_idx}", "value"),
+        Input("cfg-num-qubits", "value"),
+        Input("cfg-num-cores", "value"),
+        *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
+        *[Input(f"metric-slider-{i}", "value") for i in range(MAX_METRICS)],
         prevent_initial_call=False,
     )
-    def _update_metric_hint(metric_key, _i=_idx):
-        hint = _METRIC_INLINE_HINT.get(metric_key)
-        if not hint:
-            return "", {"display": "none"}
-        return hint, _METRIC_HINT_VISIBLE_STYLE
+    def _update_metric_hint(cfg_num_qubits, cfg_num_cores, *args, _i=_idx):
+        all_dropdowns = list(args[:MAX_METRICS])
+        all_sliders = list(args[MAX_METRICS:])
+        metric_key = all_dropdowns[_i] if _i < len(all_dropdowns) else None
+        # Static hints win — keep the existing copy for keys like ``qubits``.
+        static_hint = _METRIC_INLINE_HINT.get(metric_key)
+        if static_hint:
+            return static_hint, _METRIC_HINT_VISIBLE_STYLE
+        if metric_key == "communication_qubits":
+            cores_values = _cores_values_from_axes(
+                all_dropdowns, all_sliders, cfg_num_cores,
+            )
+            comm_slider = all_sliders[_i] if _i < len(all_sliders) else None
+            comm_max = (
+                comm_slider[1]
+                if isinstance(comm_slider, (list, tuple)) and len(comm_slider) >= 2
+                else None
+            )
+            warning = _comm_qubits_clamp_warning(
+                cfg_num_qubits, cores_values, comm_max=comm_max,
+            )
+            if warning is not None:
+                return warning, _METRIC_WARN_VISIBLE_STYLE
+        return "", {"display": "none"}
 
 
 def _arch_clamped_max(
@@ -4472,7 +4593,15 @@ def _init_topology_sliders(sweep_store, num_metrics):
             row_styles.append({})
             sz = max(1, int(shape[d]))
             maxes.append(max(0, sz - 1))
-            values.append(0)
+            # Default each slider to the LAST index — the richest end of
+            # the swept range (largest cores, longest T1, etc.). This is
+            # the most informative starting frame for the topology view;
+            # the cold-config snapshot is typically the lowest value (1
+            # core, 1 comm qubit, …) which renders an uninformative
+            # single-node graph.  The comm-qubits clamp callback then
+            # walks the comm slider back to its valid max for the
+            # current cores selection.
+            values.append(max(0, sz - 1))
             # End-marks formatted as actual axis magnitudes (e.g. "1 µs", "10 ms").
             if sz > 1 and d < len(axis_values) and len(axis_values[d]) >= 2:
                 lo = _human_axis_value(axis_keys[d], axis_values[d][0])
@@ -4519,7 +4648,7 @@ def _init_topology_sliders(sweep_store, num_metrics):
 
 
 @app.callback(
-    *[Output({"type": "topology-axis-value", "index": i}, "children") for i in range(MAX_METRICS)],
+    *[Output({"type": "topology-axis-value", "index": i}, "value") for i in range(MAX_METRICS)],
     *[Input({"type": "topology-axis-slider", "index": i}, "value") for i in range(MAX_METRICS)],
     Input("topology-facet-selector", "value"),
     State("sweep-result-store", "data"),
@@ -4545,6 +4674,144 @@ def _topology_axis_value_labels(*args):
         else:
             out.append("")
     return out
+
+
+# ---------------------------------------------------------------------------
+# Callback: typed value in a topology-axis chip → snap the slider to the
+# closest axis cell.  Lets the user jump to a specific magnitude (e.g. type
+# "8" to land on cores=8) instead of having to drag through every step.
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output({"type": "topology-axis-slider", "index": MATCH}, "value", allow_duplicate=True),
+    Input({"type": "topology-axis-value", "index": MATCH}, "value"),
+    State({"type": "topology-axis-slider", "index": MATCH}, "value"),
+    State({"type": "topology-axis-value", "index": MATCH}, "id"),
+    State("topology-facet-selector", "value"),
+    State("sweep-result-store", "data"),
+    prevent_initial_call=True,
+)
+def _topology_axis_value_to_slider(
+    typed, current_slider_val, axis_id, facet_idx, sweep_store,
+):
+    """Map a user-typed magnitude back to the closest swept-cell index.
+
+    Guards against the programmatic chip writes the sibling label callback
+    issues on every slider move: when the typed string is exactly what the
+    chip *should* read for the current cell, we leave the slider alone.
+    Without this, formatted log-axis chip values like "100 µs" round-trip
+    through ``float()`` as ``100.0`` and would teleport the slider to cell 0.
+    """
+    if typed is None or typed == "":
+        return dash.no_update
+    full = _get_sweep(sweep_store) if sweep_store else None
+    pq = _facet_per_qubit_data(full, facet_idx)
+    if not pq or not pq.get("axis_keys"):
+        return dash.no_update
+    d = int(axis_id["index"])
+    axis_keys = pq["axis_keys"]
+    axis_values = pq.get("axis_values", [])
+    if d >= len(axis_values) or not axis_values[d]:
+        return dash.no_update
+    current_idx = int(current_slider_val or 0)
+    current_idx = max(0, min(current_idx, len(axis_values[d]) - 1))
+    if d < len(axis_keys):
+        expected = _human_axis_value(axis_keys[d], axis_values[d][current_idx])
+        if str(typed).strip() == str(expected).strip():
+            return dash.no_update
+    # Strip trailing unit (e.g. "10 ns", "1.5 µs", "200 MHz") — the value
+    # chip formats with units, so the user might re-paste one back in.
+    raw = str(typed).strip().split()[0] if str(typed).strip() else ""
+    if not raw:
+        return dash.no_update
+    try:
+        target = float(raw)
+    except ValueError:
+        return dash.no_update
+    diffs = [abs(float(v) - target) for v in axis_values[d]]
+    closest = min(range(len(diffs)), key=diffs.__getitem__)
+    if closest == current_idx:
+        return dash.no_update
+    return closest
+
+
+# ---------------------------------------------------------------------------
+# Callback: Topology view — re-clamp the comm-qubits slider when the cores
+# slider moves so the user can't pick a (cores, comm) pair that the engine
+# would silently squash to ``floor(sqrt(num_qubits/cores))`` per cell.
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output({"type": "topology-axis-slider", "index": ALL}, "max", allow_duplicate=True),
+    Output({"type": "topology-axis-slider", "index": ALL}, "marks", allow_duplicate=True),
+    Output({"type": "topology-axis-slider", "index": ALL}, "value", allow_duplicate=True),
+    Input({"type": "topology-axis-slider", "index": ALL}, "value"),
+    State("sweep-result-store", "data"),
+    State("topology-facet-selector", "value"),
+    prevent_initial_call=True,
+)
+def _topology_clamp_comm_qubits_slider(slider_vals, sweep_store, facet_idx):
+    import math
+    n = len(slider_vals)
+    no_change = ([dash.no_update] * n, [dash.no_update] * n, [dash.no_update] * n)
+    full = _get_sweep(sweep_store) if sweep_store else None
+    pq = _facet_per_qubit_data(full, facet_idx)
+    if not pq or not pq.get("axis_keys"):
+        return no_change
+    axis_keys = pq["axis_keys"]
+    axis_values = pq.get("axis_values", [])
+    cold_cfg = pq.get("cold_config") or {}
+
+    cores_d = next((i for i, k in enumerate(axis_keys) if k == "num_cores"), None)
+    comm_d = next((i for i, k in enumerate(axis_keys) if k == "communication_qubits"), None)
+    if comm_d is None or comm_d >= len(axis_values) or not axis_values[comm_d]:
+        return no_change
+
+    if (cores_d is not None and cores_d < len(slider_vals)
+            and cores_d < len(axis_values) and axis_values[cores_d]):
+        idx = int(slider_vals[cores_d] or 0)
+        idx = max(0, min(idx, len(axis_values[cores_d]) - 1))
+        num_cores = max(1, int(axis_values[cores_d][idx]))
+    else:
+        num_cores = max(1, int(cold_cfg.get("num_cores", 1) or 1))
+
+    num_qubits = max(1, int(cold_cfg.get("num_qubits", 16) or 16))
+    qpc = max(1, num_qubits // num_cores)
+    valid_cap = max(1, math.isqrt(qpc))
+
+    comm_axis = axis_values[comm_d]
+    new_max_idx = 0
+    for i, v in enumerate(comm_axis):
+        if int(v) <= valid_cap:
+            new_max_idx = i
+        else:
+            break
+
+    cur_idx = int(slider_vals[comm_d] or 0) if comm_d < len(slider_vals) else 0
+    new_idx = max(0, min(cur_idx, new_max_idx))
+
+    mark_style = {"fontSize": "10px", "color": COLORS["text_muted"]}
+    if new_max_idx >= 1:
+        lo = _human_axis_value("communication_qubits", comm_axis[0])
+        hi = _human_axis_value("communication_qubits", comm_axis[new_max_idx])
+        new_marks = {
+            0: {"label": lo, "style": mark_style},
+            new_max_idx: {"label": hi, "style": mark_style},
+        }
+    else:
+        only = _human_axis_value("communication_qubits", comm_axis[0])
+        new_marks = {0: {"label": only, "style": mark_style}}
+
+    maxes = [dash.no_update] * n
+    marks_list = [dash.no_update] * n
+    values_list = [dash.no_update] * n
+    if comm_d < n:
+        maxes[comm_d] = new_max_idx
+        marks_list[comm_d] = new_marks
+        values_list[comm_d] = new_idx
+    return maxes, marks_list, values_list
 
 
 # ---------------------------------------------------------------------------
