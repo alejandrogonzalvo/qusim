@@ -338,6 +338,14 @@ class DSEEngine:
                 r["total_swaps"] = cached.total_swaps
                 r["total_teleportations"] = cached.total_teleportations
                 r["total_network_distance"] = cached.total_network_distance
+                # Stamp resolved architectural metrics so each cell in
+                # the sweep grid carries (cores, qpc, num_qubits, idle)
+                # alongside the fidelity numbers.
+                for k in ("num_qubits", "derived_num_cores",
+                          "derived_qubits_per_core", "idle_reserved_qubits"):
+                    v = getattr(cached, k, None)
+                    if v is not None:
+                        r[k] = v
             all_results.extend(_strip_for_grid(r) for r in chunk_results)
 
         return all_results
