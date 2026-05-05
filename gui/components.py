@@ -978,13 +978,13 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             },
             children=[
                 html.Div(
-                    "I set the cores",
+                    "Cores",
                     id="cfg-pin-cores-btn",
                     n_clicks=0,
                     style=(active_style if cores_active else inactive_style),
                 ),
                 html.Div(
-                    "I set the qubits/core",
+                    "Qubits per core",
                     id="cfg-pin-qpc-btn",
                     n_clicks=0,
                     style=(inactive_style if cores_active else active_style),
