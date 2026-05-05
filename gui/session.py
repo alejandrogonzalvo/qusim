@@ -299,9 +299,19 @@ def build_view_dict(
     view_type: str,
     frozen_axis: int,
     frozen_slider_value: float | None,
+    pareto_x: str | None = None,
+    pareto_y: str | None = None,
 ) -> dict:
-    return {
+    out: dict = {
         "view_type": view_type,
         "frozen_axis": frozen_axis,
         "frozen_slider_value": frozen_slider_value,
     }
+    # Pareto-axis keys are only saved when an example explicitly sets
+    # them (they aren't user-saved through the GUI yet).  Their absence
+    # keeps the GUI defaults (``total_epr_pairs`` × ``overall_fidelity``).
+    if pareto_x is not None:
+        out["pareto_x"] = pareto_x
+    if pareto_y is not None:
+        out["pareto_y"] = pareto_y
+    return out

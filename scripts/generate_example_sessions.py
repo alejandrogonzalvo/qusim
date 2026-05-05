@@ -148,7 +148,7 @@ def _build_controls(spec: ExampleSpec) -> dict:
         threshold_colors=[None, None, None, None, None],
         noise_values=_build_noise_values(spec),
         hot_reload=["on"],
-        fom_config=DEFAULT_FOM.to_dict(),
+        fom_config=spec.fom or DEFAULT_FOM.to_dict(),
     )
 
 
@@ -301,7 +301,13 @@ def _generate_one(spec: ExampleSpec, engine: DSEEngine, out_dir: Path) -> None:
     )
 
     controls = _build_controls(spec)
-    view = build_view_dict(spec.view_type, spec.frozen_axis, spec.frozen_slider_value)
+    view = build_view_dict(
+        spec.view_type,
+        spec.frozen_axis,
+        spec.frozen_slider_value,
+        pareto_x=spec.pareto_x,
+        pareto_y=spec.pareto_y,
+    )
     session = collect_session(controls, view, sweep_data, name=spec.label)
     raw = dump(session)
 

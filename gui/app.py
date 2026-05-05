@@ -3316,6 +3316,8 @@ def _value_to_slider(val: float, log_scale: bool) -> float:
     Output("fom-numerator", "value", allow_duplicate=True),
     Output("fom-denominator", "value", allow_duplicate=True),
     Output("fom-intermediates", "value", allow_duplicate=True),
+    Output("pareto-x-axis-dropdown", "value", allow_duplicate=True),
+    Output("pareto-y-axis-dropdown", "value", allow_duplicate=True),
     Output("examples-dropdown", "value", allow_duplicate=True),
     Input("session-upload", "contents"),
     Input("examples-dropdown", "value"),
@@ -3476,6 +3478,9 @@ def on_load_session(contents, example_id, filename):
     # Suppress auto-sweep: advance both counters to a fresh high-water mark.
     hw = _next_session_hw(0)
 
+    pareto_x_out = view.get("pareto_x") or dash.no_update
+    pareto_y_out = view.get("pareto_y") or dash.no_update
+
     return (
         *dropdown_out,
         *slider_out,
@@ -3500,6 +3505,7 @@ def on_load_session(contents, example_id, filename):
         banner_children,
         banner_style,
         fom_dict, fom_name_out, fom_num_out, fom_den_out, fom_inter_out,
+        pareto_x_out, pareto_y_out,
         None,  # examples-dropdown reset so the next pick re-fires
     )
 
@@ -3510,8 +3516,8 @@ def on_load_session(contents, example_id, filename):
 _LOAD_SCALAR_OUTPUTS = 5
 # Count of trailing Outputs: status-bar, banner.children, banner.style,
 # fom-config-store, fom-name, fom-numerator, fom-denominator, fom-intermediates,
-# examples-dropdown.
-_LOAD_TRAILING_OUTPUTS = 9
+# pareto-x, pareto-y, examples-dropdown.
+_LOAD_TRAILING_OUTPUTS = 11
 _LOAD_SWEEP_OUTPUTS = 13  # figure, sweep-store, interp, view-tabs, frozen-style, frozen-min/max/val, sweep-dirty, sweep-processed, session-loaded-tick, suppress-cascade, session-name
 
 
@@ -3527,11 +3533,11 @@ def _load_error_return(banner_children):
         + _LOAD_TRAILING_OUTPUTS
     )
     stub = [dash.no_update] * outputs_total
-    # Trailing order (last 9): status-bar, banner.children, banner.style,
-    # 5 FoM outputs, examples-dropdown.
-    stub[-9] = "Load failed"
-    stub[-8] = banner_children
-    stub[-7] = _error_banner_visible_style()
+    # Trailing order (last 11): status-bar, banner.children, banner.style,
+    # 5 FoM outputs, pareto-x, pareto-y, examples-dropdown.
+    stub[-11] = "Load failed"
+    stub[-10] = banner_children
+    stub[-9] = _error_banner_visible_style()
     stub[-1] = None  # reset the dropdown so the user can retry
     return tuple(stub)
 

@@ -54,6 +54,14 @@ class ExampleSpec:
     # decide based on available memory; pin to 1 for examples that
     # individually need a lot of RAM (128-qubit QFT compiles).
     max_workers: int | None = None
+    # Optional FoM override (matches ``FomConfig.to_dict()``). None falls
+    # back to ``DEFAULT_FOM`` in the generator.
+    fom: dict | None = None
+    # Optional Pareto-view axis overrides written into the session
+    # ``view`` block. ``None`` keeps the GUI defaults
+    # (``total_epr_pairs`` × ``overall_fidelity``).
+    pareto_x: str | None = None
+    pareto_y: str | None = None
 
 
 # Quiet-noise baseline. The architectural examples crank gate / coherence
@@ -254,6 +262,64 @@ EXAMPLES: list[ExampleSpec] = [
         view_type="parallel",
         output_metric="overall_fidelity",
         max_cold=20,
+        max_workers=1,
+    ),
+    ExampleSpec(
+        id="3d_pareto_qft_arch",
+        label="Pareto — QFT arch DSE (F vs EPR cost)",
+        description=(
+            "Architectural DSE on QFT with explicit fidelity-vs-cost "
+            "tension.  Sweeps cores (1–6), comm slots (1–3), and qubit "
+            "count (48–96) and opens on the Pareto tab — total EPR pairs "
+            "(cost, lower=better) on X, overall fidelity (quality, "
+            "higher=better) on Y.\n\n"
+            "Two non-dominated regimes show up on the frontier:\n"
+            "  • cores=1 (EPR=0): no inter-core traffic, fidelity is "
+            "limited by intra-core swap depth on the linear chip.\n"
+            "  • cores=6 (≈61 EPR pairs at 48 qubits): pays a small "
+            "inter-core cost in exchange for a much shallower intra-core "
+            "routing problem, raising fidelity from 0.90 to 0.99.\n\n"
+            "Everything in between (mid-cores, larger qubit counts) is "
+            "dominated — strictly worse on at least one axis.  The bundled "
+            "FoM, F / (EPR + α·time), tells the same story through a "
+            "scalar lens; the Merit tab's iso-FoM lines mirror the "
+            "frontier."
+        ),
+        sweep_axes=[
+            ("num_cores", 1, 6),
+            ("communication_qubits", 1, 3),
+            ("qubits", 48, 96),
+        ],
+        cold_config={
+            "circuit_type": "qft",
+            "num_qubits": 64,
+            "num_logical_qubits": 64,
+            "num_cores": 4,
+            "communication_qubits": 1,
+            "buffer_qubits": 1,
+            "topology_type": "ring",
+            "intracore_topology": "linear",
+            "placement_policy": "spectral",
+            "routing_algorithm": "hqa_sabre",
+            "seed": 42,
+        },
+        fixed_noise=_LOW_NOISE,
+        view_type="pareto",
+        output_metric="overall_fidelity",
+        # Same shape as ``PRESETS["fidelity_over_cost"]`` from gui/fom.py.
+        # Kept inline here so editing examples.py doesn't require touching
+        # fom.py — the generator round-trips it through ``FomConfig``.
+        fom={
+            "name": "Fidelity / (EPR + α·time)",
+            "numerator": "overall_fidelity",
+            "denominator": "cost",
+            "intermediates": [
+                ["cost", "max(total_epr_pairs + 1e-9 * total_circuit_time_ns, 1)"],
+            ],
+        },
+        pareto_x="total_epr_pairs",
+        pareto_y="overall_fidelity",
+        max_cold=64,
         max_workers=1,
     ),
 ]
