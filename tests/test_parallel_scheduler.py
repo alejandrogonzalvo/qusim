@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
 from gui import dse_engine
 from gui.dse_engine import DSEEngine, SweepProgress, _estimate_cold_mb
+from qusim.dse import sweep as _sweep_mod
+from qusim.dse import memory as _memory_mod
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +83,7 @@ class TestEstimateColdMb:
         assert _estimate_cold_mb(300) > _estimate_cold_mb(256)
 
     def test_fits_measurements_within_2x(self):
-        for nq, measured in dse_engine._EMPIRICAL_COLD_MB:
+        for nq, measured in _memory_mod._EMPIRICAL_COLD_MB:
             est = _estimate_cold_mb(nq)
             assert 0.5 * measured <= est <= 2.0 * measured, (
                 f"{nq} qubits: estimate {est:.0f} MB vs measured {measured:.0f} MB"
@@ -93,8 +95,17 @@ class TestEstimateColdMb:
 # ---------------------------------------------------------------------------
 
 def _fake_eval_cold_batch(cold_config, noise, swept_list, rss_cap_bytes=None, keep_grids=False):
-    """Emulate a cold compilation with a short sleep, record timing."""
-    nq = int(swept_list[0].get("num_qubits", cold_config.get("num_qubits", 0)))
+    """Emulate a cold compilation with a short sleep, record timing.
+
+    Uses the same resolver the scheduler does so the recorded ``nq`` is
+    the actual num_qubits the worker would have built — keeping the
+    fake's "work size" consistent with the scheduler's cost estimate.
+    """
+    from qusim.dse.config import _resolve_architecture
+    cfg = dict(cold_config)
+    cfg.update(swept_list[0])
+    _resolve_architecture(cfg)
+    nq = int(cfg.get("num_qubits", 0))
     start = time.monotonic()
     time.sleep(0.05 + nq * 0.0005)
     end = time.monotonic()
@@ -123,8 +134,10 @@ def _max_concurrency(rows: list[tuple[int, float, float]]) -> int:
 def cold_config():
     return {
         "circuit_type": "ghz",
-        "num_qubits": 8,
+        "num_logical_qubits": 6,
         "num_cores": 2,
+        "qubits_per_core": 8,
+        "pin_axis": "cores",
         "topology_type": "ring",
         "placement_policy": "random",
         "seed": 42,
@@ -142,10 +155,10 @@ def _reset_timings():
 class TestScheduler:
     def test_small_qubits_run_in_parallel(self, cold_config):
         engine = DSEEngine()
-        indexed = [((i,), {"num_qubits": 8, "num_cores": c})
+        indexed = [((i,), {"qubits_per_core": 8, "num_cores": c})
                    for i, c in enumerate([1, 2, 3, 4])]
-        with patch.object(dse_engine, "_eval_cold_batch", _fake_eval_cold_batch), \
-             patch.object(dse_engine.concurrent.futures, "ProcessPoolExecutor", _ThreadPoolShim):
+        with patch.object(_sweep_mod, "_eval_cold_batch", _fake_eval_cold_batch), \
+             patch.object(_sweep_mod.concurrent.futures, "ProcessPoolExecutor", _ThreadPoolShim):
             engine._parallel_cold_sweep(
                 cold_config, {}, indexed, total=4,
                 progress_callback=None, max_workers=4,
@@ -155,35 +168,43 @@ class TestScheduler:
 
     def test_large_qubits_serialize_under_tight_budget(self, cold_config):
         engine = DSEEngine()
-        # Distinct (cores, qubits) → 3 separate groups that each cost ~3800 MB.
-        indexed = [((i,), {"num_qubits": 256, "num_cores": c})
-                   for i, c in enumerate([2, 3, 4])]
+        # Logical-first model: each swept dict yields a distinct cold cfg.
+        # qpc is pinned (varies via the swept value); the resolver
+        # derives num_cores from logical=cold_config["num_logical_qubits"].
+        # For these qpc values nc=1 always fits, so num_qubits == qpc.
+        cfg = dict(cold_config, pin_axis="qubits_per_core",
+                   num_logical_qubits=4)
+        indexed = [((i,), {"qubits_per_core": q})
+                   for i, q in enumerate([256, 280, 300])]
         tight_mb = 4000
-        with patch.object(dse_engine, "_eval_cold_batch", _fake_eval_cold_batch), \
-             patch.object(dse_engine.concurrent.futures, "ProcessPoolExecutor", _ThreadPoolShim), \
-             patch.object(DSEEngine, "_mem_budget_mb", staticmethod(lambda: tight_mb)):
+        with patch.object(_sweep_mod, "_eval_cold_batch", _fake_eval_cold_batch), \
+             patch.object(_sweep_mod.concurrent.futures, "ProcessPoolExecutor", _ThreadPoolShim), \
+             patch.object(_sweep_mod, "_mem_budget_mb", lambda: tight_mb):
             engine._parallel_cold_sweep(
-                cold_config, {}, indexed, total=3,
+                cfg, {}, indexed, total=3,
                 progress_callback=None, max_workers=4,
             )
         assert len(_TIMINGS) == 3
         assert _max_concurrency(_TIMINGS) == 1, \
-            "256-qubit groups must serialize under a 4 GB budget"
+            "256+ qubit groups must serialize under a 4 GB budget"
 
     def test_mixed_workload_packs_within_budget(self, cold_config):
         engine = DSEEngine()
         # Distinct (cores, qubits) per group.
         # One 256-qubit (~3800 MB) + four 8-qubit jobs (~150 MB each).
-        indexed = [((0,), {"num_qubits": 256, "num_cores": 4})] + [
-            ((i,), {"num_qubits": 8, "num_cores": c})
-            for i, c in enumerate([1, 2, 3, 4], start=1)
+        cfg = dict(cold_config, pin_axis="qubits_per_core",
+                   num_logical_qubits=4)
+        # One large 256-qubit job (~3800 MB) + four small ones.
+        indexed = [((0,), {"qubits_per_core": 256})] + [
+            ((i,), {"qubits_per_core": q})
+            for i, q in enumerate([8, 12, 16, 20], start=1)
         ]
         generous_mb = 5000
-        with patch.object(dse_engine, "_eval_cold_batch", _fake_eval_cold_batch), \
-             patch.object(dse_engine.concurrent.futures, "ProcessPoolExecutor", _ThreadPoolShim), \
-             patch.object(DSEEngine, "_mem_budget_mb", staticmethod(lambda: generous_mb)):
+        with patch.object(_sweep_mod, "_eval_cold_batch", _fake_eval_cold_batch), \
+             patch.object(_sweep_mod.concurrent.futures, "ProcessPoolExecutor", _ThreadPoolShim), \
+             patch.object(_sweep_mod, "_mem_budget_mb", lambda: generous_mb):
             engine._parallel_cold_sweep(
-                cold_config, {}, indexed, total=5,
+                cfg, {}, indexed, total=5,
                 progress_callback=None, max_workers=4,
             )
         assert len(_TIMINGS) == 5
@@ -192,25 +213,27 @@ class TestScheduler:
 
     def test_raises_when_budget_too_small(self, cold_config):
         engine = DSEEngine()
-        indexed = [((0,), {"num_qubits": 256, "num_cores": 4})]
-        with patch.object(DSEEngine, "_mem_budget_mb", staticmethod(lambda: 50)):
+        cfg = dict(cold_config, pin_axis="qubits_per_core",
+                   num_logical_qubits=4)
+        indexed = [((0,), {"qubits_per_core": 256})]
+        with patch.object(_sweep_mod, "_mem_budget_mb", lambda: 50):
             with pytest.raises(RuntimeError, match="Not enough RAM"):
                 engine._parallel_cold_sweep(
-                    cold_config, {}, indexed, total=1,
+                    cfg, {}, indexed, total=1,
                     progress_callback=None, max_workers=4,
                 )
 
     def test_progress_callback_fires_for_every_point(self, cold_config):
         engine = DSEEngine()
-        indexed = [((i,), {"num_qubits": 8, "num_cores": c})
+        indexed = [((i,), {"qubits_per_core": 8, "num_cores": c})
                    for i, c in enumerate([1, 2, 3])]
         seen: list[int] = []
 
         def on_progress(p: SweepProgress) -> None:
             seen.append(p.completed)
 
-        with patch.object(dse_engine, "_eval_cold_batch", _fake_eval_cold_batch), \
-             patch.object(dse_engine.concurrent.futures, "ProcessPoolExecutor", _ThreadPoolShim):
+        with patch.object(_sweep_mod, "_eval_cold_batch", _fake_eval_cold_batch), \
+             patch.object(_sweep_mod.concurrent.futures, "ProcessPoolExecutor", _ThreadPoolShim):
             engine._parallel_cold_sweep(
                 cold_config, {}, indexed, total=3,
                 progress_callback=on_progress, max_workers=3,

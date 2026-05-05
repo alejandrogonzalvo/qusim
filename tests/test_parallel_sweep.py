@@ -54,8 +54,10 @@ def engine():
 def cold_config():
     return {
         "circuit_type": "ghz",
-        "num_qubits": 8,
+        "num_logical_qubits": 6,
         "num_cores": 2,
+        "qubits_per_core": 8,
+        "pin_axis": "cores",
         "topology_type": "ring",
         "placement_policy": "random",
         "seed": 42,
@@ -93,7 +95,7 @@ class TestParallelSweep3D:
         xs_seq, ys_seq, zs_seq, grid_seq = engine.sweep_3d(
             cached=cached,
             metric_key1="num_cores", low1=1, high1=4,
-            metric_key2="num_qubits", low2=4, high2=16,
+            metric_key2="qubits_per_core", low2=4, high2=16,
             metric_key3="t1", low3=4, high3=6,
             fixed_noise=fixed_noise,
             cold_config=cold_config,
@@ -103,7 +105,7 @@ class TestParallelSweep3D:
         xs_par, ys_par, zs_par, grid_par = engine.sweep_3d(
             cached=cached,
             metric_key1="num_cores", low1=1, high1=4,
-            metric_key2="num_qubits", low2=4, high2=16,
+            metric_key2="qubits_per_core", low2=4, high2=16,
             metric_key3="t1", low3=4, high3=6,
             fixed_noise=fixed_noise,
             cold_config=cold_config,
@@ -129,7 +131,7 @@ class TestParallelSweep3D:
         xs, ys, zs, grid = engine.sweep_3d(
             cached=cached,
             metric_key1="num_cores", low1=1, high1=4,
-            metric_key2="num_qubits", low2=4, high2=16,
+            metric_key2="qubits_per_core", low2=4, high2=16,
             metric_key3="t1", low3=4, high3=6,
             fixed_noise=fixed_noise,
             cold_config=cold_config,
@@ -154,7 +156,7 @@ class TestParallelSweep2D:
         xs_seq, ys_seq, grid_seq = engine.sweep_2d(
             cached=cached,
             metric_key1="num_cores", low1=1, high1=4,
-            metric_key2="num_qubits", low2=4, high2=16,
+            metric_key2="qubits_per_core", low2=4, high2=16,
             fixed_noise=fixed_noise,
             cold_config=cold_config,
         )
@@ -162,7 +164,7 @@ class TestParallelSweep2D:
         xs_par, ys_par, grid_par = engine.sweep_2d(
             cached=cached,
             metric_key1="num_cores", low1=1, high1=4,
-            metric_key2="num_qubits", low2=4, high2=16,
+            metric_key2="qubits_per_core", low2=4, high2=16,
             fixed_noise=fixed_noise,
             cold_config=cold_config,
             parallel=True,
@@ -217,7 +219,7 @@ class TestMaxWorkers:
 
         xs_seq, results_seq = engine.sweep_1d(
             cached=cached,
-            metric_key="num_qubits",
+            metric_key="qubits_per_core",
             low=4, high=16,
             fixed_noise=fixed_noise,
             cold_config=cold_config,
@@ -225,7 +227,7 @@ class TestMaxWorkers:
 
         xs_par, results_par = engine.sweep_1d(
             cached=cached,
-            metric_key="num_qubits",
+            metric_key="qubits_per_core",
             low=4, high=16,
             fixed_noise=fixed_noise,
             cold_config=cold_config,

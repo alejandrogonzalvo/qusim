@@ -793,10 +793,10 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
 
     swept_keys = swept_keys or set()
 
-    # Initial dynamic upper bound for communication_qubits.  Recomputed live by
-    # a callback whenever Qubits / Cores changes.
-    _initial_qpc = max(1, 16 // 1)
-    _initial_comm_max = max(1, math.isqrt(_initial_qpc))
+    # Architecture defaults — cores pinned (always feasible) at startup.
+    _DEFAULT_NC = 1
+    _DEFAULT_QPC = 16
+    _DEFAULT_LOGICAL = 16
 
     # --- Circuit tab content ---
     circuit_content = html.Div(
@@ -808,13 +808,16 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                     label="Logical qubits",
                     slider_id="cfg-num-logical-qubits",
                     min=int(METRIC_BY_KEY["num_logical_qubits"].slider_min),
-                    max=16,  # initial cap = default physical qubits; live-updated
+                    max=int(METRIC_BY_KEY["num_logical_qubits"].slider_max),
                     step=1,
-                    value=16,
+                    value=_DEFAULT_LOGICAL,
                     log_scale=False,
                     tooltip=(
                         "Number of qubits used by the algorithm circuit. "
-                        "Must be ≤ Physical qubits (set in the Topology tab)."
+                        "Held constant during sweeps — the unpinned "
+                        "architectural axis (cores or qubits/core) grows "
+                        "to absorb comm/buffer overhead. Auto-set when a "
+                        "custom QASM file is uploaded."
                     ),
                     row_id="cfg-row-num-logical-qubits",
                     row_style=({"display": "none"} if "num_logical_qubits" in swept_keys else {}),
@@ -931,52 +934,147 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     )
 
     # --- Topology tab content ---
+    # Pin toggle: exactly one of {Cores, Qubits per core} is the user-set
+    # architectural input; the other is derived. The lock icons next to
+    # each slider flip the pin. ``cfg-pin-axis`` is a hidden Store that
+    # other callbacks read to know which axis is live.
+    _pin_default = "cores"
+
+    def _arch_slider_with_lock(
+        *, label: str, slider_id: str, lock_id: str,
+        slider_min: int, slider_max: int, value: int,
+        pin_value: str, axis_key: str, derived_id: str,
+        row_id: str, swept_key: str, tooltip: str,
+    ) -> html.Div:
+        """Slider row with a lock icon on the left + a derived-value badge."""
+        is_locked = (axis_key == pin_value)
+        lock_icon = "🔒" if is_locked else "🔓"
+        # Hide the row when this axis is the *active* sweep axis OR when
+        # it is the *derived* axis (the other one is pinned).
+        hide_row = (swept_key in swept_keys) or (not is_locked)
+        derived_badge_visible = not is_locked
+        return html.Div(
+            id=row_id,
+            style=({"display": "none"} if (swept_key in swept_keys) else {}),
+            children=[
+                html.Div(
+                    style={"display": "flex", "alignItems": "center", "gap": "6px"},
+                    children=[
+                        html.Span(
+                            lock_icon,
+                            id=lock_id,
+                            n_clicks=0,
+                            style={
+                                "cursor": "pointer",
+                                "fontSize": "14px",
+                                "userSelect": "none",
+                            },
+                        ),
+                        dbc.Tooltip(
+                            f"Lock {label} as the pinned architectural axis. "
+                            f"The unpinned axis (cores ↔ qubits/core) is "
+                            f"derived per cell from the logical qubits + "
+                            f"comm/buffer overhead.",
+                            target=lock_id,
+                            placement="top",
+                            style={"fontSize": "11px", "maxWidth": "280px"},
+                        ),
+                        html.Div(
+                            slider_row(
+                                label=label,
+                                slider_id=slider_id,
+                                min=slider_min,
+                                max=slider_max,
+                                step=1,
+                                value=value,
+                                log_scale=False,
+                                tooltip=tooltip,
+                                row_id=f"{row_id}-slider-row",
+                                row_style=({} if is_locked else {"display": "none"}),
+                            ),
+                            style={"flex": "1"},
+                        ),
+                        html.Div(
+                            id=derived_id,
+                            style=(
+                                {"flex": "1", "fontSize": "12px",
+                                 "color": COLORS["text_muted"]}
+                                if derived_badge_visible
+                                else {"display": "none"}
+                            ),
+                            children=f"{label}: (derived)",
+                        ),
+                    ],
+                ),
+            ],
+        )
+
     topology_content = html.Div(
         [
-            slider_row(
-                label="Physical qubits",
-                slider_id="cfg-num-qubits",
-                min=int(METRIC_BY_KEY["num_qubits"].slider_min),
-                max=int(METRIC_BY_KEY["num_qubits"].slider_max),
-                step=2,
-                value=16,
-                log_scale=False,
-                tooltip=(
-                    "Total physical qubits on the device. Caps the "
-                    "Logical qubits available to the algorithm."
-                ),
-                row_id="cfg-row-num-qubits",
-                row_style=({"display": "none"} if "num_qubits" in swept_keys else {}),
-            ),
-            slider_row(
+            dcc.Store(id="cfg-pin-axis", data=_pin_default),
+            _arch_slider_with_lock(
                 label="Cores",
                 slider_id="cfg-num-cores",
-                min=int(METRIC_BY_KEY["num_cores"].slider_min),
-                max=int(METRIC_BY_KEY["num_cores"].slider_max),
-                step=1,
-                value=1,
-                log_scale=False,
-                tooltip=(
-                    "Number of processor cores. Physical qubits are split "
-                    "evenly across cores; inter-core 2Q gates require "
-                    "teleportation, while intra-core gates use the local "
-                    "coupling map."
-                ),
+                lock_id="cfg-pin-cores-lock",
+                slider_min=int(METRIC_BY_KEY["num_cores"].slider_min),
+                slider_max=int(METRIC_BY_KEY["num_cores"].slider_max),
+                value=_DEFAULT_NC,
+                pin_value=_pin_default,
+                axis_key="cores",
+                derived_id="cfg-num-cores-derived",
                 row_id="cfg-row-num-cores",
-                row_style=({"display": "none"} if "num_cores" in swept_keys else {}),
+                swept_key="num_cores",
+                tooltip=(
+                    "Number of processor cores. When *Cores* is pinned, "
+                    "this is the user-set value and qubits-per-core is "
+                    "derived. Sweepable only while Cores is pinned."
+                ),
+            ),
+            _arch_slider_with_lock(
+                label="Qubits per core",
+                slider_id="cfg-qubits-per-core",
+                lock_id="cfg-pin-qpc-lock",
+                slider_min=int(METRIC_BY_KEY["qubits_per_core"].slider_min),
+                slider_max=int(METRIC_BY_KEY["qubits_per_core"].slider_max),
+                value=_DEFAULT_QPC,
+                pin_value=_pin_default,
+                axis_key="qubits_per_core",
+                derived_id="cfg-qubits-per-core-derived",
+                row_id="cfg-row-qubits-per-core",
+                swept_key="qubits_per_core",
+                tooltip=(
+                    "Slots per core (uniform across the chip). When "
+                    "*Qubits per core* is pinned, this is the user-set "
+                    "value and cores is derived. Sweepable only while "
+                    "Qubits-per-core is pinned."
+                ),
+            ),
+            html.Div(
+                id="cfg-architecture-summary",
+                style={
+                    "fontSize": "12px",
+                    "color": COLORS["text_muted"],
+                    "padding": "6px 8px",
+                    "background": COLORS["surface2"],
+                    "borderRadius": "6px",
+                    "margin": "4px 0 10px 0",
+                },
+                children="→ derived num_qubits, idle reserved: (auto)",
             ),
             slider_row(
                 label="Communication qubits",
                 slider_id="cfg-communication-qubits",
-                min=1,
-                max=_initial_comm_max,
+                min=int(METRIC_BY_KEY["communication_qubits"].slider_min),
+                max=int(METRIC_BY_KEY["communication_qubits"].slider_max),
                 step=1,
                 value=1,
                 log_scale=False,
                 tooltip=(
                     "Comm qubits per group (per inter-core link). Each of "
-                    "a core's G inter-core neighbours each reserves K + B "
-                    "slots (K comm + B buffer per group)."
+                    "a core's G_max(topology) inter-core neighbours each "
+                    "reserves K + B slots (K comm + B buffer). Idle slots "
+                    "at corner/edge cores in non-uniform topologies count "
+                    "in the per-core reservation but carry no edges."
                 ),
                 row_id="cfg-row-communication-qubits",
                 row_style=({"display": "none"} if "communication_qubits" in swept_keys else {}),
@@ -984,16 +1082,15 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             slider_row(
                 label="Buffer qubits",
                 slider_id="cfg-buffer-qubits",
-                min=1,
-                max=1,
+                min=int(METRIC_BY_KEY["buffer_qubits"].slider_min),
+                max=int(METRIC_BY_KEY["buffer_qubits"].slider_max),
                 step=1,
                 value=1,
                 log_scale=False,
                 tooltip=(
                     "Buffer qubits per group. Sits adjacent to comm slots "
                     "as the local landing slot during teleportation. "
-                    "Capped by B ≤ K (comm qubits per group) and by "
-                    "data-slot feasibility."
+                    "Per-group rule: B ≤ K (clamped on this slider)."
                 ),
                 row_id="cfg-row-buffer-qubits",
                 row_style=({"display": "none"} if "buffer_qubits" in swept_keys else {}),
@@ -2109,7 +2206,6 @@ def build_topology_elements(
     from gui.dse_engine import (
         inter_core_neighbors as _nbrs_for_view,
         inter_core_edges,
-        clamp_k_for_topology,
         assign_core_slots,
     )
 
@@ -2124,18 +2220,12 @@ def build_topology_elements(
     nbrs = list(_nbrs_for_view(num_cores, topology))
     groups_per_core = [len(n) for n in nbrs]
 
-    from gui.dse_engine import clamp_b_for_topology
-    B_req = max(1, int(buffer_qubits or 1))
-    K = clamp_k_for_topology(
-        num_qubits, num_cores, topology, int(communication_qubits or 1),
-        b_per_group=B_req,
-    )
-    if num_cores < 2:
-        K = 0  # No inter-core links → no comm/buffer qubits.
-
-    B = clamp_b_for_topology(
-        num_qubits, num_cores, topology, K, B_req,
-    ) if K >= 1 else 0
+    # Logical-first model: K and B are taken as-is. The resolver has
+    # already guaranteed the architecture is feasible upstream, so this
+    # view just draws what it's told. ``num_cores < 2`` collapses to a
+    # single-core device with no comm slots.
+    K = int(communication_qubits or 0) if num_cores >= 2 else 0
+    B = int(buffer_qubits or 0) if K >= 1 else 0
 
     intracore_topology = (intracore_topology or "all_to_all").lower()
 

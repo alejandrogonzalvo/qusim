@@ -372,11 +372,24 @@ def _compute_per_qubit_for_cell(
             cfg[key] = int(v) if key in DSEEngine.INTEGER_KEYS else v
         else:
             hot_noise[key] = v
-    cfg["num_cores"] = min(int(cfg["num_cores"]), int(cfg["num_qubits"]))
-    from gui.dse_engine import _clamp_cfg_comm_and_logical as _clamp_cfg
-    _clamp_cfg(cfg)
-
-    cached = _engine.run_cold(**cfg, noise=hot_noise)
+    from gui.dse_engine import _resolve_architecture
+    feasibility = _resolve_architecture(cfg)
+    if not feasibility["feasible"]:
+        return {
+            "infeasible": True,
+            "infeasible_reason": feasibility["reason"],
+            "cell_idx": tuple(safe_idx),
+        }
+    # run_cold rejects bookkeeping keys the resolver writes; pass only
+    # what its signature accepts.
+    accepted = {
+        "circuit_type", "num_logical_qubits", "num_cores", "qubits_per_core",
+        "topology_type", "intracore_topology", "placement_policy", "seed",
+        "routing_algorithm", "communication_qubits", "buffer_qubits",
+        "pin_axis", "custom_qasm",
+    }
+    run_kwargs = {k: cfg[k] for k in accepted if k in cfg}
+    cached = _engine.run_cold(**run_kwargs, noise=hot_noise)
     full = _engine.run_hot(cached, hot_noise)
     return {
         "algorithmic_fidelity_grid": full.get("algorithmic_fidelity_grid"),
@@ -1649,7 +1662,7 @@ _SIM_INPUTS = [
     Input("cfg-intracore-topology", "value"),
     Input("cfg-placement", "value"),
     Input("cfg-routing-algorithm", "value"),
-    Input("cfg-num-qubits", "value"),
+    Input("cfg-qubits-per-core", "value"),
     Input("cfg-num-cores", "value"),
     Input("cfg-communication-qubits", "value"),
     Input("cfg-num-logical-qubits", "value"),
@@ -1730,7 +1743,7 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     State("num-metrics-store", "data"),
     *_METRIC_CHECKLIST_STATES,
     State("cfg-circuit-type", "value"),
-    State("cfg-num-qubits", "value"),
+    State("cfg-qubits-per-core", "value"),
     State("cfg-num-cores", "value"),
     State("cfg-communication-qubits", "value"),
     State("cfg-buffer-qubits", "value"),
@@ -1779,7 +1792,7 @@ def run_sweep(
     num_metrics = all_args[idx]; idx += 1
     checklist_vals = all_args[idx:idx + MAX_METRICS]; idx += MAX_METRICS
     circuit_type = all_args[idx]; idx += 1
-    num_qubits = all_args[idx]; idx += 1
+    qubits_per_core = all_args[idx]; idx += 1
     num_cores = all_args[idx]; idx += 1
     communication_qubits = all_args[idx]; idx += 1
     buffer_qubits = all_args[idx]; idx += 1
@@ -1879,13 +1892,13 @@ def run_sweep(
                 _ERROR_BANNER_HIDDEN_STYLE,
             )
 
-        _phys = int(num_qubits or 16)
-        _logi = int(num_logical_qubits) if num_logical_qubits else _phys
+        _logi = max(2, int(num_logical_qubits or 16))
         cold_config = {
             "circuit_type": circuit_type or "qft",
-            "num_qubits": _phys,
-            "num_logical_qubits": max(2, min(_logi, _phys)),
-            "num_cores": int(num_cores or 4),
+            "num_logical_qubits": _logi,
+            "num_cores": int(num_cores or 1),
+            "qubits_per_core": int(qubits_per_core or 16),
+            "pin_axis": "cores",  # default pin; overridden by sweep keys
             "communication_qubits": int(communication_qubits or 1),
             "buffer_qubits": int(buffer_qubits or 1),
             "topology_type": topology or "ring",
@@ -2365,72 +2378,11 @@ _METRIC_WARN_VISIBLE_STYLE = {
 def _comm_qubits_clamp_warning(num_qubits: int, cores_values,
                                topology_type: str | None = None,
                                comm_max=None):
-    """Build a dynamic warning that lists per-cores comm-qubit caps.
-
-    Returns ``None`` when there is nothing to warn about — either because we
-    don't have a concrete cores range to evaluate, or because the swept
-    ``communication_qubits`` range never exceeds the architectural cap for
-    any cores value (so no cell would actually be clamped).
-
-    Cap = ``⌊(qubits_per_core − 1) / G⌋ − 1`` where G is the number of
-    inter-core neighbours of a core under the selected topology — every
-    group reserves K + 1 slots (K comm + 1 buffer per group).
+    """Logical-first model: comm qubits are no longer architecturally
+    capped (the unpinned axis grows to absorb them).  No banner is
+    ever rendered.
     """
-    from gui.dse_engine import clamp_k_for_topology
-    if not cores_values:
-        return None
-    nq = max(1, int(num_qubits or 16))
-    topo = topology_type or "ring"
-    pairs = []
-    for c in cores_values:
-        ci = max(1, int(c))
-        cap = clamp_k_for_topology(nq, ci, topo, 10_000)
-        pairs.append((ci, cap))
-    if comm_max is not None:
-        try:
-            cm = int(round(float(comm_max)))
-        except (TypeError, ValueError):
-            cm = None
-        if cm is not None and all(cm <= cap for _, cap in pairs):
-            return None
-    pairs.sort()
-    # Group consecutive cores values that share the same cap.
-    groups: list[list[tuple[int, int]]] = []
-    cur: list[tuple[int, int]] = []
-    for ci, cap in pairs:
-        if cur and cur[-1][1] == cap and ci == cur[-1][0] + 1:
-            cur.append((ci, cap))
-        else:
-            if cur:
-                groups.append(cur)
-            cur = [(ci, cap)]
-    if cur:
-        groups.append(cur)
-    bullets = []
-    for grp in groups:
-        cap = grp[0][1]
-        cores_lo, cores_hi = grp[0][0], grp[-1][0]
-        if cores_lo == cores_hi:
-            label = f"{cores_lo} core{'s' if cores_lo != 1 else ''}"
-        else:
-            label = f"{cores_lo}–{cores_hi} cores"
-        bullets.append(html.Li(f"{label} → comm qubits/group ≤ {cap}"))
-    return html.Div([
-        html.Div(
-            "Not every (cores, comm qubits) pair is realizable. "
-            "Comm qubits is the per-link/per-group count: each core's "
-            "G inter-core neighbours each reserve K + 1 slots "
-            "(K comm + 1 buffer), so K must leave at least one data slot.",
-            style={"fontWeight": "600", "marginBottom": "4px"},
-        ),
-        html.Div(f"With N = {nq} physical qubits ({topo} topology), the per-cores cap is:"),
-        html.Ul(bullets, style={"margin": "4px 0 4px 0", "paddingLeft": "18px"}),
-        html.Div(
-            "Cells exceeding the cap are silently clamped, producing "
-            "duplicate sweep points.",
-            style={"color": COLORS["text_muted"], "fontStyle": "italic"},
-        ),
-    ])
+    return None
 
 
 def _cores_values_from_axes(metric_key_per_axis, slider_val_per_axis,
@@ -2460,7 +2412,7 @@ for _idx in range(MAX_METRICS):
     @app.callback(
         Output(f"metric-help-{_idx}", "children"),
         Output(f"metric-help-{_idx}", "style"),
-        Input("cfg-num-qubits", "value"),
+        Input("cfg-qubits-per-core", "value"),
         Input("cfg-num-cores", "value"),
         Input("cfg-topology", "value"),
         *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
@@ -2506,42 +2458,18 @@ def _arch_clamped_max(
     topology_type: str | None = None,
     buffer_qubits: float | int | None = None,
 ) -> float:
-    """Cap a sweep slider's max to the architectural limit, if any.
+    """Cap a sweep slider's max under the logical-first model.
 
-    Three metrics carry architectural caps:
-
-    * ``communication_qubits`` (per-group K) is bounded by
-      ``⌊(qubits_per_core − 1)/G⌋ − B`` where ``G`` is the number of
-      inter-core neighbours of a core under the selected topology and
-      ``B`` is the per-group buffer count.
-    * ``buffer_qubits`` (per-group B) is bounded by
-      ``min(K, ⌊(qubits_per_core − 1)/G⌋ − K)``.
-    * ``num_logical_qubits`` is bounded by the chip-wide data slot count
-      ``num_qubits − Σ_c G(c)·(K+B)``.
+    Only ``buffer_qubits`` carries a runtime cap (``B ≤ K`` per-group
+    rule). Comm-qubits and logical-qubits no longer have architectural
+    caps because the architecture (cores or qpc, the unpinned one)
+    grows to absorb whatever overhead the slider demands. Infeasible
+    cells render as white in the heat-map instead of being silently
+    clamped.
     """
-    from gui.dse_engine import clamp_k_for_topology, clamp_b_for_topology
-    if metric_key == "communication_qubits":
-        nq = int(num_qubits) if num_qubits else 16
-        nc = max(1, int(num_cores) if num_cores else 1)
-        topo = topology_type or "ring"
-        B = max(1, int(buffer_qubits or 1))
-        cap = clamp_k_for_topology(nq, nc, topo, 10_000, b_per_group=B)
-        return float(min(slider_max, max(slider_min, float(cap))))
     if metric_key == "buffer_qubits":
-        nq = int(num_qubits) if num_qubits else 16
-        nc = max(1, int(num_cores) if num_cores else 1)
-        topo = topology_type or "ring"
         K = max(1, int(comm_qubits or 1))
-        cap = clamp_b_for_topology(nq, nc, topo, K, 10_000)
-        return float(min(slider_max, max(slider_min, float(cap))))
-    if metric_key == "num_logical_qubits":
-        cap = _logical_qubits_max(
-            num_qubits, num_cores, comm_qubits,
-            routing_algorithm, routing_axis_active,
-            topology_type=topology_type,
-            buffer_qubits=buffer_qubits or 1,
-        )
-        return float(min(slider_max, max(slider_min, float(cap))))
+        return float(min(slider_max, max(slider_min, float(K))))
     return slider_max
 
 
@@ -2585,7 +2513,7 @@ for _idx in range(MAX_METRICS):
         Output(f"metric-slider-{_idx}", "tooltip"),
         Input(f"metric-dropdown-{_idx}", "value"),
         State("suppress-cascade", "data"),
-        State("cfg-num-qubits", "value"),
+        State("cfg-qubits-per-core", "value"),
         State("cfg-num-cores", "value"),
         State("cfg-communication-qubits", "value"),
         State("cfg-buffer-qubits", "value"),
@@ -2656,7 +2584,7 @@ for _idx in range(MAX_METRICS):
         Output(f"metric-slider-{_idx}", "max", allow_duplicate=True),
         Output(f"metric-slider-{_idx}", "marks", allow_duplicate=True),
         Output(f"metric-slider-{_idx}", "value", allow_duplicate=True),
-        Input("cfg-num-qubits", "value"),
+        Input("cfg-qubits-per-core", "value"),
         Input("cfg-num-cores", "value"),
         Input("cfg-communication-qubits", "value"),
         Input("cfg-buffer-qubits", "value"),
@@ -2771,7 +2699,7 @@ _ALL_METRIC_OPTIONS = (
 # the algorithm size and gate sequence are fully determined by the uploaded
 # file, so neither circuit type, logical qubit count, nor the (logical, physical)
 # alias should be selectable on a sweep axis.
-_CUSTOM_QASM_DISABLED_KEYS = {"circuit_type", "num_logical_qubits", "qubits"}
+_CUSTOM_QASM_DISABLED_KEYS = {"circuit_type", "num_logical_qubits"}
 
 
 @app.callback(
@@ -3111,7 +3039,7 @@ def export_csv(n_clicks, sweep_store):
     State("num-metrics-store", "data"),
     *_METRIC_CHECKLIST_STATES,
     State("cfg-circuit-type", "value"),
-    State("cfg-num-qubits", "value"),
+    State("cfg-qubits-per-core", "value"),
     State("cfg-num-cores", "value"),
     State("cfg-communication-qubits", "value"),
     State("cfg-buffer-qubits", "value"),
@@ -3157,7 +3085,7 @@ def on_save_session(n_clicks, *all_args):
     num_metrics   = all_args[idx]; idx += 1
     checklist_vals = list(all_args[idx:idx + MAX_METRICS]); idx += MAX_METRICS
     cfg_circuit_type = all_args[idx]; idx += 1
-    cfg_num_qubits = all_args[idx]; idx += 1
+    cfg_qubits_per_core = all_args[idx]; idx += 1
     cfg_num_cores = all_args[idx]; idx += 1
     cfg_communication_qubits = all_args[idx]; idx += 1
     cfg_buffer_qubits = all_args[idx]; idx += 1
@@ -3199,7 +3127,7 @@ def on_save_session(n_clicks, *all_args):
         slider_vals=slider_vals,
         checklist_vals=checklist_vals,
         cfg_circuit_type=cfg_circuit_type,
-        cfg_num_qubits=cfg_num_qubits,
+        cfg_qubits_per_core=cfg_qubits_per_core,
         cfg_num_cores=cfg_num_cores,
         cfg_communication_qubits=cfg_communication_qubits,
         cfg_num_logical_qubits=cfg_num_logical_qubits,
@@ -3253,7 +3181,7 @@ _NOISE_OUTPUTS = [Output(f"noise-{m.key}", "value", allow_duplicate=True) for m 
 
 _CFG_OUTPUTS = [
     Output("cfg-circuit-type", "value", allow_duplicate=True),
-    Output("cfg-num-qubits", "value", allow_duplicate=True),
+    Output("cfg-qubits-per-core", "value", allow_duplicate=True),
     Output("cfg-num-cores", "value", allow_duplicate=True),
     Output("cfg-communication-qubits", "value", allow_duplicate=True),
     Output("cfg-num-logical-qubits", "value", allow_duplicate=True),
@@ -3375,12 +3303,13 @@ def on_load_session(contents, example_id, filename):
         checklist_out[i] = ax["checklist"] if ax["checklist"] is not None else []
 
     circuit = ctrls["circuit"]
+    _qpc_default = int(circuit.get("qubits_per_core", 16) or 16)
     cfg_out = [
         circuit["circuit_type"],
-        circuit["num_qubits"],
-        circuit["num_cores"],
+        _qpc_default,
+        circuit.get("num_cores", 1),
         int(circuit.get("communication_qubits", 1) or 1),
-        int(circuit.get("num_logical_qubits", circuit["num_qubits"]) or circuit["num_qubits"]),
+        int(circuit.get("num_logical_qubits", _qpc_default) or _qpc_default),
         circuit["topology_type"],
         circuit["intracore_topology"],
         circuit["placement"],
@@ -4462,7 +4391,7 @@ def _bind_slider_input(slider_id: str, log_scale: bool = False) -> None:
 from gui.constants import SWEEPABLE_METRICS as _SWEEPABLE_METRICS
 
 _bind_slider_input("cfg-num-logical-qubits", log_scale=False)
-_bind_slider_input("cfg-num-qubits", log_scale=False)
+_bind_slider_input("cfg-qubits-per-core", log_scale=False)
 _bind_slider_input("cfg-num-cores", log_scale=False)
 _bind_slider_input("cfg-communication-qubits", log_scale=False)
 _bind_slider_input("cfg-buffer-qubits", log_scale=False)
@@ -4475,95 +4404,11 @@ for _m in _SWEEPABLE_METRICS:
 # ---------------------------------------------------------------------------
 
 
-def _logical_qubits_max(
-    num_qubits: int, num_cores: int, comm_qubits: int,
-    routing_algorithm: str | None,
-    routing_axis_active: bool,
-    topology_type: str | None = None,
-    buffer_qubits: int = 1,
-) -> int:
-    """Compute the highest logical-qubit count the slider should allow.
-
-    Comm + buffer qubits are reserved capacity per the per-link
-    convention: each core dedicates ``G·(K+B)`` slots (G inter-core
-    neighbours, K comm + B buffer per group).  Logical qubits can only
-    live in data slots, so this bound applies to **both** HQA and
-    TeleSABRE — comm qubits aren't usable for computation under either.
-    """
-    from gui.dse_engine import max_data_slots
-    phys = max(2, int(num_qubits or 16))
-    cores = max(1, int(num_cores or 1))
-    k = max(0, int(comm_qubits or 0))
-    b = max(1, int(buffer_qubits or 1))
-    topo = topology_type or "ring"
-    data_slots = max_data_slots(phys, cores, topo, k, b)
-    return max(2, min(phys, max(2, data_slots)))
-
-
-@app.callback(
-    Output("cfg-num-logical-qubits", "max"),
-    Output("cfg-num-logical-qubits", "marks"),
-    Output("cfg-num-logical-qubits", "value", allow_duplicate=True),
-    Input("cfg-num-qubits", "value"),
-    Input("cfg-num-cores", "value"),
-    Input("cfg-communication-qubits", "value"),
-    Input("cfg-buffer-qubits", "value"),
-    Input("cfg-routing-algorithm", "value"),
-    Input("cfg-topology", "value"),
-    Input({"type": "metric-dropdown", "index": ALL}, "value"),
-    State("cfg-num-logical-qubits", "value"),
-    prevent_initial_call=True,
-)
-def _clamp_logical_to_physical(
-    num_qubits, num_cores, comm_qubits, buffer_qubits, routing_algorithm,
-    topology_type, sweep_axis_keys, current_logical,
-):
-    from gui.components import _minmax_marks
-    routing_axis_active = "routing_algorithm" in (sweep_axis_keys or [])
-    new_max = _logical_qubits_max(
-        num_qubits, num_cores, comm_qubits,
-        routing_algorithm, routing_axis_active,
-        topology_type=topology_type,
-        buffer_qubits=buffer_qubits or 1,
-    )
-    cur = int(current_logical) if current_logical else new_max
-    clamped = max(2, min(cur, new_max))
-    return new_max, _minmax_marks(2, new_max, log_scale=False), clamped
-
-
 # ---------------------------------------------------------------------------
-# Callback: dynamic max for cfg-communication-qubits — per-group K capped so
-# every core keeps ≥ 1 data slot after reserving G·(K+B) for comm + buffer.
-# ---------------------------------------------------------------------------
-
-
-@app.callback(
-    Output("cfg-communication-qubits", "max"),
-    Output("cfg-communication-qubits", "marks"),
-    Output("cfg-communication-qubits", "value", allow_duplicate=True),
-    Input("cfg-num-qubits", "value"),
-    Input("cfg-num-cores", "value"),
-    Input("cfg-topology", "value"),
-    Input("cfg-buffer-qubits", "value"),
-    State("cfg-communication-qubits", "value"),
-    prevent_initial_call=True,
-)
-def _update_comm_qubits_bound(num_qubits, num_cores, topology_type,
-                              buffer_qubits, current):
-    from gui.components import _minmax_marks
-    from gui.dse_engine import clamp_k_for_topology
-    nq = int(num_qubits) if num_qubits else 16
-    nc = max(1, int(num_cores) if num_cores else 1)
-    topo = topology_type or "ring"
-    B = max(1, int(buffer_qubits or 1))
-    new_max = clamp_k_for_topology(nq, nc, topo, 10_000, b_per_group=B)
-    cur = int(current) if current else 1
-    clamped = clamp_k_for_topology(nq, nc, topo, cur, b_per_group=B)
-    return new_max, _minmax_marks(1, new_max, log_scale=False), clamped
-
-
-# ---------------------------------------------------------------------------
-# Callback: dynamic max for cfg-buffer-qubits = min(K, ⌊(qpc−1)/G⌋ − K)
+# Logical-first model: the only runtime slider clamp left is B ≤ K
+# (per-group rule). Comm qubits and logical qubits range freely; the
+# resolver grows the unpinned architecture axis to fit, and any
+# truly-infeasible cells render as NaN/white in the heat-map.
 # ---------------------------------------------------------------------------
 
 
@@ -4571,25 +4416,127 @@ def _update_comm_qubits_bound(num_qubits, num_cores, topology_type,
     Output("cfg-buffer-qubits", "max"),
     Output("cfg-buffer-qubits", "marks"),
     Output("cfg-buffer-qubits", "value", allow_duplicate=True),
-    Input("cfg-num-qubits", "value"),
-    Input("cfg-num-cores", "value"),
-    Input("cfg-topology", "value"),
     Input("cfg-communication-qubits", "value"),
     State("cfg-buffer-qubits", "value"),
     prevent_initial_call=True,
 )
-def _update_buffer_qubits_bound(num_qubits, num_cores, topology_type,
-                                comm_qubits, current):
+def _update_buffer_qubits_bound(comm_qubits, current):
     from gui.components import _minmax_marks
-    from gui.dse_engine import clamp_b_for_topology
-    nq = int(num_qubits) if num_qubits else 16
-    nc = max(1, int(num_cores) if num_cores else 1)
-    topo = topology_type or "ring"
     K = max(1, int(comm_qubits or 1))
-    new_max = clamp_b_for_topology(nq, nc, topo, K, 10_000)
     cur = int(current) if current else 1
-    clamped = clamp_b_for_topology(nq, nc, topo, K, cur)
-    return new_max, _minmax_marks(1, new_max, log_scale=False), clamped
+    return K, _minmax_marks(1, K, log_scale=False), max(1, min(cur, K))
+
+
+# ---------------------------------------------------------------------------
+# Pin-toggle: clicking the lock next to Cores or Qubits-per-core flips
+# which axis is the user-set input and which is the derived output.
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("cfg-pin-axis", "data"),
+    Output("cfg-pin-cores-lock", "children"),
+    Output("cfg-pin-qpc-lock", "children"),
+    Output("cfg-row-num-cores-slider-row", "style"),
+    Output("cfg-row-qubits-per-core-slider-row", "style"),
+    Output("cfg-num-cores-derived", "style"),
+    Output("cfg-qubits-per-core-derived", "style"),
+    Input("cfg-pin-cores-lock", "n_clicks"),
+    Input("cfg-pin-qpc-lock", "n_clicks"),
+    State("cfg-pin-axis", "data"),
+    prevent_initial_call=True,
+)
+def _toggle_pin_axis(_n_cores, _n_qpc, current):
+    """Flip the pin axis when either lock icon is clicked."""
+    triggered = ctx.triggered_id
+    if triggered == "cfg-pin-cores-lock":
+        new_pin = "cores"
+    elif triggered == "cfg-pin-qpc-lock":
+        new_pin = "qubits_per_core"
+    else:
+        new_pin = current or "cores"
+
+    pin_cores_locked = new_pin == "cores"
+    cores_lock_icon = "🔒" if pin_cores_locked else "🔓"
+    qpc_lock_icon = "🔒" if not pin_cores_locked else "🔓"
+
+    cores_slider_style = {} if pin_cores_locked else {"display": "none"}
+    qpc_slider_style = {} if not pin_cores_locked else {"display": "none"}
+    cores_derived_style = (
+        {"flex": "1", "fontSize": "12px", "color": COLORS["text_muted"]}
+        if not pin_cores_locked else {"display": "none"}
+    )
+    qpc_derived_style = (
+        {"flex": "1", "fontSize": "12px", "color": COLORS["text_muted"]}
+        if pin_cores_locked else {"display": "none"}
+    )
+    return (
+        new_pin, cores_lock_icon, qpc_lock_icon,
+        cores_slider_style, qpc_slider_style,
+        cores_derived_style, qpc_derived_style,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Architecture summary: live-updates the derived-metrics panel and the
+# derived-value badges as the user moves logical / cores / qpc / K / B.
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output("cfg-architecture-summary", "children"),
+    Output("cfg-num-cores-derived", "children"),
+    Output("cfg-qubits-per-core-derived", "children"),
+    Input("cfg-num-logical-qubits", "value"),
+    Input("cfg-num-cores", "value"),
+    Input("cfg-qubits-per-core", "value"),
+    Input("cfg-communication-qubits", "value"),
+    Input("cfg-buffer-qubits", "value"),
+    Input("cfg-topology", "value"),
+    Input("cfg-pin-axis", "data"),
+    prevent_initial_call=False,
+)
+def _update_architecture_summary(
+    logical, cores, qpc, K, B, topo, pin_axis,
+):
+    from qusim.dse.config import _resolve_architecture
+    cfg = {
+        "num_logical_qubits": int(logical or 16),
+        "num_cores": int(cores or 1),
+        "qubits_per_core": int(qpc or 16),
+        "communication_qubits": int(K or 1),
+        "buffer_qubits": int(B or 1),
+        "topology_type": topo or "ring",
+        "pin_axis": pin_axis or "cores",
+    }
+    res = _resolve_architecture(cfg)
+    if not res["feasible"]:
+        return (
+            f"⚠ Infeasible: {res['reason']}",
+            "Cores: ?",
+            "Qubits/core: ?",
+        )
+    nq = int(cfg["num_qubits"])
+    idle = int(cfg["idle_reserved_qubits"])
+    summary = (
+        f"→ {nq} physical qubits "
+        f"({cfg['num_cores']} cores × {cfg['qubits_per_core']} qpc), "
+        f"idle reserved: {idle}"
+    )
+    cores_badge = f"Cores: {cfg['num_cores']} (derived)"
+    qpc_badge = f"Qubits/core: {cfg['qubits_per_core']} (derived)"
+    return summary, cores_badge, qpc_badge
+
+
+# ---------------------------------------------------------------------------
+# Custom QASM uploaded → disable the num_logical_qubits sweep axis.
+# ---------------------------------------------------------------------------
+
+# (The existing _CUSTOM_QASM_DISABLED_KEYS handler in run_sweep already
+# silently drops circuit-shape axes when QASM is loaded, so the heat-map
+# never tries to sweep them. The sweep-axis dropdown also lives in the
+# left sidebar; greying out the option there is a polish item handled by
+# the dropdown's options callback below.)
 
 
 # ---------------------------------------------------------------------------
@@ -4881,81 +4828,10 @@ def _topology_axis_value_to_slider(
 
 
 # ---------------------------------------------------------------------------
-# Callback: Topology view — re-clamp the comm-qubits slider when the cores
-# slider moves so the user can't pick a (cores, comm) pair that the engine
-# would silently squash to ``floor(sqrt(num_qubits/cores))`` per cell.
+# Logical-first model: the topology-overlay slider no longer needs to
+# clamp comm qubits — any cell whose architecture can't be deduced
+# renders as NaN/white in the heat-map upstream of this view.
 # ---------------------------------------------------------------------------
-
-
-@app.callback(
-    Output({"type": "topology-axis-slider", "index": ALL}, "max", allow_duplicate=True),
-    Output({"type": "topology-axis-slider", "index": ALL}, "marks", allow_duplicate=True),
-    Output({"type": "topology-axis-slider", "index": ALL}, "value", allow_duplicate=True),
-    Input({"type": "topology-axis-slider", "index": ALL}, "value"),
-    State("sweep-result-store", "data"),
-    State("topology-facet-selector", "value"),
-    prevent_initial_call=True,
-)
-def _topology_clamp_comm_qubits_slider(slider_vals, sweep_store, facet_idx):
-    from gui.dse_engine import clamp_k_for_topology
-    n = len(slider_vals)
-    no_change = ([dash.no_update] * n, [dash.no_update] * n, [dash.no_update] * n)
-    full = _get_sweep(sweep_store) if sweep_store else None
-    pq = _facet_per_qubit_data(full, facet_idx)
-    if not pq or not pq.get("axis_keys"):
-        return no_change
-    axis_keys = pq["axis_keys"]
-    axis_values = pq.get("axis_values", [])
-    cold_cfg = pq.get("cold_config") or {}
-
-    cores_d = next((i for i, k in enumerate(axis_keys) if k == "num_cores"), None)
-    comm_d = next((i for i, k in enumerate(axis_keys) if k == "communication_qubits"), None)
-    if comm_d is None or comm_d >= len(axis_values) or not axis_values[comm_d]:
-        return no_change
-
-    if (cores_d is not None and cores_d < len(slider_vals)
-            and cores_d < len(axis_values) and axis_values[cores_d]):
-        idx = int(slider_vals[cores_d] or 0)
-        idx = max(0, min(idx, len(axis_values[cores_d]) - 1))
-        num_cores = max(1, int(axis_values[cores_d][idx]))
-    else:
-        num_cores = max(1, int(cold_cfg.get("num_cores", 1) or 1))
-
-    num_qubits = max(1, int(cold_cfg.get("num_qubits", 16) or 16))
-    topology_type = cold_cfg.get("topology_type") or "ring"
-    valid_cap = clamp_k_for_topology(num_qubits, num_cores, topology_type, 10_000)
-
-    comm_axis = axis_values[comm_d]
-    new_max_idx = 0
-    for i, v in enumerate(comm_axis):
-        if int(v) <= valid_cap:
-            new_max_idx = i
-        else:
-            break
-
-    cur_idx = int(slider_vals[comm_d] or 0) if comm_d < len(slider_vals) else 0
-    new_idx = max(0, min(cur_idx, new_max_idx))
-
-    mark_style = {"fontSize": "10px", "color": COLORS["text_muted"]}
-    if new_max_idx >= 1:
-        lo = _human_axis_value("communication_qubits", comm_axis[0])
-        hi = _human_axis_value("communication_qubits", comm_axis[new_max_idx])
-        new_marks = {
-            0: {"label": lo, "style": mark_style},
-            new_max_idx: {"label": hi, "style": mark_style},
-        }
-    else:
-        only = _human_axis_value("communication_qubits", comm_axis[0])
-        new_marks = {0: {"label": only, "style": mark_style}}
-
-    maxes = [dash.no_update] * n
-    marks_list = [dash.no_update] * n
-    values_list = [dash.no_update] * n
-    if comm_d < n:
-        maxes[comm_d] = new_max_idx
-        marks_list[comm_d] = new_marks
-        values_list[comm_d] = new_idx
-    return maxes, marks_list, values_list
 
 
 # ---------------------------------------------------------------------------
@@ -4965,7 +4841,7 @@ def _topology_clamp_comm_qubits_slider(slider_vals, sweep_store, facet_idx):
 
 @app.callback(
     Output("topology-cyto", "elements"),
-    Input("cfg-num-qubits", "value"),
+    Input("cfg-qubits-per-core", "value"),
     Input("cfg-num-cores", "value"),
     Input("cfg-communication-qubits", "value"),
     Input("cfg-buffer-qubits", "value"),

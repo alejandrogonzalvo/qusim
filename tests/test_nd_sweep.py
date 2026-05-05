@@ -72,8 +72,10 @@ def engine():
 def cold_config():
     return {
         "circuit_type": "ghz",
-        "num_qubits": 8,
+        "num_logical_qubits": 6,
         "num_cores": 2,
+        "qubits_per_core": 8,
+        "pin_axis": "cores",
         "topology_type": "ring",
         "placement_policy": "random",
         "seed": 42,
@@ -252,7 +254,7 @@ class TestGridPointBudget:
         """
         axes = [
             ("num_cores", 1, 8),
-            ("num_qubits", 4, 256),
+            ("qubits_per_core", 4, 128),
             ("t1", 4, 6),
             ("t2", 4, 6),
             ("single_gate_error", -5, -3),
@@ -272,7 +274,7 @@ class TestGridPointBudget:
         """Same sweep with a big-enough hot budget should succeed."""
         axes = [
             ("num_cores", 1, 8),
-            ("num_qubits", 4, 256),
+            ("qubits_per_core", 4, 128),
             ("t1", 4, 6),
             ("t2", 4, 6),
             ("single_gate_error", -5, -3),

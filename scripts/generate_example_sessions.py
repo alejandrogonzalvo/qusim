@@ -127,10 +127,12 @@ def _build_controls(spec: ExampleSpec) -> dict:
         slider_vals=slider_vals,
         checklist_vals=checklist_vals,
         cfg_circuit_type=cc.get("circuit_type", "qft"),
-        cfg_num_qubits=int(cc.get("num_qubits", 16)),
+        cfg_qubits_per_core=int(cc.get("qubits_per_core", 16)),
         cfg_num_cores=int(cc.get("num_cores", 4)),
+        cfg_pin_axis=cc.get("pin_axis", "cores"),
         cfg_communication_qubits=int(cc.get("communication_qubits", 1)),
-        cfg_num_logical_qubits=int(cc.get("num_logical_qubits", cc.get("num_qubits", 16))),
+        cfg_buffer_qubits=int(cc.get("buffer_qubits", 1)),
+        cfg_num_logical_qubits=int(cc.get("num_logical_qubits", 16)),
         cfg_topology=cc.get("topology_type", "ring"),
         cfg_intracore_topology=cc.get("intracore_topology", "all_to_all"),
         cfg_placement=cc.get("placement_policy", "spectral"),
@@ -156,9 +158,10 @@ def _engine_cold_config(spec: ExampleSpec) -> dict:
     """Build the cold_config dict ``DSEEngine.sweep_nd`` expects."""
     cc = dict(spec.cold_config)
     cc.setdefault("circuit_type", "qft")
-    cc.setdefault("num_qubits", 16)
-    cc.setdefault("num_logical_qubits", cc["num_qubits"])
+    cc.setdefault("num_logical_qubits", 16)
     cc.setdefault("num_cores", 4)
+    cc.setdefault("qubits_per_core", 16)
+    cc.setdefault("pin_axis", "cores")
     cc.setdefault("communication_qubits", 1)
     cc.setdefault("buffer_qubits", 1)
     cc.setdefault("topology_type", "ring")

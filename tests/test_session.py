@@ -262,7 +262,7 @@ class TestBuildControlsDict:
             "slider_vals":   [[4.0, 6.0], [4.0, 6.0]] + [None] * 10,
             "checklist_vals": [[], []] + [None] * 10,
             "cfg_circuit_type": "qft",
-            "cfg_num_qubits": 16, "cfg_num_cores": 4,
+            "cfg_qubits_per_core": 16, "cfg_num_cores": 4,
             "cfg_topology": "ring", "cfg_intracore_topology": "all_to_all",
             "cfg_placement": "random", "cfg_routing_algorithm": "hqa_sabre",
             "cfg_seed": 42, "cfg_dynamic_decoupling": [],
@@ -290,7 +290,7 @@ class TestBuildControlsDict:
         from gui.session import build_controls_dict
         ctrls = build_controls_dict(**self._args())
         c = ctrls["circuit"]
-        assert c["num_qubits"] == 16
+        assert c["qubits_per_core"] == 16
         assert c["num_cores"] == 4
         assert c["seed"] == 42
         assert c["circuit_type"] == "qft"

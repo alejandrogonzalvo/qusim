@@ -216,7 +216,7 @@ def build_controls_dict(
     slider_vals: list,
     checklist_vals: list,
     cfg_circuit_type: str,
-    cfg_num_qubits: int,
+    cfg_qubits_per_core: int,
     cfg_num_cores: int,
     cfg_topology: str,
     cfg_intracore_topology: str,
@@ -225,7 +225,9 @@ def build_controls_dict(
     cfg_seed: int,
     cfg_dynamic_decoupling: list,
     cfg_communication_qubits: int = 1,
+    cfg_buffer_qubits: int = 1,
     cfg_num_logical_qubits: int | None = None,
+    cfg_pin_axis: str = "cores",
     cfg_max_cold: int | None = None,
     cfg_max_hot: int | None = None,
     cfg_max_workers: int | None = None,
@@ -261,12 +263,14 @@ def build_controls_dict(
         "num_metrics": len(axes),
         "axes": axes,
         "circuit": {
-            "num_qubits": cfg_num_qubits,
-            "num_cores": cfg_num_cores,
+            "qubits_per_core": int(cfg_qubits_per_core or 16),
+            "num_cores": int(cfg_num_cores or 1),
+            "pin_axis": cfg_pin_axis or "cores",
             "communication_qubits": int(cfg_communication_qubits or 1),
+            "buffer_qubits": int(cfg_buffer_qubits or 1),
             "num_logical_qubits": int(
                 cfg_num_logical_qubits if cfg_num_logical_qubits is not None
-                else (cfg_num_qubits or 16)
+                else (cfg_qubits_per_core or 16)
             ),
             "seed": cfg_seed,
             "circuit_type": cfg_circuit_type,
