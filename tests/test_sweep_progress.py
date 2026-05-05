@@ -70,6 +70,7 @@ class TestProgressCallback:
 
         # Patch run_hot to avoid real computation
         engine.run_hot = lambda cached, noise: {"overall_fidelity": 0.9}
+        engine.run_hot_batch = lambda cached, noises, **kw: [{"overall_fidelity": 0.9} for _ in noises]
         engine._cache = _make_fake_cached()
 
         xs, results = engine.sweep_1d(
@@ -99,6 +100,7 @@ class TestProgressCallback:
         from gui.dse_engine import DSEEngine
         engine = DSEEngine()
         engine.run_hot = lambda cached, noise: {"overall_fidelity": 0.9}
+        engine.run_hot_batch = lambda cached, noises, **kw: [{"overall_fidelity": 0.9} for _ in noises]
         engine._cache = _make_fake_cached()
 
         xs, ys, grid = engine.sweep_2d(
@@ -125,6 +127,7 @@ class TestProgressCallback:
         from gui.dse_engine import DSEEngine
         engine = DSEEngine()
         engine.run_hot = lambda cached, noise: {"overall_fidelity": 0.9}
+        engine.run_hot_batch = lambda cached, noises, **kw: [{"overall_fidelity": 0.9} for _ in noises]
         engine._cache = _make_fake_cached()
 
         xs, ys, zs, grid = engine.sweep_3d(
@@ -148,6 +151,7 @@ class TestProgressCallback:
         from gui.dse_engine import DSEEngine
         engine = DSEEngine()
         engine.run_hot = lambda cached, noise: {"overall_fidelity": 0.9}
+        engine.run_hot_batch = lambda cached, noises, **kw: [{"overall_fidelity": 0.9} for _ in noises]
         engine._cache = _make_fake_cached()
 
         xs, ys, zs, grid = engine.sweep_3d(
@@ -175,6 +179,7 @@ class TestProgressCallback:
         from gui.dse_engine import DSEEngine
         engine = DSEEngine()
         engine.run_hot = lambda cached, noise: {"overall_fidelity": 0.9}
+        engine.run_hot_batch = lambda cached, noises, **kw: [{"overall_fidelity": 0.9} for _ in noises]
         engine._cache = _make_fake_cached()
 
         xs, results = engine.sweep_1d(
