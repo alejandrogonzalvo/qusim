@@ -101,6 +101,44 @@ EXAMPLES: list[ExampleSpec] = [
         max_workers=1,
     ),
     ExampleSpec(
+        id="2d_comm_buffer_infeasible",
+        label="2D — Comm × Buffer (white = infeasible)",
+        description=(
+            "Showcases the infeasible-cell rendering. Sweeps comm "
+            "qubits per group K from 1..6 and buffer qubits per group "
+            "B from 1..6 with QFT-32 on a 4-core ring, cores pinned. "
+            "Every cell with B > K violates the per-group rule "
+            "(buffer count cannot exceed comm count) and skips "
+            "compilation entirely — the engine writes a NaN result row "
+            "and the heatmap renders that cell as a white square. The "
+            "result is a clean upper-triangular block of skipped cells, "
+            "with the feasible diagonal-and-below filling in coloured."
+        ),
+        sweep_axes=[
+            ("communication_qubits", 1, 6),
+            ("buffer_qubits", 1, 6),
+        ],
+        cold_config={
+            "circuit_type": "qft",
+            "num_logical_qubits": 32,
+            "num_cores": 4,
+            "qubits_per_core": 16,
+            "pin_axis": "cores",
+            "communication_qubits": 1,
+            "buffer_qubits": 1,
+            "topology_type": "ring",
+            "intracore_topology": "all_to_all",
+            "placement_policy": "spectral",
+            "routing_algorithm": "hqa_sabre",
+            "seed": 42,
+        },
+        fixed_noise=_LOW_NOISE,
+        view_type="heatmap",
+        output_metric="overall_fidelity",
+        max_cold=64,
+        max_workers=1,
+    ),
+    ExampleSpec(
         id="2d_cores_logical",
         label="2D — Cores × Logical qubits (architecture heatmap)",
         description=(
