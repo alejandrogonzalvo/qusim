@@ -18,16 +18,12 @@ Bench coverage:
   B5  Parallel cold-pool scaling (1, 2, 4, 8 workers)
   B8  Sweep-grid cell memory: structured vs. dict
 
-Two supplementary benches that depend on external resources are
-documented in the report but live in their own scripts:
+Supplementary benches that live in their own scripts and produce
+their own output (because they depend on external resources or
+emit C-library stdout that needs containing):
 
-  B6  Mapping quality vs. HQA paper IBM Q reference data
-       — needs the paper repo
-       (~/dev/Analytic-Model-of-Fidelity-under-Depolarizing-Noise);
-       run via examples/benchmark_against_paper.py.
-  B7  TeleSABRE vs. HQA+SABRE on QFT/GHZ
-       — needs FD-level stdout suppression around the C library;
-       run via tests/bench_telesabre_vs_hqa.py.
+  TeleSABRE vs. HQA+Sabre on QFT-25 / GHZ-25 / AE-25 (4×9 grid)
+    examples/benchmark_telesabre_vs_hqa.py
 """
 
 from __future__ import annotations

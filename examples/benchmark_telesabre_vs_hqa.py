@@ -238,6 +238,56 @@ def _label_bars_float(ax, bars, fmt="{:.2e}"):
 # Entry point
 # ---------------------------------------------------------------------------
 
+def print_summary_table(ts_results: dict, hqa_results: dict) -> None:
+    """Print a comparison table the report can quote verbatim.
+
+    Includes raw counts plus the SWAP and teleport ratios that drive
+    the fidelity verdict (SWAP cost = 3 × CNOT under the noise model;
+    each teleport hop carries the bundled EPR + buffer-SWAP cost).
+    """
+    rows = []
+    for name in ts_results:
+        ts = ts_results[name]
+        hq = hqa_results[name]
+        rows.append({
+            "circuit": name,
+            "ts_swaps": ts["swaps"], "hq_swaps": hq["swaps"],
+            "ts_tele":  ts["teleportations"], "hq_tele":  hq["teleportations"],
+            "ts_fid":   ts["fidelity"], "hq_fid":   hq["fidelity"],
+        })
+
+    print()
+    print("=" * 78)
+    print("Summary — TeleSABRE vs HQA+Sabre on A_grid_2_2_3_3 (4 cores × 9 qubits)")
+    print("=" * 78)
+    print(f"{'circuit':>10} {'algo':>10} "
+          f"{'swaps':>7} {'teleports':>10} {'fidelity':>10}")
+    for r in rows:
+        print(f"{r['circuit']:>10} {'TeleSABRE':>10} "
+              f"{r['ts_swaps']:>7} {r['ts_tele']:>10} {r['ts_fid']:>10.4f}")
+        print(f"{r['circuit']:>10} {'HQA+Sabre':>10} "
+              f"{r['hq_swaps']:>7} {r['hq_tele']:>10} {r['hq_fid']:>10.4f}")
+
+    # Aggregate: TeleSABRE / HQA ratio per metric, geometric mean across
+    # circuits. Helpful one-line takeaway for the report.
+    import math
+    swap_ratios = [r["ts_swaps"] / max(1, r["hq_swaps"]) for r in rows]
+    tele_ratios = [r["ts_tele"]  / max(1, r["hq_tele"])  for r in rows]
+    fid_ratios  = [
+        r["ts_fid"] / r["hq_fid"] if r["hq_fid"] > 0 else float("inf")
+        for r in rows
+    ]
+    def _gmean(xs):
+        finite = [x for x in xs if math.isfinite(x) and x > 0]
+        if not finite: return float("nan")
+        return math.exp(sum(math.log(x) for x in finite) / len(finite))
+    print()
+    print(f"  geo-mean SWAP ratio      (TeleSABRE / HQA): {_gmean(swap_ratios):.2f}")
+    print(f"  geo-mean teleport ratio  (TeleSABRE / HQA): {_gmean(tele_ratios):.2f}")
+    print(f"  geo-mean fidelity ratio  (TeleSABRE / HQA): {_gmean(fid_ratios):.2f}")
+
+
 if __name__ == "__main__":
     ts_results, hqa_results = run_benchmark()
+    print_summary_table(ts_results, hqa_results)
     plot_benchmark(ts_results, hqa_results)

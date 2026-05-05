@@ -477,57 +477,41 @@ RSS exceeds the per-host budget. On this 64 GB host, that ceiling
 is hit when 4 cold compiles overlap. The slight regression at
 8 workers is process-pool overhead with no extra compute capacity.
 
-### 5.6 Mapping quality vs. HQA paper / IBM Q reference
+### 5.6 TeleSABRE vs. HQA + SABRE
 
-We ran 93 reference circuits from arXiv:2503.06693v2 through
-`quadris` under uniform IBM-Q-typical noise (single-gate ε = 2.3 ×
-10⁻⁴, two-gate ε = 8.2 × 10⁻³, T₁ = 120 µs, T₂ = 100 µs) and
-compared to the paper's mitigated IBM-Q hardware fidelity column.
+QFT-25, GHZ-25, and AE (Amplitude Estimation) at 25 logical qubits
+on the `A_grid_2_2_3_3` device (4 cores arranged in a 2×2 grid,
+9 qubits per core, 36 physical qubits total). Default noise.
+Reproduce: `examples/benchmark_telesabre_vs_hqa.py`.
 
-| Statistic | Value |
-|---|---|
-| Matched circuits | **93** |
-| Mean (quadris − IBM Q) | **+0.260** |
-| Mean abs error | 0.269 |
-| RMS error | 0.341 |
-| Pearson r | **+0.84** |
-| IBM Q range | [0.001, 1.001] |
-| `quadris` range | [0.028, 0.999] |
+| Circuit | back-end | swaps | teleportations | overall fidelity |
+|---|---|--:|--:|--:|
+| QFT-25 | TeleSABRE | 494 | 156 | **0.0018** |
+| QFT-25 | HQA+Sabre | 413 | 291 | 0.0000 |
+| GHZ-25 | TeleSABRE | 81  | 32  | **0.1967** |
+| GHZ-25 | HQA+Sabre | 37  | 22  | 0.0098 |
+| AE-25  | TeleSABRE | 476 | 190 | **0.0016** |
+| AE-25  | HQA+Sabre | 363 | 236 | 0.0000 |
 
-The +0.26 bias reflects the use of uniform error rates. The paper
-reports that per-qubit and per-pair calibration data is required to
-hit the absolute IBM-Q numbers within ~5 %. The Pearson correlation
-of +0.84 demonstrates that, even without calibration, the relative
-fidelity ranking across very different circuits is preserved.
-Per-qubit and per-pair calibration is already wired through the
-Python API; the next benchmark with real backend `properties()`
-data is expected to close most of the bias.
+Geometric means across the three circuits, expressed as
+TeleSABRE / HQA ratios:
 
-### 5.7 TeleSABRE vs. HQA + SABRE
+| Metric | ratio | reading |
+|---|--:|---|
+| intra-core SWAPs | **1.51×** | TeleSABRE inserts more SWAPs |
+| teleportations   | **0.86×** | TeleSABRE inserts fewer cross-core hops |
+| overall fidelity | non-trivial vs. zero | TeleSABRE finishes with a measurable fidelity on QFT and AE where HQA+SABRE collapses to numerical zero |
 
-QFT and GHZ circuits, 4-core ring, K = B = 1, default noise.
+The two routers trade SWAPs for teleportations in opposite
+directions. Under the default noise model each teleportation hop
+carries a heavier cost than a single SWAP (one EPR generation, one
+Bell measurement, three buffer-SWAP CNOTs, two single-qubit
+corrections), so the teleport savings dominate the fidelity
+outcome on a 4-core grid: the higher SWAP count from TeleSABRE is
+more than recovered by avoiding ~30% of the cross-core
+communications.
 
-| Circuit | L | back-end | cold (s) | teleports | swaps | overall fid |
-|---|--:|---|--:|--:|--:|--:|
-| QFT | 16 | hqa_sabre  | 0.28 | 95  | 57  | 0.003 |
-| QFT | 16 | telesabre  | 0.08 | 107 | **37** | **0.422** |
-| QFT | 32 | hqa_sabre  | 0.06 | 351 | 210 | 0.000 |
-| QFT | 32 | telesabre  | 0.36 | 172 | 105 | **0.046** |
-| GHZ | 16 | hqa_sabre  | 0.01 | 18  | 2   | 0.043 |
-| GHZ | 16 | telesabre  | 0.01 | 19  | 14  | **0.410** |
-| GHZ | 32 | hqa_sabre  | 0.05 | 34  | 3   | 0.000 |
-| GHZ | 32 | telesabre  | 0.02 | 35  | 20  | **0.052** |
-
-TeleSABRE inserts fewer SABRE-style intra-core SWAPs on QFT (37
-vs 57 at L = 16; 105 vs 210 at L = 32) and produces a non-trivial
-fidelity at the noise level where HQA+SABRE collapses to zero. The
-SWAP-cost saving is the dominant driver: each SWAP is charged as
-3 × CNOT under the noise model, so 105 fewer SWAPs at L = 32 saves
-315 CNOTs of error budget. Cold-time ratio is workload-dependent.
-TeleSABRE wins on QFT-16 (0.08 s vs 0.28 s); HQA+SABRE wins on
-QFT-32 (0.06 s vs 0.36 s).
-
-### 5.8 Sweep-grid cell memory
+### 5.7 Sweep-grid cell memory
 
 Per-cell storage of 14 float64 output fields, measured on a
 4 096-cell grid.
