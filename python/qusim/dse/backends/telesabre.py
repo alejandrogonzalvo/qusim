@@ -39,9 +39,11 @@ from ..topology import (
 )
 
 
-# Repository root resolved relative to this file: …/python/qusim/dse/backends
-# → parents[3] is the repo root. Used to find the bundled TeleSABRE config.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+# Repository root resolved relative to this file:
+# …/python/qusim/dse/backends/telesabre.py — parents[0] = backends/,
+# parents[1] = dse/, parents[2] = qusim/, parents[3] = python/,
+# parents[4] = repo root. Used to find the bundled TeleSABRE config.
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 _DEFAULT_TELESABRE_CONFIG = (
     _REPO_ROOT / "tests" / "fixtures" / "telesabre" / "configs" / "default.json"
 )
