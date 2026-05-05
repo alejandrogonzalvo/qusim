@@ -3184,6 +3184,7 @@ _CFG_OUTPUTS = [
     Output("cfg-qubits-per-core", "value", allow_duplicate=True),
     Output("cfg-num-cores", "value", allow_duplicate=True),
     Output("cfg-communication-qubits", "value", allow_duplicate=True),
+    Output("cfg-buffer-qubits", "value", allow_duplicate=True),
     Output("cfg-num-logical-qubits", "value", allow_duplicate=True),
     Output("cfg-topology", "value", allow_duplicate=True),
     Output("cfg-intracore-topology", "value", allow_duplicate=True),
@@ -3197,6 +3198,7 @@ _CFG_OUTPUTS = [
     Output("cfg-output-metric", "value", allow_duplicate=True),
     Output("cfg-view-mode", "value", allow_duplicate=True),
     Output("cfg-threshold-enable", "value", allow_duplicate=True),
+    Output("cfg-pin-axis", "data", allow_duplicate=True),
 ]
 
 _THRESH_OUTPUTS = (
@@ -3309,6 +3311,7 @@ def on_load_session(contents, example_id, filename):
         _qpc_default,
         circuit.get("num_cores", 1),
         int(circuit.get("communication_qubits", 1) or 1),
+        int(circuit.get("buffer_qubits", 1) or 1),
         int(circuit.get("num_logical_qubits", _qpc_default) or _qpc_default),
         circuit["topology_type"],
         circuit["intracore_topology"],
@@ -3324,6 +3327,7 @@ def on_load_session(contents, example_id, filename):
         # Iso-levels always-on: the user-facing toggle was removed, so we
         # ignore the saved value and force the gate open regardless.
         ["yes"],
+        circuit.get("pin_axis", "cores") or "cores",
     ]
 
     t_vals = list(ctrls["thresholds"]["values"]) + [None] * 5
@@ -4443,18 +4447,22 @@ def _update_buffer_qubits_bound(comm_qubits, current):
     Output("cfg-qubits-per-core-derived", "style"),
     Input("cfg-pin-cores-lock", "n_clicks"),
     Input("cfg-pin-qpc-lock", "n_clicks"),
-    State("cfg-pin-axis", "data"),
+    Input("cfg-pin-axis", "data"),
     prevent_initial_call=True,
 )
 def _toggle_pin_axis(_n_cores, _n_qpc, current):
-    """Flip the pin axis when either lock icon is clicked."""
+    """Flip the pin axis when either lock icon is clicked, or refresh
+    the visuals when ``cfg-pin-axis`` is set programmatically (e.g. by
+    the load-session callback)."""
     triggered = ctx.triggered_id
     if triggered == "cfg-pin-cores-lock":
         new_pin = "cores"
     elif triggered == "cfg-pin-qpc-lock":
         new_pin = "qubits_per_core"
     else:
-        new_pin = current or "cores"
+        # Triggered by ``cfg-pin-axis.data`` changing — adopt whatever
+        # value the writer set.
+        new_pin = (current or "cores")
 
     pin_cores_locked = new_pin == "cores"
     cores_lock_icon = "🔒" if pin_cores_locked else "🔓"
