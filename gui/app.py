@@ -1665,7 +1665,9 @@ _SIM_INPUTS = [
     Input("cfg-qubits-per-core", "value"),
     Input("cfg-num-cores", "value"),
     Input("cfg-communication-qubits", "value"),
+    Input("cfg-buffer-qubits", "value"),
     Input("cfg-num-logical-qubits", "value"),
+    Input("cfg-pin-axis", "data"),
     Input("cfg-seed", "value"),
     Input("cfg-dynamic-decoupling", "value"),
     Input("cfg-max-cold", "value"),
@@ -1748,6 +1750,7 @@ _METRIC_CHECKLIST_STATES = [State(f"metric-checklist-{i}", "value") for i in ran
     State("cfg-communication-qubits", "value"),
     State("cfg-buffer-qubits", "value"),
     State("cfg-num-logical-qubits", "value"),
+    State("cfg-pin-axis", "data"),
     State("cfg-topology", "value"),
     State("cfg-intracore-topology", "value"),
     State("cfg-placement", "value"),
@@ -1797,6 +1800,7 @@ def run_sweep(
     communication_qubits = all_args[idx]; idx += 1
     buffer_qubits = all_args[idx]; idx += 1
     num_logical_qubits = all_args[idx]; idx += 1
+    pin_axis = all_args[idx]; idx += 1
     topology = all_args[idx]; idx += 1
     intracore_topology = all_args[idx]; idx += 1
     placement = all_args[idx]; idx += 1
@@ -1898,7 +1902,7 @@ def run_sweep(
             "num_logical_qubits": _logi,
             "num_cores": int(num_cores or 1),
             "qubits_per_core": int(qubits_per_core or 16),
-            "pin_axis": "cores",  # default pin; overridden by sweep keys
+            "pin_axis": pin_axis or "cores",
             "communication_qubits": int(communication_qubits or 1),
             "buffer_qubits": int(buffer_qubits or 1),
             "topology_type": topology or "ring",
@@ -3044,6 +3048,7 @@ def export_csv(n_clicks, sweep_store):
     State("cfg-communication-qubits", "value"),
     State("cfg-buffer-qubits", "value"),
     State("cfg-num-logical-qubits", "value"),
+    State("cfg-pin-axis", "data"),
     State("cfg-topology", "value"),
     State("cfg-intracore-topology", "value"),
     State("cfg-placement", "value"),
@@ -3090,6 +3095,7 @@ def on_save_session(n_clicks, *all_args):
     cfg_communication_qubits = all_args[idx]; idx += 1
     cfg_buffer_qubits = all_args[idx]; idx += 1
     cfg_num_logical_qubits = all_args[idx]; idx += 1
+    cfg_pin_axis = all_args[idx]; idx += 1
     cfg_topology = all_args[idx]; idx += 1
     cfg_intracore_topology = all_args[idx]; idx += 1
     cfg_placement = all_args[idx]; idx += 1
@@ -3130,7 +3136,9 @@ def on_save_session(n_clicks, *all_args):
         cfg_qubits_per_core=cfg_qubits_per_core,
         cfg_num_cores=cfg_num_cores,
         cfg_communication_qubits=cfg_communication_qubits,
+        cfg_buffer_qubits=cfg_buffer_qubits,
         cfg_num_logical_qubits=cfg_num_logical_qubits,
+        cfg_pin_axis=cfg_pin_axis or "cores",
         cfg_topology=cfg_topology,
         cfg_intracore_topology=cfg_intracore_topology,
         cfg_placement=cfg_placement,
