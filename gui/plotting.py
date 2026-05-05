@@ -15,6 +15,16 @@ from .constants import (
     OUTPUT_METRICS,
     PARETO_METRIC_ORIENTATION,
 )
+from qusim.dse.flatten import (
+    flatten_sweep_to_table as _flatten_sweep_to_table,
+    _OUTPUT_KEYS,
+    _find_sample,
+    _flatten_nd,
+    _flatten_nested,
+    _flatten_structured,
+    _resolve_axes,
+)
+from qusim.analysis.pareto import pareto_front_mask as _pareto_front_mask
 
 # Map output metric key → display label
 _OUTPUT_LABELS = {m["value"]: m["label"] for m in OUTPUT_METRICS}
@@ -651,10 +661,6 @@ def plot_3d_isosurface(
 # Parallel coordinates (analysis view — works on any sweep dimensionality)
 # ---------------------------------------------------------------------------
 
-_OUTPUT_KEYS = ["overall_fidelity", "algorithmic_fidelity", "routing_fidelity",
-                "coherence_fidelity", "total_circuit_time_ns", "total_epr_pairs",
-                "total_swaps", "total_teleportations", "total_network_distance"]
-
 # Maximum rows passed to per-point plot traces (parallel coords, Pareto
 # dominated cloud, slice scatter). Beyond this, we random-sample — both
 # because Plotly/WebGL struggle past a few hundred k markers and because
@@ -684,146 +690,6 @@ def _add_sample_annotation(fig: go.Figure, shown: int, total: int) -> None:
         showarrow=False,
         font=dict(size=10, color=_TEXT_MUTED, family="Inter, system-ui, sans-serif"),
     )
-
-
-def _flatten_sweep_to_table(sweep_data: dict) -> tuple[list[str], list[str], np.ndarray]:
-    """Flatten a sweep's results into a ``(total_points, ndim + n_outputs)`` matrix.
-
-    Returns ``(metric_keys, available_outputs, data)``. ``data`` is always a
-    numpy float64 array — callers should treat it as such and avoid
-    re-wrapping with ``np.array(...)`` (which would copy).
-    """
-    # Fast path: pre-built table from _flatten_facets_for_analysis.
-    if "_prebuilt_table" in sweep_data:
-        return sweep_data["_prebuilt_table"]
-
-    metric_keys = sweep_data["metric_keys"]
-    grid = sweep_data["grid"]
-    ndim = len(metric_keys)
-
-    # Find a sample result to determine available outputs
-    sample = _find_sample(grid, ndim)
-    available_outputs = [k for k in _OUTPUT_KEYS if k in sample] if sample else []
-
-    # Resolve axis values for all dimensions
-    axes = _resolve_axes(sweep_data, ndim)
-
-    # Structured numpy grid (N >= 4 production path) → vectorised flatten.
-    # Builds the output matrix directly without allocating per-cell dicts.
-    if isinstance(grid, np.ndarray) and grid.dtype.names:
-        data = _flatten_structured(grid, axes, ndim, available_outputs)
-        return metric_keys, available_outputs, data
-
-    rows: list[list[float]] = []
-    if ndim <= 3:
-        _flatten_nested(grid, axes, ndim, available_outputs, rows)
-    else:
-        shape = tuple(sweep_data.get("shape", [len(ax) for ax in axes]))
-        _flatten_nd(grid, axes, shape, ndim, available_outputs, rows)
-
-    if len(rows) == 0:
-        return metric_keys, available_outputs, np.empty(
-            (0, ndim + len(available_outputs)), dtype=np.float64,
-        )
-    return metric_keys, available_outputs, np.asarray(rows, dtype=np.float64)
-
-
-def _flatten_structured(
-    grid: np.ndarray,
-    axes: list,
-    ndim: int,
-    outputs: list[str],
-) -> np.ndarray:
-    """Build the flattened (total, ndim + n_outputs) matrix from a structured grid.
-
-    Vectorised over numpy — no Python loop, no intermediate dict objects.
-    Peak extra memory is the output matrix itself (~N × 16 × 8 B) plus one
-    transient param column at a time (~N × 8 B).
-    """
-    shape = grid.shape
-    total = int(np.prod(shape))
-    n_out = len(outputs)
-    data = np.empty((total, ndim + n_out), dtype=np.float64)
-
-    for d in range(ndim):
-        ax = np.asarray(axes[d], dtype=np.float64)
-        reshape = [1] * ndim
-        reshape[d] = shape[d]
-        data[:, d] = np.broadcast_to(ax.reshape(reshape), shape).ravel()
-
-    for i, k in enumerate(outputs):
-        data[:, ndim + i] = grid[k].ravel().astype(np.float64, copy=False)
-
-    return data
-
-
-def _find_sample(grid, ndim: int) -> dict | None:
-    """Extract one sample result dict from the grid.
-
-    Supports both the legacy list-of-dicts form and the structured numpy
-    array form; callers only use the returned mapping to discover which
-    output keys are available.
-    """
-    if isinstance(grid, np.ndarray) and grid.dtype.names:
-        return {name: 0.0 for name in grid.dtype.names}
-    if not grid:
-        return None
-    item = grid[0]
-    if isinstance(item, dict):
-        return item
-    # Nested list: drill down
-    nested = item
-    while isinstance(nested, list) and nested:
-        nested = nested[0]
-    return nested if isinstance(nested, dict) else None
-
-
-def _resolve_axes(sweep_data: dict, ndim: int) -> list[list]:
-    """Get axis values for each dimension from sweep_data."""
-    if "axes" in sweep_data and len(sweep_data["axes"]) == ndim:
-        return sweep_data["axes"]
-    axes = [sweep_data["xs"]]
-    if ndim >= 2:
-        axes.append(sweep_data["ys"])
-    if ndim >= 3:
-        axes.append(sweep_data["zs"])
-    return axes
-
-
-def _flatten_nested(
-    grid, axes: list, ndim: int, outputs: list[str], rows: list,
-) -> None:
-    """Flatten 1-3D nested-list grids into rows."""
-    import itertools
-    axis_values = [list(enumerate(ax)) for ax in axes[:ndim]]
-    for combo in itertools.product(*axis_values):
-        indices = [c[0] for c in combo]
-        values = [float(c[1]) for c in combo]
-        r = grid
-        for idx in indices:
-            r = r[idx]
-        row = values[:]
-        for k in outputs:
-            row.append(float(r.get(k, 0.0) if isinstance(r, dict) else getattr(r, k, 0.0)))
-        rows.append(row)
-
-
-def _flatten_nd(
-    grid: list, axes: list, shape: tuple, ndim: int,
-    outputs: list[str], rows: list,
-) -> None:
-    """Flatten N-D (N >= 4) flat grid list into rows."""
-    import itertools
-    ranges = [range(s) for s in shape]
-    flat_idx = 0
-    for combo in itertools.product(*ranges):
-        values = [float(axes[d][combo[d]]) for d in range(ndim)]
-        r = grid[flat_idx]
-        row = values[:]
-        for k in outputs:
-            row.append(float(r.get(k, 0.0) if isinstance(r, dict) else getattr(r, k, 0.0)))
-        rows.append(row)
-        flat_idx += 1
 
 
 def plot_parallel_coordinates(sweep_data: dict, output_key: str) -> go.Figure:
@@ -2302,26 +2168,6 @@ def _surface_iso_segments(
 # Merit view: Pareto mode (numerator vs denominator scatter, with iso-FoM
 # guide lines, optional colour-by-input, and Pareto-front highlighting).
 # ---------------------------------------------------------------------------
-
-
-def _pareto_front_mask(num: np.ndarray, den: np.ndarray) -> np.ndarray:
-    """Return a boolean mask selecting Pareto-optimal points under
-    *maximize* numerator and *minimize* denominator.
-
-    O(N²) pairwise comparison — fine for the ≤4096-point sweeps we run.
-    """
-    n = num.shape[0]
-    if n == 0:
-        return np.zeros(0, dtype=bool)
-    # A point i is dominated iff there exists j with num[j] >= num[i] and
-    # den[j] <= den[i] AND at least one of those is strict.
-    num_arr = num.reshape(-1, 1)  # (N, 1)
-    den_arr = den.reshape(-1, 1)
-    ge_num = num_arr.T >= num_arr  # (N, N) → j-rows broadcast across i-cols
-    le_den = den_arr.T <= den_arr
-    strict = (num_arr.T > num_arr) | (den_arr.T < den_arr)
-    dominated = (ge_num & le_den & strict).any(axis=1)
-    return ~dominated
 
 
 def plot_merit_pareto(

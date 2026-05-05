@@ -571,3 +571,9 @@ def telesabre_map_circuit(
         routing_fidelity_grid=raw["routing_fidelity_grid"],
         coherence_fidelity_grid=raw["coherence_fidelity_grid"],
     )
+
+
+# Make `import qusim; qusim.dse.DSEEngine(...)` work without forcing the
+# user to remember the submodule path. Imports are lazy-friendly: each
+# subpackage owns its own optional deps (qiskit for dse, none for analysis).
+from qusim import dse, analysis  # noqa: E402, F401
