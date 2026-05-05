@@ -1,5 +1,10 @@
 # qusim DSE GUI — View Implementation Plan
 
+> **Archived (2026-05).** Every Tier-1 / Tier-2 view in this plan has
+> shipped. The live catalogue with current behaviour and Plotly
+> trace details is [`../DSE_VIEWS.md`](../DSE_VIEWS.md). Tier-3
+> introspection views noted as planned remain unshipped.
+
 ## Overview
 
 This document specifies every visualization view the DSE GUI should support. Views are organized into three tiers: **sweep views** (parameter-space plots driven by the axis/range system), **analysis views** (computed from sweep results, no re-simulation needed), and **introspection views** (per-design-point deep dives into a single simulation result).

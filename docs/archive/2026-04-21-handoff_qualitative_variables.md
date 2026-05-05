@@ -1,5 +1,14 @@
 # Handoff: Qualitative Variables in the DSE UI
 
+> **Archived (2026-05).** Categorical sweep axes have shipped. Live
+> entries are in `CATEGORICAL_METRICS` in
+> [`../../python/qusim/dse/axes.py`](../../python/qusim/dse/axes.py),
+> exposed through `qusim.dse.CAT_METRIC_BY_KEY`. The GUI consumes
+> them in `gui/components.py:make_metric_selector` (checklist
+> alongside the slider). File paths in this document refer to the
+> pre-2026-05 layout when this code lived in `gui/`; they now live in
+> `qusim.dse`.
+
 ## Goal
 
 Allow the user to sweep over **qualitative (categorical) parameters** on the

@@ -180,36 +180,44 @@ forkserver pool, capping concurrent workers by an empirical RAM model
 - `python/qusim/dse/__init__.py` — public surface of the DSE package
   with a copy-pasteable usage sketch in the module docstring.
 
-## Internal refactor planned
+## `qusim/dse/` internal layout
 
-`qusim/dse/engine.py` is currently 2 451 lines and mixes 8 concerns
-(memory budgeting, circuit construction, topology + slot layout, noise
-derivation, result containers, config normalisation, routing backends,
-sweep orchestration). It will be split into focused submodules:
+The DSE package is split along its concern boundaries — every file
+has one reason to change:
 
 ```
 qusim/dse/
-├── memory.py          # cold-MB estimate, hot RAM ceiling
-├── circuits.py        # qft / ghz / random / qasm builders
-├── topology.py        # inter/intra-core, slot layout, distance matrix
+├── axes.py            # Parameter registry (MetricDef, SWEEPABLE_METRICS,
+│                        NOISE_DEFAULTS, OUTPUT_METRICS, orientation)
+├── memory.py          # /proc/meminfo helpers; thread-pool capping
+├── circuits.py        # qft / ghz / random / qasm builders + transpile
+├── topology.py        # inter/intra-core graph, slot layout, distance,
+│                        K/B clamps for the user config
 ├── noise.py           # _merge_noise, _derived_tele_*, gate arrays
-├── results.py         # CachedMapping, SweepResult, SweepProgress
-├── config.py          # alias expansion + clamping
-├── sweep.py           # _eval_point, _eval_cold_batch, parallel pool
-├── engine.py          # DSEEngine class only (~250 lines)
+├── results.py         # CachedMapping, SweepResult, SweepProgress, RESULT_DTYPE
+├── config.py          # alias expansion + _clamp_cfg + COLD_PATH_KEYS
+├── flatten.py         # flatten_sweep_to_table (sweep result → table)
+├── sweep.py           # _compile_one, _eval_cold_batch, parallel pool
+├── engine.py          # DSEEngine façade — public run_cold/run_hot/sweep_*
 └── backends/
-    ├── base.py        # Backend protocol
-    ├── hqa_sabre.py
-    └── telesabre.py
+    ├── base.py        # Backend protocol (compile -> CachedMapping)
+    ├── hqa_sabre.py   # HQA + SABRE backend
+    └── telesabre.py   # TeleSABRE C-library backend
 ```
 
-This collapses three duplications:
-1. `run_cold` ↔ `_eval_cold_batch` share a `_compile_one(...)` helper.
-2. HQA path ↔ TeleSABRE path share a cold-path skeleton; only the
-   mapper call differs (Backend strategy).
-3. `sweep_1d / sweep_2d / sweep_3d` collapse to thin wrappers around
-   `sweep_nd`.
+Three duplications were collapsed during the split:
 
-Backwards compatibility is preserved via `gui/dse_engine.py` and
-`gui/fom.py` shims, and the public `qusim.dse` / `qusim.analysis` API
-stays stable.
+1. `run_cold` ↔ `_eval_cold_batch` share a `_compile_one(...)` helper
+   in `sweep.py` so the foreground and worker cold paths can never
+   drift.
+2. HQA path ↔ TeleSABRE path are now `Backend` strategies; the
+   shared cold-path skeleton lives in `_compile_one`. Adding a third
+   routing algorithm is one new file plus an entry in
+   `qusim/dse/backends/__init__.py:_BACKENDS`.
+3. `sweep_1d` / `sweep_2d` / `sweep_3d` collapse to thin wrappers
+   around `sweep_nd` that reshape the legacy
+   `(xs[, ys[, zs]], grid)` tuple from a `SweepResult`.
+
+Backwards compatibility is preserved via the `gui/dse_engine.py` and
+`gui/fom.py` shims; the public `qusim.dse` / `qusim.analysis` API is
+stable.

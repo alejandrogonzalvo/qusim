@@ -8,13 +8,22 @@ Status legend: **done** | **in progress** | planned
 
 ## High Priority
 
-### TeleSABRE integration — planned
+### TeleSABRE integration — **done**
 
-The current two-stage pipeline (HQA global placement → SABRE intra-core routing) treats inter-core teleportations and intra-core SWAPs as independent passes. TeleSABRE is a unified router that natively handles both local SWAP insertion and inter-core teleportation in a single pass, potentially reducing total communication overhead compared to the decoupled approach.
+The two-stage pipeline (HQA global placement → SABRE intra-core
+routing) is now joined by TeleSABRE as a second routing backend.
+TeleSABRE is a unified router that natively handles both local SWAP
+insertion and inter-core teleportation in a single pass.
 
-Integration would replace the `MultiCoreOrchestrator` with TeleSABRE as the routing backend, while keeping the HQA placement table as the initial assignment fed into the router. The Rust fidelity engine would remain unchanged — it already accepts a generic sparse SWAP/teleportation event list.
-
-**Effort:** Medium — requires adapting TeleSABRE's output event format to the existing sparse tensor interface.
+Switch backends per `DSEEngine.run_cold` call via the
+`routing_algorithm` kwarg (`"hqa_sabre"` or `"telesabre"`). The C
+library is vendored in `csrc/telesabre/`, wrapped by the Rust crate
+in `src/telesabre/`, exposed to Python through
+`qusim.rust_core.telesabre_map_and_estimate`, and integrated with the
+DSE engine via `qusim.dse.backends.telesabre.TeleSabreBackend`. The
+backend remaps placements + sparse swaps from TeleSABRE's gate-step
+space into Qiskit DAG-layer space so the hot-path noise model sees a
+consistent row count regardless of the backend.
 
 ### Per-qubit and per-pair gate error rates — **done**
 
@@ -25,16 +34,12 @@ Real backends have wildly varying gate errors across qubits. IBM Q calibration d
 
 Implemented in `src/noise/mod.rs` with `ArchitectureParams.single_gate_error_for(q)` and `two_gate_error_for(u, v)` lookup methods. Both `process_computational_gates` and `process_sabre_swaps` use the per-qubit/per-pair values. Fully wired through the Python API.
 
-### Readout / measurement error
+### Readout / measurement error — **done**
 
-The current model has no readout error parameter. This is a significant noise source on real hardware (1-5% per qubit on IBM Q).
-
-- Add `readout_error: float` (scalar, uniform) to `ArchitectureParams`
-- Add `readout_error_per_qubit: Optional[Vec<f64>>` for per-qubit readout errors
-- Apply as a multiplicative factor on measured qubits at the final layer
-- Expose in `map_circuit()` Python API
-
-**Effort:** Low — single new noise term applied once at end of circuit.
+`measurement_error` is now a first-class noise parameter. Modelled
+once per teleportation hop (Bell measurement on the source side) and
+swept on its own axis in the GUI. `readout_mitigation_factor` (TREX)
+and `readout_error_per_qubit` are also exposed through `map_circuit`.
 
 ### Architecture specification object
 
@@ -152,4 +157,11 @@ For resource estimation, knowing *when* EPR pairs are consumed (not just the tot
 | Benchmark against paper results | 2026-03-24 | `864f9e3`, `1103f19` |
 | Per-qubit T1/T2 support | 2026-03-24 | in `ArchitectureParams` |
 | Per-qubit single-gate and per-pair two-gate errors | 2026-04-06 | `7c67491`, `68d501c`, `a7c714a` |
-| Gate-type differentiation (native 5D tensors + zero penalty defaults) | 2026-04-08 | Pending Commit |
+| Gate-type differentiation (native 5D tensors + zero penalty defaults) | 2026-04-08 | — |
+| Categorical sweep axes (circuit / topology / placement / routing) | 2026-04-21 | `2026-04-21-categorical-facet-*` plan series |
+| Save / load full UI session state | 2026-04-23 | `2026-04-23-save-load-sessions-*` plan series |
+| Frozen-axis dropdown (3-D slice scrubbing) | 2026-04-23 | `2026-04-23-frozen-axis-dropdown-*` plan series |
+| TeleSABRE FFI integration as second routing backend | 2026-04-30 | `2026-04-14-telesabre-fidelity-integration-*` plan series |
+| Readout / measurement error + TREX mitigation | 2026-05-04 | exposed via `measurement_error`, `readout_mitigation_factor` |
+| DSE engine + FoM + Pareto lifted into `qusim.dse` / `qusim.analysis` | 2026-05-05 | `879c7dd` (lift), `1ee94ba` (leaf split), `4acf413` (backends + thin facade) |
+| `pip install qusim[gui]` extras + `qusim-dse` console script | 2026-05-05 | `e384094` |

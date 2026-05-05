@@ -1,5 +1,10 @@
 # Agent Handoff — DSE Progress Bar
 
+> **Archived (2026-05).** Sweep progress reporting has shipped — see
+> `SweepProgress` in `qusim.dse.results` and the `progress_callback`
+> kwarg on `DSEEngine.sweep_*`. File paths and "current state"
+> sections below are point-in-time; do not treat them as authoritative.
+
 ## Your task
 
 Add a loading/progress bar to the DSE GUI that shows sweep progress when the computation takes more than a trivial amount of time. This happens when hot reload is not possible — i.e. when cold-path parameters (num_qubits, num_cores) are being swept, or when the Run button is clicked for the first time.
