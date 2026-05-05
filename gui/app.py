@@ -1364,16 +1364,19 @@ from gui.constants import SWEEPABLE_METRICS as _SM
         Output("cfg-row-num-qubits", "style"),
         Output("cfg-row-num-cores", "style"),
         Output("cfg-row-communication-qubits", "style"),
+        Output("cfg-row-buffer-qubits", "style"),
         Output("cfg-row-num-logical-qubits", "style"),
     ]
     + [Output(f"cfg-row-cat-{cat.key}", "style") for cat in CATEGORICAL_METRICS],
     *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
     Input("num-metrics-store", "data"),
+    Input("cfg-num-cores", "value"),
     prevent_initial_call=False,
 )
 def toggle_noise_rows(*args):
     dropdown_vals = args[:MAX_METRICS]
     num_metrics = args[MAX_METRICS] or 1
+    cfg_num_cores = args[MAX_METRICS + 1]
     swept = set()
     for i, val in enumerate(dropdown_vals):
         if i < num_metrics and val:
@@ -1390,7 +1393,26 @@ def toggle_noise_rows(*args):
         else {}
     )
     cores_style = {"display": "none"} if "num_cores" in swept else {}
-    comm_style = {"display": "none"} if "communication_qubits" in swept else {}
+    # Comm / buffer qubits are inter-core constructs — meaningless at
+    # cores=1.  Hide both rows when the active cores value is 1 (unless
+    # the cores axis is itself being swept, in which case the user is
+    # varying cores and we keep the rows visible to drive the cells with
+    # cores>1).
+    cores_is_one = (
+        cfg_num_cores is not None
+        and int(cfg_num_cores) == 1
+        and "num_cores" not in swept
+    )
+    comm_style = (
+        {"display": "none"}
+        if ("communication_qubits" in swept or cores_is_one)
+        else {}
+    )
+    buffer_style = (
+        {"display": "none"}
+        if ("buffer_qubits" in swept or cores_is_one)
+        else {}
+    )
     logi_style = (
         {"display": "none"}
         if ("num_logical_qubits" in swept or qubits_alias_swept)
@@ -1399,7 +1421,11 @@ def toggle_noise_rows(*args):
     cat_styles = [
         {"display": "none"} if cat.key in swept else {} for cat in CATEGORICAL_METRICS
     ]
-    return noise_styles + [qubits_style, cores_style, comm_style, logi_style] + cat_styles
+    return (
+        noise_styles
+        + [qubits_style, cores_style, comm_style, buffer_style, logi_style]
+        + cat_styles
+    )
 
 
 # ---------------------------------------------------------------------------
