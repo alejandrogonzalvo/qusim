@@ -50,7 +50,8 @@ def pareto_front(
     Parameters
     ----------
     sweep
-        A :class:`qusim.dse.SweepResult` (or its ``.as_dict()``) — anything
+        A :class:`qusim.dse.SweepResult` (which knows how to convert
+        itself via ``.to_sweep_data()``), or any sweep dict that
         :func:`flatten_sweep_to_table` accepts.
     objective_x, objective_y
         Output metric keys (e.g. ``"total_epr_pairs"``,
@@ -65,7 +66,9 @@ def pareto_front(
         sweep, and ``axes`` carries the swept-axis values for each point
         (handy for hover labels in custom plots).
     """
-    if hasattr(sweep, "as_dict"):
+    if hasattr(sweep, "to_sweep_data"):
+        sweep_dict = sweep.to_sweep_data()
+    elif hasattr(sweep, "as_dict"):
         sweep_dict = sweep.as_dict()
     else:
         sweep_dict = sweep

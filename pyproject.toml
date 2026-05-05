@@ -1,11 +1,13 @@
 [project]
 name = "qusim"
 version = "0.1.0"
-description = ""
+description = "Multi-core quantum architecture simulator with built-in Design Space Exploration"
 authors = [
     {name = "Alejandro Gonzalvo",email = "alejandrogonhid@gmail.com"}
 ]
 requires-python = ">=3.12,<3.14.1"
+# Core: Rust simulator + Python DSE library (qusim, qusim.dse, qusim.analysis).
+# Plotting via matplotlib so library users can render results without a UI.
 dependencies = [
     "matplotlib (>=3.10.8,<4.0.0)",
     "qiskit (>=2.3.0,<3.0.0)",
@@ -13,14 +15,25 @@ dependencies = [
     "networkx (>=3.6.1,<4.0.0)",
     "tqdm (>=4.67.3,<5.0.0)",
     "joblib (>=1.5.3,<2.0.0)",
-    "pytest (>=9.0.2,<10.0.0)",
-    "pytest-benchmark (>=5.2.3,<6.0.0)",
-    "pdoc (>=16.0.0,<17.0.0)",
-    "qiskit-ibm-runtime (>=0.46.1,<0.47.0)",
+    "qiskit-ibm-runtime (>=0.46.1,<0.47.0)"
+]
+
+[project.optional-dependencies]
+# Dash GUI (DSE app at gui/app.py). Install with `pip install qusim[gui]`.
+gui = [
     "dash (>=4.1.0,<5.0.0)",
     "dash-bootstrap-components (>=2.0.4,<3.0.0)",
     "dash-cytoscape (>=1.0.0,<2.0.0)"
 ]
+# Test + docs tooling.
+dev = [
+    "pytest (>=9.0.2,<10.0.0)",
+    "pytest-benchmark (>=5.2.3,<6.0.0)",
+    "pdoc (>=16.0.0,<17.0.0)"
+]
+
+[project.scripts]
+qusim-dse = "gui.app:main"
 
 [tool.maturin]
 module-name = "qusim.rust_core"

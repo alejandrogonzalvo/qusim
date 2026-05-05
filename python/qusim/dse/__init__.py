@@ -11,14 +11,16 @@ Typical usage::
 
     engine = DSEEngine()
     sweep = engine.sweep_nd(
+        cached=None,
         sweep_axes=[
-            {"key": "two_gate_error", "values": [1e-4, 1e-3, 1e-2]},
-            {"key": "num_cores",      "values": [1, 2, 4, 8]},
+            ("num_cores",            1, 8),       # cold: num_qubits/num_cores etc.
+            ("two_gate_error",      -4, -2),      # hot: log10 endpoints for log_scale
         ],
+        fixed_noise={},
         cold_config={
             "circuit_type": "qft",
             "num_qubits": 32,
-            "num_cores": 4,
+            "num_cores": 4,                       # overridden by sweep_axes
             "topology_type": "ring",
             "intracore_topology": "all_to_all",
             "placement_policy": "spectral",
@@ -27,14 +29,14 @@ Typical usage::
         },
     )
 
-    # SweepResult exposes axes, grid, faceted output, and a flat-table view.
+    # SweepResult exposes axes, grid, shape, total_points.
     print(sweep.shape, sweep.metric_keys)
 
     # Hand off to qusim.analysis for FoM / Pareto-front analysis.
     from qusim.analysis import FomConfig, compute_for_sweep
     fom = FomConfig(numerator="overall_fidelity",
                     denominator="max(total_epr_pairs, 1)")
-    result = compute_for_sweep(sweep.as_dict(), fom)
+    result = compute_for_sweep(sweep.to_sweep_data(), fom)
 """
 
 from .axes import (

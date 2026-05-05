@@ -5268,16 +5268,23 @@ def _topology_hover_label(node_data):
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    # Multi-user knobs:
-    # - debug=False: no hot-reload (which breaks under concurrent requests)
-    #   and no traceback leaks to the browser.
-    # - host="127.0.0.1": only cloudflared (or local browser) can reach the
-    #   port; nothing on the LAN can connect directly.
-    # - threaded=True: the Flask dev server serves each request on its own
-    #   thread, so polling endpoints stay responsive while a sweep runs.
-    # Override host via QUSIM_HOST=0.0.0.0 if you need direct LAN access.
+def main() -> None:
+    """Console-script entry point (`qusim-dse`).
+
+    Multi-user knobs:
+      - debug=False: no hot-reload (which breaks under concurrent requests)
+        and no traceback leaks to the browser.
+      - host="127.0.0.1": only cloudflared (or local browser) can reach the
+        port; nothing on the LAN can connect directly.
+      - threaded=True: the Flask dev server serves each request on its own
+        thread, so polling endpoints stay responsive while a sweep runs.
+      - Override host via QUSIM_HOST=0.0.0.0 if you need direct LAN access.
+    """
     host = os.environ.get("QUSIM_HOST", "127.0.0.1")
     port = int(os.environ.get("QUSIM_PORT", "8050"))
     print(f"qusim DSE GUI starting at http://{host}:{port}")
     app.run(debug=False, host=host, port=port, threaded=True)
+
+
+if __name__ == "__main__":
+    main()
