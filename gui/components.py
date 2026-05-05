@@ -935,76 +935,108 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
 
     # --- Topology tab content ---
     # Pin toggle: exactly one of {Cores, Qubits per core} is the user-set
-    # architectural input; the other is derived. The lock icons next to
-    # each slider flip the pin. ``cfg-pin-axis`` is a hidden Store that
-    # other callbacks read to know which axis is live.
+    # architectural input; the other is derived. A segmented control at
+    # the top of the tab makes the choice unambiguous; only the active
+    # slider renders, the inactive one shows a derived-value display.
     _pin_default = "cores"
 
-    def _arch_slider_with_lock(
-        *, label: str, slider_id: str, lock_id: str,
+    def _segmented_pin_toggle(pin_value: str) -> html.Div:
+        """Two-button segmented control for the pin axis."""
+        active_style = {
+            "flex": "1",
+            "padding": "8px 10px",
+            "fontSize": "12px",
+            "fontWeight": "600",
+            "border": f"1px solid {COLORS['brand']}",
+            "background": COLORS["brand"],
+            "color": "white",
+            "cursor": "pointer",
+            "textAlign": "center",
+            "userSelect": "none",
+        }
+        inactive_style = {
+            "flex": "1",
+            "padding": "8px 10px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": f"1px solid {COLORS['border']}",
+            "background": COLORS["surface2"],
+            "color": COLORS["text"],
+            "cursor": "pointer",
+            "textAlign": "center",
+            "userSelect": "none",
+        }
+        cores_active = (pin_value == "cores")
+        return html.Div(
+            style={
+                "display": "flex",
+                "alignItems": "stretch",
+                "gap": "0",
+                "borderRadius": "6px",
+                "overflow": "hidden",
+                "marginBottom": "10px",
+            },
+            children=[
+                html.Div(
+                    "I set the cores",
+                    id="cfg-pin-cores-btn",
+                    n_clicks=0,
+                    style=(active_style if cores_active else inactive_style),
+                ),
+                html.Div(
+                    "I set the qubits/core",
+                    id="cfg-pin-qpc-btn",
+                    n_clicks=0,
+                    style=(inactive_style if cores_active else active_style),
+                ),
+            ],
+        )
+
+    def _arch_row(
+        *, label: str, slider_id: str,
         slider_min: int, slider_max: int, value: int,
         pin_value: str, axis_key: str, derived_id: str,
         row_id: str, swept_key: str, tooltip: str,
     ) -> html.Div:
-        """Slider row with a lock icon on the left + a derived-value badge."""
-        is_locked = (axis_key == pin_value)
-        lock_icon = "🔒" if is_locked else "🔓"
-        # Hide the row when this axis is the *active* sweep axis OR when
-        # it is the *derived* axis (the other one is pinned).
-        hide_row = (swept_key in swept_keys) or (not is_locked)
-        derived_badge_visible = not is_locked
+        """One architectural axis: either the slider (when pinned) or a
+        derived-value display (when the *other* axis is pinned). Hidden
+        outright when this axis is being swept (handled upstream)."""
+        is_active = (axis_key == pin_value)
         return html.Div(
             id=row_id,
             style=({"display": "none"} if (swept_key in swept_keys) else {}),
             children=[
                 html.Div(
-                    style={"display": "flex", "alignItems": "center", "gap": "6px"},
+                    id=f"{row_id}-slider-row",
+                    style=({} if is_active else {"display": "none"}),
                     children=[
-                        html.Span(
-                            lock_icon,
-                            id=lock_id,
-                            n_clicks=0,
-                            style={
-                                "cursor": "pointer",
-                                "fontSize": "14px",
-                                "userSelect": "none",
-                            },
-                        ),
-                        dbc.Tooltip(
-                            f"Lock {label} as the pinned architectural axis. "
-                            f"The unpinned axis (cores ↔ qubits/core) is "
-                            f"derived per cell from the logical qubits + "
-                            f"comm/buffer overhead.",
-                            target=lock_id,
-                            placement="top",
-                            style={"fontSize": "11px", "maxWidth": "280px"},
-                        ),
-                        html.Div(
-                            slider_row(
-                                label=label,
-                                slider_id=slider_id,
-                                min=slider_min,
-                                max=slider_max,
-                                step=1,
-                                value=value,
-                                log_scale=False,
-                                tooltip=tooltip,
-                                row_id=f"{row_id}-slider-row",
-                                row_style=({} if is_locked else {"display": "none"}),
-                            ),
-                            style={"flex": "1"},
-                        ),
-                        html.Div(
-                            id=derived_id,
-                            style=(
-                                {"flex": "1", "fontSize": "12px",
-                                 "color": COLORS["text_muted"]}
-                                if derived_badge_visible
-                                else {"display": "none"}
-                            ),
-                            children=f"{label}: (derived)",
+                        slider_row(
+                            label=label,
+                            slider_id=slider_id,
+                            min=slider_min,
+                            max=slider_max,
+                            step=1,
+                            value=value,
+                            log_scale=False,
+                            tooltip=tooltip,
+                            row_id=f"{row_id}-slider-inner",
                         ),
                     ],
+                ),
+                html.Div(
+                    id=derived_id,
+                    style=(
+                        {"display": "none"} if is_active else {
+                            "padding": "6px 8px",
+                            "background": COLORS["surface2"],
+                            "border": f"1px dashed {COLORS['border']}",
+                            "borderRadius": "6px",
+                            "fontSize": "12px",
+                            "color": COLORS["text_muted"],
+                            "marginBottom": "10px",
+                        }
+                    ),
+                    children=f"{label}: (derived)",
                 ),
             ],
         )
@@ -1012,10 +1044,10 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     topology_content = html.Div(
         [
             dcc.Store(id="cfg-pin-axis", data=_pin_default),
-            _arch_slider_with_lock(
+            _segmented_pin_toggle(_pin_default),
+            _arch_row(
                 label="Cores",
                 slider_id="cfg-num-cores",
-                lock_id="cfg-pin-cores-lock",
                 slider_min=int(METRIC_BY_KEY["num_cores"].slider_min),
                 slider_max=int(METRIC_BY_KEY["num_cores"].slider_max),
                 value=_DEFAULT_NC,
@@ -1025,15 +1057,13 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                 row_id="cfg-row-num-cores",
                 swept_key="num_cores",
                 tooltip=(
-                    "Number of processor cores. When *Cores* is pinned, "
-                    "this is the user-set value and qubits-per-core is "
-                    "derived. Sweepable only while Cores is pinned."
+                    "Number of processor cores. Sweepable only when "
+                    "*I set the cores* is selected."
                 ),
             ),
-            _arch_slider_with_lock(
+            _arch_row(
                 label="Qubits per core",
                 slider_id="cfg-qubits-per-core",
-                lock_id="cfg-pin-qpc-lock",
                 slider_min=int(METRIC_BY_KEY["qubits_per_core"].slider_min),
                 slider_max=int(METRIC_BY_KEY["qubits_per_core"].slider_max),
                 value=_DEFAULT_QPC,
@@ -1043,10 +1073,8 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                 row_id="cfg-row-qubits-per-core",
                 swept_key="qubits_per_core",
                 tooltip=(
-                    "Slots per core (uniform across the chip). When "
-                    "*Qubits per core* is pinned, this is the user-set "
-                    "value and cores is derived. Sweepable only while "
-                    "Qubits-per-core is pinned."
+                    "Slots per core (uniform across the chip). Sweepable "
+                    "only when *I set the qubits/core* is selected."
                 ),
             ),
             html.Div(
@@ -1059,7 +1087,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                     "borderRadius": "6px",
                     "margin": "4px 0 10px 0",
                 },
-                children="→ derived num_qubits, idle reserved: (auto)",
+                children="(architecture summary)",
             ),
             slider_row(
                 label="Communication qubits",

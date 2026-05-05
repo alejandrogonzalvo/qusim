@@ -4437,49 +4437,76 @@ def _update_buffer_qubits_bound(comm_qubits, current):
 # ---------------------------------------------------------------------------
 
 
+_PIN_TOGGLE_BTN_ACTIVE = {
+    "flex": "1",
+    "padding": "8px 10px",
+    "fontSize": "12px",
+    "fontWeight": "600",
+    "border": f"1px solid {COLORS['brand']}",
+    "background": COLORS["brand"],
+    "color": "white",
+    "cursor": "pointer",
+    "textAlign": "center",
+    "userSelect": "none",
+}
+_PIN_TOGGLE_BTN_INACTIVE = {
+    "flex": "1",
+    "padding": "8px 10px",
+    "fontSize": "12px",
+    "fontWeight": "500",
+    "border": f"1px solid {COLORS['border']}",
+    "background": COLORS["surface2"],
+    "color": COLORS["text"],
+    "cursor": "pointer",
+    "textAlign": "center",
+    "userSelect": "none",
+}
+_DERIVED_BADGE_STYLE = {
+    "padding": "6px 8px",
+    "background": COLORS["surface2"],
+    "border": f"1px dashed {COLORS['border']}",
+    "borderRadius": "6px",
+    "fontSize": "12px",
+    "color": COLORS["text_muted"],
+    "marginBottom": "10px",
+}
+
+
 @app.callback(
     Output("cfg-pin-axis", "data"),
-    Output("cfg-pin-cores-lock", "children"),
-    Output("cfg-pin-qpc-lock", "children"),
+    Output("cfg-pin-cores-btn", "style"),
+    Output("cfg-pin-qpc-btn", "style"),
     Output("cfg-row-num-cores-slider-row", "style"),
     Output("cfg-row-qubits-per-core-slider-row", "style"),
     Output("cfg-num-cores-derived", "style"),
     Output("cfg-qubits-per-core-derived", "style"),
-    Input("cfg-pin-cores-lock", "n_clicks"),
-    Input("cfg-pin-qpc-lock", "n_clicks"),
+    Input("cfg-pin-cores-btn", "n_clicks"),
+    Input("cfg-pin-qpc-btn", "n_clicks"),
     Input("cfg-pin-axis", "data"),
     prevent_initial_call=True,
 )
 def _toggle_pin_axis(_n_cores, _n_qpc, current):
-    """Flip the pin axis when either lock icon is clicked, or refresh
-    the visuals when ``cfg-pin-axis`` is set programmatically (e.g. by
-    the load-session callback)."""
+    """Flip the pin axis when either toggle button is clicked, or
+    refresh visuals when ``cfg-pin-axis`` is set programmatically (e.g.
+    by the load-session callback)."""
     triggered = ctx.triggered_id
-    if triggered == "cfg-pin-cores-lock":
+    if triggered == "cfg-pin-cores-btn":
         new_pin = "cores"
-    elif triggered == "cfg-pin-qpc-lock":
+    elif triggered == "cfg-pin-qpc-btn":
         new_pin = "qubits_per_core"
     else:
-        # Triggered by ``cfg-pin-axis.data`` changing — adopt whatever
-        # value the writer set.
         new_pin = (current or "cores")
 
-    pin_cores_locked = new_pin == "cores"
-    cores_lock_icon = "🔒" if pin_cores_locked else "🔓"
-    qpc_lock_icon = "🔒" if not pin_cores_locked else "🔓"
+    cores_active = new_pin == "cores"
+    cores_btn = _PIN_TOGGLE_BTN_ACTIVE if cores_active else _PIN_TOGGLE_BTN_INACTIVE
+    qpc_btn = _PIN_TOGGLE_BTN_INACTIVE if cores_active else _PIN_TOGGLE_BTN_ACTIVE
 
-    cores_slider_style = {} if pin_cores_locked else {"display": "none"}
-    qpc_slider_style = {} if not pin_cores_locked else {"display": "none"}
-    cores_derived_style = (
-        {"flex": "1", "fontSize": "12px", "color": COLORS["text_muted"]}
-        if not pin_cores_locked else {"display": "none"}
-    )
-    qpc_derived_style = (
-        {"flex": "1", "fontSize": "12px", "color": COLORS["text_muted"]}
-        if pin_cores_locked else {"display": "none"}
-    )
+    cores_slider_style = {} if cores_active else {"display": "none"}
+    qpc_slider_style = {} if not cores_active else {"display": "none"}
+    cores_derived_style = ({"display": "none"} if cores_active else _DERIVED_BADGE_STYLE)
+    qpc_derived_style = (_DERIVED_BADGE_STYLE if cores_active else {"display": "none"})
     return (
-        new_pin, cores_lock_icon, qpc_lock_icon,
+        new_pin, cores_btn, qpc_btn,
         cores_slider_style, qpc_slider_style,
         cores_derived_style, qpc_derived_style,
     )
@@ -4507,6 +4534,14 @@ def _toggle_pin_axis(_n_cores, _n_qpc, current):
 def _update_architecture_summary(
     logical, cores, qpc, K, B, topo, pin_axis,
 ):
+    """Live architecture-summary line + derived-value badges.
+
+    Translates the raw inputs through the resolver and writes:
+      * a one-line summary describing the resolved (cores × qpc =
+        num_qubits) chip;
+      * the value that goes into the derived-axis badge for whichever
+        of cores or qubits/core is *not* user-set.
+    """
     from qusim.dse.config import _resolve_architecture
     cfg = {
         "num_logical_qubits": int(logical or 16),
@@ -4520,19 +4555,26 @@ def _update_architecture_summary(
     res = _resolve_architecture(cfg)
     if not res["feasible"]:
         return (
-            f"⚠ Infeasible: {res['reason']}",
-            "Cores: ?",
-            "Qubits/core: ?",
+            f"⚠ This configuration is not buildable: {res['reason']}",
+            "Cores → ?",
+            "Qubits/core → ?",
         )
     nq = int(cfg["num_qubits"])
-    idle = int(cfg["idle_reserved_qubits"])
+    nc = int(cfg["num_cores"])
+    qpc_v = int(cfg["qubits_per_core"])
+    wasted = int(cfg["idle_reserved_qubits"])
     summary = (
-        f"→ {nq} physical qubits "
-        f"({cfg['num_cores']} cores × {cfg['qubits_per_core']} qpc), "
-        f"idle reserved: {idle}"
+        f"→ {nq} physical qubit{'s' if nq != 1 else ''} "
+        f"({nc} core{'s' if nc != 1 else ''} × {qpc_v} per core)"
     )
-    cores_badge = f"Cores: {cfg['num_cores']} (derived)"
-    qpc_badge = f"Qubits/core: {cfg['qubits_per_core']} (derived)"
+    if wasted > 0:
+        summary += (
+            f" · {wasted} unused comm slots at edge cores "
+            f"(non-uniform inter-core topology — corner cores carry "
+            f"fewer real comm links than the chip-uniform reservation)"
+        )
+    cores_badge = f"Cores → {nc}"
+    qpc_badge = f"Qubits/core → {qpc_v}"
     return summary, cores_badge, qpc_badge
 
 
@@ -4855,6 +4897,8 @@ def _topology_axis_value_to_slider(
     Input("cfg-buffer-qubits", "value"),
     Input("cfg-topology", "value"),
     Input("cfg-intracore-topology", "value"),
+    Input("cfg-num-logical-qubits", "value"),
+    Input("cfg-pin-axis", "data"),
     Input("topology-overlay-metric", "value"),
     Input("topology-facet-selector", "value"),
     Input({"type": "topology-axis-slider", "index": ALL}, "value"),
@@ -4862,13 +4906,37 @@ def _topology_axis_value_to_slider(
     prevent_initial_call=False,
 )
 def _rebuild_topology_graph(
-    num_qubits, num_cores, comm_qubits, buffer_qubits, topology, intracore_topology,
+    qubits_per_core, num_cores, comm_qubits, buffer_qubits, topology,
+    intracore_topology, num_logical_qubits, pin_axis,
     overlay_metric, facet_idx, axis_slider_vals, sweep_store,
 ):
+    # Logical-first: derive the unpinned axis through the resolver so the
+    # topology view matches the right-sidebar's derived-value badges
+    # exactly. Without this, switching pin from cores to qpc leaves the
+    # hidden cores slider at a stale value (e.g. 8) and the picture shows
+    # 8 cores while the badge says "Cores: 1 (derived)".
+    from qusim.dse.config import _resolve_architecture
+    cfg = {
+        "num_logical_qubits": int(num_logical_qubits or 16),
+        "num_cores": int(num_cores or 1),
+        "qubits_per_core": int(qubits_per_core or 16),
+        "communication_qubits": int(comm_qubits or 1),
+        "buffer_qubits": int(buffer_qubits or 1),
+        "topology_type": topology or "ring",
+        "pin_axis": pin_axis or "cores",
+    }
+    res = _resolve_architecture(cfg)
+    if res["feasible"]:
+        eff_cores = int(cfg["num_cores"])
+        eff_phys = int(cfg["num_qubits"])
+    else:
+        eff_cores = max(1, int(num_cores or 1))
+        eff_phys = eff_cores * max(1, int(qubits_per_core or 16))
+
     def _build_default_elements() -> list:
         return build_topology_elements(
-            num_cores=num_cores or 1,
-            num_qubits=num_qubits or 16,
+            num_cores=eff_cores,
+            num_qubits=eff_phys,
             communication_qubits=comm_qubits or 1,
             topology=topology or "ring",
             intracore_topology=intracore_topology or "all_to_all",
@@ -4923,8 +4991,8 @@ def _rebuild_topology_graph(
     # the right-panel snapshot. The cell already carries the post-clamp
     # values that the engine actually used for compilation.
     elements = build_topology_elements(
-        num_cores=int(cell.get("num_cores", num_cores or 1)),
-        num_qubits=int(cell.get("num_physical", num_qubits or 16)),
+        num_cores=int(cell.get("num_cores", eff_cores)),
+        num_qubits=int(cell.get("num_physical", eff_phys)),
         communication_qubits=int(cell.get("communication_qubits", comm_qubits or 1)),
         topology=cell.get("topology_type", topology or "ring"),
         intracore_topology=cell.get(
