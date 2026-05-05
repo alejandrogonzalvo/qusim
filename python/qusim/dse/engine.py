@@ -69,10 +69,12 @@ from .topology import (  # noqa: F401
     _max_B_for_layout,
     _max_K_for_layout,
     assign_core_slots,
-    clamp_b_for_topology,
-    clamp_k_for_topology,
     core_groups_for,
     core_slot_layout,
+    deduce_num_cores,
+    deduce_qubits_per_core,
+    g_max,
+    idle_reserved_qubits,
     inter_core_edges,
     inter_core_neighbors,
     max_data_slots,
@@ -93,6 +95,7 @@ from .results import (
     _RESULT_DTYPE,
     _RESULT_SCALAR_KEYS,
     _extract_per_qubit,
+    _nan_result_row,
     _result_to_row,
     _row_to_dict,
     _strip_for_grid,
@@ -101,8 +104,12 @@ from .results import (
     SweepResult,
 )
 from .config import (
-    _clamp_cfg_comm_and_logical,
-    _expand_qubits_alias,
+    COLD_PATH_KEYS as _CFG_COLD_PATH_KEYS,
+    DEFAULT_PIN_AXIS,
+    INTEGER_KEYS as _CFG_INTEGER_KEYS,
+    PIN_CORES,
+    PIN_QPC,
+    _resolve_architecture,
     _resolve_cell_cold_cfg,
 )
 from .sweep import (
@@ -130,21 +137,11 @@ class DSEEngine:
               variants are kept as legacy wrappers around it.
     """
 
-    # Knobs surfaced for cell tests. ``COLD_PATH_KEYS`` lists every cfg key
-    # that, when changed in a sweep cell, requires a fresh cold compile;
-    # ``INTEGER_KEYS`` lists the ones the engine must coerce to ``int``
-    # before forwarding to the backend.
-    COLD_PATH_KEYS = frozenset({
-        "qubits",  # virtual alias: expands to num_qubits == num_logical_qubits
-        "num_qubits", "num_cores", "communication_qubits", "buffer_qubits",
-        "num_logical_qubits",
-        "circuit_type", "topology_type", "intracore_topology", "routing_algorithm",
-    })
-    INTEGER_KEYS = frozenset({
-        "qubits", "num_qubits", "num_cores", "communication_qubits",
-        "buffer_qubits", "num_logical_qubits",
-        "classical_link_width", "classical_routing_cycles",
-    })
+    # Single source of truth for cold-path / integer keys lives in
+    # :mod:`qusim.dse.config`. Re-exported on the class for callers that
+    # introspect ``DSEEngine.COLD_PATH_KEYS``.
+    COLD_PATH_KEYS = _CFG_COLD_PATH_KEYS
+    INTEGER_KEYS = _CFG_INTEGER_KEYS
 
     # Max noise configs per Rust batch call (peak-memory bound).
     _HOT_BATCH_CHUNK = 5_000
@@ -157,8 +154,9 @@ class DSEEngine:
     def run_cold(
         self,
         circuit_type: str,
-        num_qubits: int,
+        num_logical_qubits: int,
         num_cores: int,
+        qubits_per_core: int,
         topology_type: str,
         placement_policy: str,
         seed: int,
@@ -167,72 +165,94 @@ class DSEEngine:
         routing_algorithm: str = "hqa_sabre",
         communication_qubits: int = 1,
         buffer_qubits: int = 1,
-        num_logical_qubits: Optional[int] = None,
+        pin_axis: str = DEFAULT_PIN_AXIS,
         custom_qasm: Optional[str] = None,
     ) -> CachedMapping:
         """Build circuit + topology, route, cache. Returns a CachedMapping
         that can be reused for many hot-path fidelity evaluations.
 
-        ``num_qubits`` is the physical device size (drives topology /
-        coupling map). ``num_logical_qubits`` is the algorithm size used
-        to build the circuit; defaults to ``num_qubits`` when omitted,
-        and is clamped to ``[2, num_qubits]``.
-
-        ``communication_qubits`` (K) carves out per-group EPR endpoints
-        on each core; ``buffer_qubits`` (B) reserves additional buffer
-        slots adjacent to each comm group (B ≤ K by rule). Each core
-        with ``G`` neighbours therefore reserves ``G·(K+B)`` total slots.
+        Logical-first parameterization: ``num_logical_qubits`` is the
+        algorithm size and is held constant during a sweep. Either
+        ``num_cores`` or ``qubits_per_core`` is pinned (per ``pin_axis``);
+        the unpinned axis is deduced via :func:`_resolve_architecture`
+        so the device fits the circuit. ``num_qubits`` (= ``num_cores ·
+        qubits_per_core``) is a derived field, written into the cold
+        config below.
 
         Routing dispatches via :mod:`qusim.dse.backends` — pass
         ``routing_algorithm="telesabre"`` to use the C-library mapper
         instead of HQA+SABRE.
+
+        Raises ``ValueError`` when the configuration is infeasible
+        (e.g. B > K, or no ``nc`` satisfies the fixpoint with qpc
+        pinned). Sweep cells catch this and write a NaN row so the
+        whole sweep continues.
         """
-        # --- Resolve num_logical_qubits with custom-circuit override ---
+        # Custom circuit overrides logical_qubits from the QASM payload.
         if circuit_type == "custom":
             if not custom_qasm:
                 raise ValueError("circuit_type='custom' requires a custom_qasm string")
             from qiskit import qasm2
             _custom_circ = qasm2.loads(custom_qasm)
             num_logical_qubits = int(_custom_circ.num_qubits)
-            if num_logical_qubits > int(num_qubits):
-                raise ValueError(
-                    f"Custom circuit uses {num_logical_qubits} logical qubits, "
-                    f"which exceeds the device's {int(num_qubits)} physical qubits."
-                )
-        elif num_logical_qubits is None:
-            num_logical_qubits = num_qubits
-        num_logical_qubits = max(2, min(int(num_logical_qubits), int(num_qubits)))
 
-        # --- Cache key + hit check ---
+        # Build a working config and run the deduction layer to fill in
+        # the unpinned axis + num_qubits.
+        cold_cfg = {
+            "circuit_type": circuit_type,
+            "num_logical_qubits": int(num_logical_qubits),
+            "num_cores": int(num_cores),
+            "qubits_per_core": int(qubits_per_core),
+            "topology_type": topology_type,
+            "intracore_topology": intracore_topology,
+            "placement_policy": placement_policy,
+            "seed": int(seed),
+            "routing_algorithm": routing_algorithm,
+            "communication_qubits": int(communication_qubits),
+            "buffer_qubits": int(buffer_qubits),
+            "pin_axis": pin_axis or DEFAULT_PIN_AXIS,
+            "custom_qasm": custom_qasm,
+        }
+        feasibility = _resolve_architecture(cold_cfg)
+        if not feasibility["feasible"]:
+            raise ValueError(
+                f"Infeasible architecture: {feasibility['reason']}"
+            )
+
+        # Cache key built from the resolved cfg so changing the *pinned*
+        # axis vs the *derived* axis produces the same key when they
+        # land on the same device.
         qasm_fp = (
             hashlib.sha256(custom_qasm.encode("utf-8")).hexdigest()[:16]
             if custom_qasm else None
         )
         config_key = (
-            circuit_type, num_qubits, num_cores, topology_type, intracore_topology,
-            placement_policy, seed, routing_algorithm,
-            int(communication_qubits or 1), int(buffer_qubits or 1),
-            int(num_logical_qubits), qasm_fp,
+            circuit_type,
+            cold_cfg["num_qubits"],
+            cold_cfg["num_cores"],
+            cold_cfg["qubits_per_core"],
+            topology_type,
+            intracore_topology,
+            placement_policy,
+            int(seed),
+            routing_algorithm,
+            cold_cfg["communication_qubits"],
+            cold_cfg["buffer_qubits"],
+            cold_cfg["num_logical_qubits"],
+            qasm_fp,
         )
         if self._cache is not None and self._cache.config_key == config_key:
             return self._cache
 
-        # --- Dispatch to the routing backend via the shared cold helper ---
-        cold_cfg = {
-            "circuit_type": circuit_type,
-            "num_qubits": num_qubits,
-            "num_cores": num_cores,
-            "topology_type": topology_type,
-            "intracore_topology": intracore_topology,
-            "placement_policy": placement_policy,
-            "seed": seed,
-            "routing_algorithm": routing_algorithm,
-            "communication_qubits": communication_qubits,
-            "buffer_qubits": buffer_qubits,
-            "num_logical_qubits": num_logical_qubits,
-            "custom_qasm": custom_qasm,
-        }
-        self._cache = _compile_one(cold_cfg, noise, config_key)
+        cached = _compile_one(cold_cfg, noise, config_key)
+        # Stamp the resolved architectural metrics on the cache so
+        # ``run_hot`` (called directly or via the sweep grid) can ride
+        # them through into every result dict.
+        cached.num_qubits = cold_cfg["num_qubits"]
+        cached.derived_num_cores = cold_cfg["num_cores"]
+        cached.derived_qubits_per_core = cold_cfg["qubits_per_core"]
+        cached.idle_reserved_qubits = cold_cfg.get("idle_reserved_qubits", 0)
+        self._cache = cached
         return self._cache
 
     # -- Hot path -------------------------------------------------------------
@@ -268,6 +288,14 @@ class DSEEngine:
         result["total_swaps"] = cached.total_swaps
         result["total_teleportations"] = cached.total_teleportations
         result["total_network_distance"] = cached.total_network_distance
+        # Derived architectural metrics ride along on the cached mapping
+        # so each hot-path call can stamp them onto the result dict
+        # without re-deriving from cfg.
+        for k in ("num_qubits", "derived_num_cores",
+                  "derived_qubits_per_core", "idle_reserved_qubits"):
+            v = getattr(cached, k, None)
+            if v is not None:
+                result[k] = v
         return result
 
     def run_hot_batch(
@@ -450,7 +478,8 @@ class DSEEngine:
         """Evaluate one design point, re-running cold path if needed.
 
         Returns the full result dict (per-qubit grids included so callers
-        that need them can capture before stripping).
+        that need them can capture before stripping). Returns a NaN row
+        when the resolved architecture is infeasible.
         """
         cfg = dict(cold_config)
         hot_noise = dict(noise)
@@ -459,10 +488,28 @@ class DSEEngine:
                 cfg[k] = int(v) if k in self.INTEGER_KEYS else v
             else:
                 hot_noise[k] = v
-        _expand_qubits_alias(cfg)
-        cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
-        _clamp_cfg_comm_and_logical(cfg)
-        cached = self.run_cold(**cfg, noise=hot_noise)
+        feasibility = _resolve_architecture(cfg)
+        if not feasibility["feasible"]:
+            return _nan_result_row(reason=feasibility["reason"])
+        # Strip keys run_cold doesn't accept (the resolver writes some
+        # bookkeeping fields onto cfg).
+        accepted = {
+            "circuit_type", "num_logical_qubits", "num_cores", "qubits_per_core",
+            "topology_type", "intracore_topology", "placement_policy", "seed",
+            "routing_algorithm", "communication_qubits", "buffer_qubits",
+            "pin_axis", "custom_qasm",
+        }
+        run_kwargs = {k: cfg[k] for k in accepted if k in cfg}
+        try:
+            cached = self.run_cold(**run_kwargs, noise=hot_noise)
+        except ValueError as e:
+            return _nan_result_row(reason=str(e))
+        # Stamp derived architectural metrics onto the cache so run_hot
+        # can ride them through into the result dict.
+        cached.num_qubits = cfg["num_qubits"]
+        cached.derived_num_cores = cfg["num_cores"]
+        cached.derived_qubits_per_core = cfg["qubits_per_core"]
+        cached.idle_reserved_qubits = cfg.get("idle_reserved_qubits", 0)
         return self.run_hot(cached, hot_noise)
 
     def _parallel_cold_sweep(

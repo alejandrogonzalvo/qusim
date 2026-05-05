@@ -177,44 +177,45 @@ SWEEPABLE_METRICS: List[MetricDef] = [
         description="Clock cycles for routing/arbitration overhead per hop",
     ),
     MetricDef(
-        key="qubits",
-        label="Qubits",
-        slider_min=4, slider_max=256,
+        key="num_logical_qubits",
+        label="Logical Qubits",
+        slider_min=2, slider_max=256,
         slider_default_low=4, slider_default_high=64,
         num_steps=15, log_scale=False, unit="",
         is_cold_path=True,
         description=(
-            "Sweeps physical qubits with logical qubits == physical. "
-            "Hides the Physical / Logical config rows while active so "
-            "the design space is one-dimensional in qubit count."
+            "Number of logical qubits in the algorithm circuit. "
+            "Held constant during a sweep — the architecture (cores or "
+            "qubits-per-core, whichever is *not* pinned) grows to absorb "
+            "comm/buffer overhead. Auto-set when a custom QASM file is "
+            "uploaded."
         ),
-    ),
-    MetricDef(
-        key="num_qubits",
-        label="Physical Qubits",
-        slider_min=4, slider_max=256,
-        slider_default_low=4, slider_default_high=20,
-        num_steps=15, log_scale=False, unit="",
-        is_cold_path=True,
-        description="Number of physical qubits available on the device (topology size)",
-    ),
-    MetricDef(
-        key="num_logical_qubits",
-        label="Logical Qubits",
-        slider_min=2, slider_max=256,
-        slider_default_low=2, slider_default_high=20,
-        num_steps=15, log_scale=False, unit="",
-        is_cold_path=True,
-        description="Number of logical qubits in the algorithm circuit (capped by physical qubits)",
     ),
     MetricDef(
         key="num_cores",
         label="Cores",
-        slider_min=1, slider_max=8,
+        slider_min=1, slider_max=64,
         slider_default_low=1, slider_default_high=8,
         num_steps=8, log_scale=False, unit="",
         is_cold_path=True,
-        description="Number of processor cores in the multi-core architecture",
+        description=(
+            "Number of processor cores. Sweepable only when *Cores* is "
+            "the pinned architectural axis; otherwise it is a derived "
+            "output computed from logical qubits + qpc + comm/buffer."
+        ),
+    ),
+    MetricDef(
+        key="qubits_per_core",
+        label="Qubits per Core",
+        slider_min=4, slider_max=128,
+        slider_default_low=8, slider_default_high=64,
+        num_steps=15, log_scale=False, unit="",
+        is_cold_path=True,
+        description=(
+            "Physical slots per core (uniform across the chip). "
+            "Sweepable only when *Qubits per core* is the pinned "
+            "architectural axis; otherwise it is a derived output."
+        ),
     ),
     MetricDef(
         key="communication_qubits",
@@ -269,6 +270,9 @@ NOISE_DEFAULTS = {
     "communication_qubits": 1,
     "buffer_qubits": 1,
     "num_logical_qubits": 16,
+    "qubits_per_core": 16,
+    "num_cores": 1,
+    "pin_axis": "cores",
 }
 
 
@@ -355,6 +359,10 @@ OUTPUT_METRICS = [
     {"label": "Intra-core Swaps", "value": "total_swaps"},
     {"label": "Inter-core Swaps", "value": "total_teleportations"},
     {"label": "Network Distance", "value": "total_network_distance"},
+    {"label": "Physical Qubits (derived)", "value": "num_qubits"},
+    {"label": "Cores (derived)", "value": "derived_num_cores"},
+    {"label": "Qubits/Core (derived)", "value": "derived_qubits_per_core"},
+    {"label": "Idle Reserved Qubits", "value": "idle_reserved_qubits"},
 ]
 
 # Optimization direction per output metric. Consumed by Pareto computation.
@@ -368,6 +376,10 @@ PARETO_METRIC_ORIENTATION: dict[str, str] = {
     "total_swaps": "min",
     "total_teleportations": "min",
     "total_network_distance": "min",
+    "num_qubits": "min",
+    "derived_num_cores": "min",
+    "derived_qubits_per_core": "min",
+    "idle_reserved_qubits": "min",
 }
 
 # Metrics bounded in [0, 1] — used to decide when to clamp axes / draw

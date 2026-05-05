@@ -29,6 +29,14 @@ class CachedMapping:
     # Key used to detect when re-mapping is required
     config_key: tuple
     cold_time_s: float = 0.0
+    # Derived architectural metrics — written by the resolver-backed
+    # ``DSEEngine._eval_point`` and read by ``run_hot`` so each cell
+    # carries its (cores, qpc, num_qubits, idle) metadata into the
+    # result dict alongside the fidelity numbers.
+    num_qubits: int = 0
+    derived_num_cores: int = 0
+    derived_qubits_per_core: int = 0
+    idle_reserved_qubits: int = 0
 
 _RESULT_SCALAR_KEYS: tuple[str, ...] = (
     "overall_fidelity",
@@ -41,6 +49,13 @@ _RESULT_SCALAR_KEYS: tuple[str, ...] = (
     "total_swaps",
     "total_teleportations",
     "total_network_distance",
+    # Derived architectural metrics — written per cell so the heat-map /
+    # FoM / Pareto plots can show them as outputs alongside the
+    # fidelity/cost columns.  NaN flags an infeasible cell.
+    "num_qubits",
+    "derived_num_cores",
+    "derived_qubits_per_core",
+    "idle_reserved_qubits",
 )
 
 # Structured dtype for the sweep grid. One float64 field per scalar output
@@ -87,8 +102,9 @@ def _extract_per_qubit(result: dict, cached: "CachedMapping | None", *,
         if "num_qubits" in cold_cfg:
             out["num_physical"] = int(cold_cfg["num_qubits"])
         for k in (
-            "num_cores", "communication_qubits",
-            "num_logical_qubits", "topology_type", "intracore_topology",
+            "num_cores", "qubits_per_core", "communication_qubits",
+            "buffer_qubits", "num_logical_qubits", "topology_type",
+            "intracore_topology", "pin_axis", "idle_reserved_qubits",
         ):
             if k in cold_cfg:
                 out[k] = cold_cfg[k]
@@ -97,6 +113,22 @@ def _extract_per_qubit(result: dict, cached: "CachedMapping | None", *,
 def _result_to_row(result: dict) -> tuple:
     """Pack a stripped result dict into the tuple order of ``_RESULT_DTYPE``."""
     return tuple(result.get(k, 0.0) for k in _RESULT_SCALAR_KEYS)
+
+
+def _nan_result_row(reason: str | None = None) -> dict:
+    """Result dict for an infeasible sweep cell.
+
+    All numeric fields are NaN so heat-maps render the cell as
+    transparent / white and Pareto plots skip it.  ``reason`` is kept
+    in the dict so the GUI tooltip / banner can surface why the cell
+    was skipped.
+    """
+    import numpy as _np
+    out: dict = {k: _np.nan for k in _RESULT_SCALAR_KEYS}
+    out["infeasible"] = True
+    if reason:
+        out["infeasible_reason"] = reason
+    return out
 
 
 def _row_to_dict(row) -> dict:

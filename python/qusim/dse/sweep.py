@@ -20,8 +20,7 @@ from .backends import get_backend
 from .config import (
     COLD_PATH_KEYS,
     INTEGER_KEYS,
-    _clamp_cfg_comm_and_logical,
-    _expand_qubits_alias,
+    _resolve_architecture,
 )
 from .memory import (
     _estimate_cold_mb,
@@ -118,9 +117,14 @@ def _eval_cold_batch(
     for k, v in swept_list[0].items():
         if k in COLD_PATH_KEYS:
             cfg[k] = int(v) if k in INTEGER_KEYS else v
-    _expand_qubits_alias(cfg)
-    cfg["num_cores"] = min(cfg["num_cores"], cfg["num_qubits"])
-    _clamp_cfg_comm_and_logical(cfg)
+    feasibility = _resolve_architecture(cfg)
+    if not feasibility["feasible"]:
+        # Every point in this batch shares the same cold cfg, so all of
+        # them are infeasible. Return a NaN row per point so the sweep
+        # grid stays consistent.
+        from .results import _nan_result_row
+        return [_nan_result_row(reason=feasibility["reason"])
+                for _ in swept_list]
 
     # Build per-point hot-noise dicts.
     noise_dicts = []
@@ -132,13 +136,29 @@ def _eval_cold_batch(
         noise_dicts.append(hot_noise)
 
     # Single cold compilation. Routing through DSEEngine.run_cold (rather
-    # than directly through _compile_one) lets it apply the same num_logical_qubits
-    # default + custom-circuit validation it would in the foreground path,
+    # than directly through _compile_one) lets it apply the same logical
+    # qubits / custom-circuit validation it would in the foreground path,
     # so a sweep cell sees identical pre-conditions whether it runs in
     # this worker or in the main process.
     from .engine import DSEEngine  # local import to avoid module cycle
     engine = DSEEngine()
-    cached = engine.run_cold(**cfg, noise=noise_dicts[0])
+    accepted = {
+        "circuit_type", "num_logical_qubits", "num_cores", "qubits_per_core",
+        "topology_type", "intracore_topology", "placement_policy", "seed",
+        "routing_algorithm", "communication_qubits", "buffer_qubits",
+        "pin_axis", "custom_qasm",
+    }
+    run_kwargs = {k: cfg[k] for k in accepted if k in cfg}
+    try:
+        cached = engine.run_cold(**run_kwargs, noise=noise_dicts[0])
+    except ValueError as e:
+        from .results import _nan_result_row
+        return [_nan_result_row(reason=str(e)) for _ in swept_list]
+
+    cached.num_qubits = cfg["num_qubits"]
+    cached.derived_num_cores = cfg["num_cores"]
+    cached.derived_qubits_per_core = cfg["qubits_per_core"]
+    cached.idle_reserved_qubits = cfg.get("idle_reserved_qubits", 0)
 
     # Single batched Rust call for all hot-path variations.
     return engine.run_hot_batch(cached, noise_dicts, keep_grids=keep_grids)
@@ -156,8 +176,12 @@ def _build_config_key(cfg: dict) -> tuple:
     qasm = cfg.get("custom_qasm")
     fp = hashlib.sha256(qasm.encode("utf-8")).hexdigest()[:16] if qasm else None
     return (
-        cfg["circuit_type"], cfg["num_qubits"], cfg["num_cores"],
-        cfg["topology_type"], cfg.get("intracore_topology", "all_to_all"),
+        cfg["circuit_type"],
+        cfg["num_qubits"],
+        cfg["num_cores"],
+        cfg["qubits_per_core"],
+        cfg["topology_type"],
+        cfg.get("intracore_topology", "all_to_all"),
         cfg.get("placement_policy", "random"),
         cfg.get("seed", 0),
         cfg.get("routing_algorithm", "hqa_sabre"),
@@ -198,15 +222,28 @@ def _parallel_cold_sweep(
         ))
         groups.setdefault(cold_vals, []).append((idx_key, swept))
 
-    fallback_nq = int(cold_config.get("num_qubits", 16))
+    # Pre-resolve a fallback num_qubits from the base cold config so
+    # cells whose swept dict doesn't override num_cores/qubits_per_core
+    # still get a sensible cold-compile cost estimate.
+    _base_cfg = dict(cold_config)
+    _resolve_architecture(_base_cfg)
+    fallback_nq = int(_base_cfg.get("num_qubits", 16))
 
     def _group_nq(cv: tuple) -> int:
-        # Recognise the ``qubits`` alias (logical == physical sweep)
-        # which expands to ``num_qubits`` inside the worker.
+        """Effective ``num_qubits`` for this cold-cell group.
+
+        Resolves the swept overrides through :func:`_resolve_architecture`
+        so the memory-cost estimator sees the *derived* num_qubits =
+        cores · qpc, not the raw slider value.
+        """
+        cfg = dict(cold_config)
         for k, v in cv:
-            if k == "num_qubits" or k == "qubits":
-                return int(v)
-        return fallback_nq
+            cfg[k] = int(v) if k in INTEGER_KEYS else v
+        try:
+            _resolve_architecture(cfg)
+        except Exception:
+            return fallback_nq
+        return int(cfg.get("num_qubits", fallback_nq) or fallback_nq)
 
     group_cost: dict[tuple, float] = {
         cv: _estimate_cold_mb(_group_nq(cv)) for cv in groups

@@ -1,93 +1,143 @@
 """
-Cold-config normalisation: alias expansion + clamping the user-
-supplied dict to whatever the current (num_qubits, num_cores,
-topology) combination can physically support.
+Cold-config normalisation under the **logical-first** parameterization.
+
+The user pins exactly one of ``num_cores`` or ``qubits_per_core`` (via
+``pin_axis``); the unpinned axis is deduced from
+``(num_logical_qubits, K, B, inter_topology)`` so the circuit always
+fits.  ``num_qubits`` (physical device size) is a derived field
+written here for downstream consumption — it is never user-set.
+
+When deduction fails (no ``nc`` satisfies the constraints, or the
+pinned ``qpc`` is too small to host even one group of ``K+B`` slots),
+:func:`_resolve_architecture` returns ``feasible=False`` and the caller
+is responsible for rendering the cell as NaN.
 """
 
 from __future__ import annotations
 
+from .topology import (
+    deduce_num_cores,
+    deduce_qubits_per_core,
+    g_max,
+    idle_reserved_qubits as _idle_reserved_qubits,
+)
 
-# Mirror of DSEEngine class attributes — kept here so this module
-# is independent of the engine class. Engine re-exports them for
-# back-compat with code that reads DSEEngine.COLD_PATH_KEYS.
+
+# Cold-path keys: changing any of these forces a full re-compile.
 COLD_PATH_KEYS: frozenset[str] = frozenset({
-    "num_qubits", "num_cores", "topology_type", "intracore_topology",
-    "placement_policy", "communication_qubits", "buffer_qubits",
-    "num_logical_qubits", "circuit_type", "routing_algorithm",
-    "qubits", "seed", "custom_qasm",
+    "num_logical_qubits", "qubits_per_core", "num_cores",
+    "communication_qubits", "buffer_qubits",
+    "topology_type", "intracore_topology",
+    "placement_policy", "circuit_type", "routing_algorithm",
+    "pin_axis", "seed", "custom_qasm",
 })
+
+# Integer-typed keys.  Sweep grids quantise these values via np.round.
 INTEGER_KEYS: frozenset[str] = frozenset({
-    "num_qubits", "num_cores", "communication_qubits",
-    "buffer_qubits", "num_logical_qubits", "qubits",
+    "num_logical_qubits", "qubits_per_core", "num_cores",
+    "communication_qubits", "buffer_qubits",
     "classical_link_width", "classical_routing_cycles",
 })
 
-from .topology import (
-    clamp_b_for_topology,
-    clamp_k_for_topology,
-    max_data_slots,
-)
 
-def _expand_qubits_alias(cfg: dict) -> None:
-    """Expand the virtual ``qubits`` cold-path key in-place.
+# Pin axis vocabulary
+PIN_CORES = "cores"
+PIN_QPC = "qubits_per_core"
+DEFAULT_PIN_AXIS = PIN_CORES
 
-    ``qubits`` is a sweep alias for "physical qubits == logical qubits".
-    The engine itself only knows ``num_qubits`` and ``num_logical_qubits``,
-    so every place that consumes a swept cold cfg needs to translate
-    ``qubits`` -> both keys before running the cold path.
+
+def _resolve_architecture(cfg: dict) -> dict:
+    """Logical-first deduction — fills in the unpinned architectural axis.
+
+    Reads (and respects):
+      * ``num_logical_qubits``
+      * ``communication_qubits`` (K), ``buffer_qubits`` (B) — clamped so
+        ``B ≤ K`` (per-group rule)
+      * ``topology_type`` (inter-core)
+      * ``pin_axis`` ∈ {"cores", "qubits_per_core"} — defaults to
+        :data:`DEFAULT_PIN_AXIS`
+
+    Writes (in-place on ``cfg``):
+      * the *derived* axis
+      * ``num_qubits`` (= ``num_cores · qubits_per_core``)
+      * ``idle_reserved_qubits``
+
+    Returns a small dict::
+
+        {
+            "feasible": bool,
+            "reason": str | None,   # human-readable when not feasible
+        }
+
+    Mutates ``cfg`` even when infeasible (so callers can still log /
+    inspect the partial state); however ``num_qubits`` is set to 0 so
+    downstream cold-compile attempts fail fast instead of running on
+    a half-resolved config.
     """
-    if "qubits" not in cfg:
-        return
-    n = int(cfg.pop("qubits"))
-    cfg["num_qubits"] = n
-    cfg["num_logical_qubits"] = n
+    L = max(2, int(cfg.get("num_logical_qubits", 2) or 2))
+    cfg["num_logical_qubits"] = L
 
-def _clamp_cfg_comm_and_logical(cfg: dict) -> None:
-    """In-place: clamp ``communication_qubits``, ``buffer_qubits``, and
-    ``num_logical_qubits`` to the architectural caps for the current
-    (num_qubits, num_cores, topology_type) combination.
+    K = max(0, int(cfg.get("communication_qubits", 1) or 0))
+    B = max(0, int(cfg.get("buffer_qubits", 1) or 0))
+    if B > K:
+        cfg["feasible"] = False
+        cfg["num_qubits"] = 0
+        cfg["idle_reserved_qubits"] = 0
+        return {
+            "feasible": False,
+            "reason": f"buffer_qubits ({B}) > communication_qubits ({K}); per-group rule violated.",
+        }
+    cfg["communication_qubits"] = K
+    cfg["buffer_qubits"] = B
 
-    Each of a core's ``G`` inter-core neighbours reserves ``K+B`` slots
-    (K comm + B buffer per group), so logical qubits can use only
-    ``num_qubits − Σ_c G(c)·(K+B)`` slots.  The per-group rule
-    ``B ≤ K`` is also enforced here.
-    """
-    nq = int(cfg.get("num_qubits", 1) or 1)
-    nc = int(cfg.get("num_cores", 1) or 1)
-    topo = cfg.get("topology_type") or "ring"
-    B = int(cfg.get("buffer_qubits", 1) or 1)
-    if "communication_qubits" in cfg:
-        cfg["communication_qubits"] = clamp_k_for_topology(
-            nq, nc, topo, int(cfg["communication_qubits"] or 1),
-            b_per_group=B,
-        )
-    K = int(cfg.get("communication_qubits", 1) or 1)
-    if "buffer_qubits" in cfg:
-        cfg["buffer_qubits"] = clamp_b_for_topology(
-            nq, nc, topo, K, int(cfg["buffer_qubits"] or 1),
-        )
-        B = cfg["buffer_qubits"]
-    if "num_logical_qubits" in cfg:
-        cap = max(2, min(nq, max_data_slots(nq, nc, topo, K, B) or nq))
-        cfg["num_logical_qubits"] = max(
-            2, min(int(cfg["num_logical_qubits"]), cap)
-        )
+    inter_topo = cfg.get("topology_type") or "ring"
+    pin = cfg.get("pin_axis", DEFAULT_PIN_AXIS)
+    if pin not in (PIN_CORES, PIN_QPC):
+        pin = DEFAULT_PIN_AXIS
+    cfg["pin_axis"] = pin
+
+    if pin == PIN_CORES:
+        nc = max(1, int(cfg.get("num_cores", 1) or 1))
+        qpc = deduce_qubits_per_core(L, nc, K, B, inter_topo)
+        cfg["num_cores"] = nc
+        cfg["qubits_per_core"] = int(qpc)
+    else:
+        qpc = max(1, int(cfg.get("qubits_per_core", 1) or 1))
+        nc = deduce_num_cores(L, qpc, K, B, inter_topo)
+        if nc is None:
+            cfg["feasible"] = False
+            cfg["num_qubits"] = 0
+            cfg["idle_reserved_qubits"] = 0
+            return {
+                "feasible": False,
+                "reason": (
+                    f"no num_cores satisfies logical={L} with qpc={qpc}, "
+                    f"K={K}, B={B} on inter-topology '{inter_topo}'."
+                ),
+            }
+        cfg["num_cores"] = int(nc)
+        cfg["qubits_per_core"] = int(qpc)
+
+    cfg["num_qubits"] = int(cfg["num_cores"]) * int(cfg["qubits_per_core"])
+    cfg["idle_reserved_qubits"] = _idle_reserved_qubits(
+        cfg["num_cores"], K, B, inter_topo,
+    )
+    cfg["feasible"] = True
+    return {"feasible": True, "reason": None}
 
 
 def _resolve_cell_cold_cfg(
-    cold_config: dict, swept: dict[str, float],
+    cold_config: dict, swept: dict,
 ) -> dict:
-    """Apply a cell's swept overrides + standard clamps to a cold_config.
+    """Apply a cell's swept overrides + resolve the architecture.
 
-    Mirrors the clamp logic in ``DSEEngine._eval_point`` and
-    ``_eval_cold_batch`` so the captured per-cell cold cfg matches what
-    the engine actually compiled with.
+    Mirrors the resolution in :func:`DSEEngine._eval_point` and
+    :func:`_eval_cold_batch` so the captured per-cell cold cfg matches
+    what the engine actually compiled with.
     """
     cfg = dict(cold_config)
     for k, v in swept.items():
         if k in COLD_PATH_KEYS:
             cfg[k] = int(v) if k in INTEGER_KEYS else v
-    _expand_qubits_alias(cfg)
-    cfg["num_cores"] = min(int(cfg.get("num_cores", 1)), int(cfg.get("num_qubits", 1)))
-    _clamp_cfg_comm_and_logical(cfg)
+    _resolve_architecture(cfg)
     return cfg

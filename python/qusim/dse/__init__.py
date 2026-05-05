@@ -5,6 +5,14 @@ Build and run multi-dimensional sweeps over circuit, topology, and noise
 parameters; cache the expensive structural pass; cheaply re-evaluate noise
 configs from cached mappings.
 
+Logical-first parameterization
+------------------------------
+
+The user pins exactly one of ``num_cores`` or ``qubits_per_core``; the
+unpinned axis is deduced so the chip fits ``num_logical_qubits`` even
+as the user sweeps comm/buffer overhead. ``num_qubits`` (= ``num_cores
+· qubits_per_core``) and ``idle_reserved_qubits`` are derived outputs.
+
 Typical usage::
 
     from qusim.dse import DSEEngine
@@ -13,14 +21,16 @@ Typical usage::
     sweep = engine.sweep_nd(
         cached=None,
         sweep_axes=[
-            ("num_cores",            1, 8),       # cold: num_qubits/num_cores etc.
-            ("two_gate_error",      -4, -2),      # hot: log10 endpoints for log_scale
+            ("num_cores",      1, 8),     # cold: pinned cores
+            ("two_gate_error", -4, -2),   # hot: log10 endpoints
         ],
         fixed_noise={},
         cold_config={
             "circuit_type": "qft",
-            "num_qubits": 32,
-            "num_cores": 4,                       # overridden by sweep_axes
+            "num_logical_qubits": 32,
+            "qubits_per_core": 16,
+            "num_cores": 4,                # overridden by the sweep
+            "pin_axis": "cores",
             "topology_type": "ring",
             "intracore_topology": "all_to_all",
             "placement_policy": "spectral",
@@ -28,15 +38,7 @@ Typical usage::
             "seed": 0,
         },
     )
-
-    # SweepResult exposes axes, grid, shape, total_points.
     print(sweep.shape, sweep.metric_keys)
-
-    # Hand off to qusim.analysis for FoM / Pareto-front analysis.
-    from qusim.analysis import FomConfig, compute_for_sweep
-    fom = FomConfig(numerator="overall_fidelity",
-                    denominator="max(total_epr_pairs, 1)")
-    result = compute_for_sweep(sweep.to_sweep_data(), fom)
 """
 
 from .axes import (
@@ -54,13 +56,21 @@ from .axes import (
     PARETO_METRIC_ORIENTATION,
     SWEEPABLE_METRICS,
 )
+from .config import (
+    DEFAULT_PIN_AXIS,
+    PIN_CORES,
+    PIN_QPC,
+    _resolve_architecture,
+)
 from .engine import (
     CachedMapping,
     DSEEngine,
     SweepProgress,
     SweepResult,
-    clamp_b_for_topology,
-    clamp_k_for_topology,
+    deduce_num_cores,
+    deduce_qubits_per_core,
+    g_max,
+    idle_reserved_qubits,
     inter_core_neighbors,
     max_data_slots,
     total_reserved_slots,
@@ -87,10 +97,16 @@ __all__ = [
     "NOISE_DEFAULTS",
     "DEFAULT_SWEEP_AXES",
     "MAX_SWEEP_AXES",
-    # Topology helpers
+    # Pin-axis vocabulary
+    "DEFAULT_PIN_AXIS",
+    "PIN_CORES",
+    "PIN_QPC",
+    # Topology helpers — deduction + uniform-G_max accounting
+    "deduce_num_cores",
+    "deduce_qubits_per_core",
+    "g_max",
+    "idle_reserved_qubits",
     "inter_core_neighbors",
-    "clamp_k_for_topology",
-    "clamp_b_for_topology",
     "max_data_slots",
     "total_reserved_slots",
     # Tabular access
