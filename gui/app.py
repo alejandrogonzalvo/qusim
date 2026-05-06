@@ -4893,7 +4893,108 @@ def _topology_axis_value_to_slider(
 # Logical-first model: the topology-overlay slider no longer needs to
 # clamp comm qubits — any cell whose architecture can't be deduced
 # renders as NaN/white in the heat-map upstream of this view.
+#
+# But B>K cells *do* exist in K×B sweeps as NaN holes, and the topology
+# view should not let the user scrub onto them — there's nothing to
+# render. Clamp the buffer-qubits scrub slider so its index resolves
+# to a value ≤ the comm slider's current value.
 # ---------------------------------------------------------------------------
+
+
+@app.callback(
+    Output({"type": "topology-axis-slider", "index": ALL}, "value", allow_duplicate=True),
+    Input({"type": "topology-axis-slider", "index": ALL}, "value"),
+    State("sweep-result-store", "data"),
+    State("topology-facet-selector", "value"),
+    prevent_initial_call=True,
+)
+def _topology_clamp_buffer_to_comm(slider_vals, sweep_store, facet_idx):
+    """Per-group rule: buffer ≤ comm. Walk the buffer scrub slider back
+    whenever it would resolve to a value larger than the comm slider's
+    current value (the underlying cell is NaN — nothing to overlay)."""
+    no = dash.no_update
+    n = len(slider_vals)
+    no_change = [no] * n
+    full = _get_sweep(sweep_store) if sweep_store else None
+    pq = _facet_per_qubit_data(full, facet_idx)
+    if not pq or not pq.get("axis_keys"):
+        return no_change
+    axis_keys = pq["axis_keys"]
+    axis_values = pq.get("axis_values", [])
+    try:
+        d_K = axis_keys.index("communication_qubits")
+        d_B = axis_keys.index("buffer_qubits")
+    except ValueError:
+        return no_change
+    if d_K >= n or d_B >= n:
+        return no_change
+    if d_K >= len(axis_values) or d_B >= len(axis_values):
+        return no_change
+    K_axis = axis_values[d_K]
+    B_axis = axis_values[d_B]
+    if not K_axis or not B_axis:
+        return no_change
+    K_idx = max(0, min(int(slider_vals[d_K] or 0), len(K_axis) - 1))
+    B_idx = max(0, min(int(slider_vals[d_B] or 0), len(B_axis) - 1))
+    K_val = float(K_axis[K_idx])
+    B_val = float(B_axis[B_idx])
+    if B_val <= K_val:
+        return no_change
+    # Walk B index down to the largest value ≤ K_val.
+    new_B_idx = B_idx
+    while new_B_idx > 0 and float(B_axis[new_B_idx]) > K_val:
+        new_B_idx -= 1
+    if new_B_idx == B_idx:
+        return no_change
+    out = list(no_change)
+    out[d_B] = new_B_idx
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Sweep-axis range sliders: same B≤K rule, applied to whichever metric-
+# dropdown slot currently holds buffer_qubits. When comm's upper bound
+# moves, buffer's upper bound follows so the user can't paint a buffer
+# range whose high end is unreachable.
+# ---------------------------------------------------------------------------
+
+
+@app.callback(
+    *[Output(f"metric-slider-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)],
+    *[Input(f"metric-slider-{i}", "value") for i in range(MAX_METRICS)],
+    *[State(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
+    prevent_initial_call=True,
+)
+def _sweep_axis_clamp_buffer_to_comm(*args):
+    """If both ``communication_qubits`` and ``buffer_qubits`` are on
+    sweep axes, force buffer's upper bound ≤ comm's upper bound."""
+    no = dash.no_update
+    sliders = list(args[:MAX_METRICS])
+    dropdowns = list(args[MAX_METRICS:2 * MAX_METRICS])
+    no_change = [no] * MAX_METRICS
+
+    try:
+        d_K = dropdowns.index("communication_qubits")
+        d_B = dropdowns.index("buffer_qubits")
+    except ValueError:
+        return no_change
+    sv_K = sliders[d_K]
+    sv_B = sliders[d_B]
+    if not (isinstance(sv_K, (list, tuple)) and len(sv_K) == 2):
+        return no_change
+    if not (isinstance(sv_B, (list, tuple)) and len(sv_B) == 2):
+        return no_change
+    K_hi = float(sv_K[1])
+    B_lo, B_hi = float(sv_B[0]), float(sv_B[1])
+    if B_hi <= K_hi:
+        return no_change
+    # Clamp B's upper bound down to K's upper bound; if that would push
+    # B_lo above the new B_hi, drop B_lo to match.
+    new_B_hi = K_hi
+    new_B_lo = min(B_lo, new_B_hi)
+    out = list(no_change)
+    out[d_B] = [new_B_lo, new_B_hi]
+    return out
 
 
 # ---------------------------------------------------------------------------
