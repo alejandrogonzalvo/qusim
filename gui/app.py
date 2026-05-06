@@ -1158,15 +1158,70 @@ app.clientside_callback(
 
 
 # ---------------------------------------------------------------------------
-# Callback: add / remove metric rows (show/hide)
+# Pattern: Stores are the single source of truth for UI state. Mutators
+# (button clicks, session loads) write Stores; derived UI (visibility,
+# styles, computed labels) lives in dedicated Input-driven callbacks
+# that listen to those Stores. This guarantees every mutation path —
+# manual buttons OR session load — produces the same on-screen result,
+# and lets new derived elements (an "axis count" badge, an empty-state
+# placeholder, etc.) plug in by adding a new Input(<store>) callback
+# without touching the mutators.
+# ---------------------------------------------------------------------------
+
+
+_AXIS_BTN_BASE = {
+    "flex": "1",
+    "background": "transparent",
+    "borderRadius": "6px",
+    "padding": "6px",
+    "cursor": "pointer",
+    "fontSize": "12px",
+}
+
+
+@app.callback(
+    *[Output(f"metric-row-wrap-{i}", "style", allow_duplicate=True) for i in range(MAX_METRICS)],
+    Output("add-metric-btn", "style", allow_duplicate=True),
+    Output("remove-metric-btn", "style", allow_duplicate=True),
+    Input("num-metrics-store", "data"),
+    prevent_initial_call="initial_duplicate",
+)
+def _render_metric_rows(num_metrics):
+    """Single source of truth for sweep-axis row visibility + +/− button
+    styles. Driven solely by ``num-metrics-store`` so any path that
+    mutates that store — the +/− buttons, the per-row × button, or a
+    session load — produces the same on-screen state.
+    """
+    n = max(1, int(num_metrics or 1))
+    row_styles = [
+        {} if i < n else {"display": "none"} for i in range(MAX_METRICS)
+    ]
+    add_style = (
+        {**_AXIS_BTN_BASE,
+         "border": f"1px solid {COLORS['border']}",
+         "color": COLORS["text_muted"]}
+        if n < MAX_METRICS
+        else {"display": "none"}
+    )
+    remove_style = (
+        {**_AXIS_BTN_BASE,
+         "border": f"1px dashed {COLORS['border']}",
+         "color": COLORS["text_muted"]}
+        if n > 1
+        else {"display": "none"}
+    )
+    return *row_styles, add_style, remove_style
+
+
+# ---------------------------------------------------------------------------
+# Mutator: + / − buttons. Writes only to ``num-metrics-store`` and
+# (for + only) the dropdown of the newly-revealed row. Visibility is
+# rendered by ``_render_metric_rows`` above.
 # ---------------------------------------------------------------------------
 
 
 @app.callback(
-    *[Output(f"metric-row-wrap-{i}", "style") for i in range(MAX_METRICS)],
     *[Output(f"metric-dropdown-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)],
-    Output("add-metric-btn", "style"),
-    Output("remove-metric-btn", "style"),
     Output("num-metrics-store", "data"),
     Input("add-metric-btn", "n_clicks"),
     Input("remove-metric-btn", "n_clicks"),
@@ -1182,11 +1237,6 @@ def toggle_metric_rows(add_clicks, remove_clicks, num_metrics, *dropdown_vals):
     elif triggered == "remove-metric-btn":
         num_metrics = max(1, num_metrics - 1)
 
-    row_styles = [
-        {} if i < num_metrics else {"display": "none"}
-        for i in range(MAX_METRICS)
-    ]
-
     # Build list of taken metric keys from currently visible rows
     taken = {dropdown_vals[i] for i in range(old_num) if dropdown_vals[i]}
     all_keys = [m.key for m in SWEEPABLE_METRICS]
@@ -1200,28 +1250,14 @@ def toggle_metric_rows(add_clicks, remove_clicks, num_metrics, *dropdown_vals):
             new_values[i] = available[0] if available else current
         taken.add(new_values[i])
 
-    _btn_base = {
-        "flex": "1",
-        "background": "transparent",
-        "borderRadius": "6px",
-        "padding": "6px",
-        "cursor": "pointer",
-        "fontSize": "12px",
-    }
-
-    add_style = (
-        {**_btn_base, "border": f"1px solid {COLORS['border']}", "color": COLORS["text_muted"]}
-        if num_metrics < MAX_METRICS
-        else {"display": "none"}
-    )
-
-    remove_style = (
-        {**_btn_base, "border": f"1px dashed {COLORS['border']}", "color": COLORS["text_muted"]}
-        if num_metrics > 1
-        else {"display": "none"}
-    )
-
-    return *row_styles, *new_values, add_style, remove_style, num_metrics
+    # Hidden rows revert their dropdown to no_update so their previous
+    # value is preserved (the row is just hidden, not destroyed).
+    no = dash.no_update
+    dropdown_outs = [
+        new_values[i] if i < num_metrics else no
+        for i in range(MAX_METRICS)
+    ]
+    return *dropdown_outs, num_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -1230,12 +1266,9 @@ def toggle_metric_rows(add_clicks, remove_clicks, num_metrics, *dropdown_vals):
 
 
 @app.callback(
-    *[Output(f"metric-row-wrap-{i}", "style", allow_duplicate=True) for i in range(MAX_METRICS)],
     *[Output(f"metric-dropdown-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)],
     *[Output(f"metric-slider-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)],
     *[Output(f"metric-checklist-{i}", "value", allow_duplicate=True) for i in range(MAX_METRICS)],
-    Output("add-metric-btn", "style", allow_duplicate=True),
-    Output("remove-metric-btn", "style", allow_duplicate=True),
     Output("num-metrics-store", "data", allow_duplicate=True),
     Output("suppress-cascade", "data", allow_duplicate=True),
     Input({"type": "remove-metric-x", "index": ALL}, "n_clicks"),
@@ -1275,40 +1308,16 @@ def on_remove_specific_metric(n_clicks_list, *all_states):
 
     new_num = num_metrics - 1
 
-    row_styles = [
-        {} if i < new_num else {"display": "none"}
-        for i in range(MAX_METRICS)
-    ]
-
-    _btn_base = {
-        "flex": "1",
-        "background": "transparent",
-        "borderRadius": "6px",
-        "padding": "6px",
-        "cursor": "pointer",
-        "fontSize": "12px",
-    }
-    add_style = (
-        {**_btn_base, "border": f"1px solid {COLORS['border']}", "color": COLORS["text_muted"]}
-        if new_num < MAX_METRICS
-        else {"display": "none"}
-    )
-    remove_style = (
-        {**_btn_base, "border": f"1px dashed {COLORS['border']}", "color": COLORS["text_muted"]}
-        if new_num > 1
-        else {"display": "none"}
-    )
-
+    # Visibility + button styles flow through ``_render_metric_rows``,
+    # which listens to ``num-metrics-store``. We just write the store
+    # plus the shifted axis values.
     # suppress-cascade=True tells the downstream dropdown listeners
     # (_reconfigure_slider, _toggle_slider_checklist) to preserve the slider
     # and checklist values we just shifted, instead of resetting them.
     return (
-        *row_styles,
         *dropdown_vals,
         *slider_vals,
         *checklist_vals,
-        add_style,
-        remove_style,
         new_num,
         True,
     )
@@ -1339,9 +1348,38 @@ def toggle_axis_remove_visibility(num_metrics, ids):
 # ---------------------------------------------------------------------------
 
 
+_THRESHOLD_REMOVE_BTN_STYLE = {
+    "background": "transparent",
+    "border": f"1px solid {COLORS['border']}",
+    "color": COLORS["text_muted"],
+    "borderRadius": "4px",
+    "width": "28px",
+    "height": "28px",
+    "cursor": "pointer",
+    "fontSize": "14px",
+}
+
+
 @app.callback(
-    *[Output(f"threshold-row-{i}", "style") for i in range(5)],
-    Output("remove-threshold-btn", "style"),
+    *[Output(f"threshold-row-{i}", "style", allow_duplicate=True) for i in range(5)],
+    Output("remove-threshold-btn", "style", allow_duplicate=True),
+    Input("num-thresholds-store", "data"),
+    prevent_initial_call="initial_duplicate",
+)
+def _render_threshold_rows(num_thresholds):
+    """Single source of truth for threshold-row visibility + remove
+    button style. Driven solely by ``num-thresholds-store`` so manual
+    +/- clicks and session loads produce the same on-screen state.
+    """
+    n = max(1, int(num_thresholds or 1))
+    row_styles = [{} if i < n else {"display": "none"} for i in range(5)]
+    remove_style = _THRESHOLD_REMOVE_BTN_STYLE if n > 1 else {"display": "none"}
+    return *row_styles, remove_style
+
+
+# Mutator: + / − buttons on the threshold panel. Writes only to
+# ``num-thresholds-store``; visibility is rendered by the callback above.
+@app.callback(
     Output("num-thresholds-store", "data"),
     Input("add-threshold-btn", "n_clicks"),
     Input("remove-threshold-btn", "n_clicks"),
@@ -1354,25 +1392,7 @@ def toggle_threshold_rows(add_clicks, remove_clicks, num_thresholds):
         num_thresholds = min(5, num_thresholds + 1)
     elif triggered == "remove-threshold-btn":
         num_thresholds = max(1, num_thresholds - 1)
-
-    row_styles = [{} if i < num_thresholds else {"display": "none"} for i in range(5)]
-
-    remove_style = (
-        {
-            "background": "transparent",
-            "border": f"1px solid {COLORS['border']}",
-            "color": COLORS["text_muted"],
-            "borderRadius": "4px",
-            "width": "28px",
-            "height": "28px",
-            "cursor": "pointer",
-            "fontSize": "14px",
-        }
-        if num_thresholds > 1
-        else {"display": "none"}
-    )
-
-    return *row_styles, remove_style, num_thresholds
+    return num_thresholds
 
 
 # ---------------------------------------------------------------------------
@@ -1386,8 +1406,8 @@ from gui.constants import SWEEPABLE_METRICS as _SM
 @app.callback(
     [Output(f"noise-row-{m.key}", "style") for m in _SM]
     + [
-        Output("cfg-row-num-qubits", "style"),
         Output("cfg-row-num-cores", "style"),
+        Output("cfg-row-qubits-per-core", "style"),
         Output("cfg-row-communication-qubits", "style"),
         Output("cfg-row-buffer-qubits", "style"),
         Output("cfg-row-num-logical-qubits", "style"),
@@ -1409,15 +1429,8 @@ def toggle_noise_rows(*args):
     noise_styles = [
         {"display": "none"} if m.is_cold_path or m.key in swept else {} for m in _SM
     ]
-    # The virtual ``qubits`` axis sweeps physical == logical, so it hides
-    # both config rows for the duration of the sweep.
-    qubits_alias_swept = "qubits" in swept
-    qubits_style = (
-        {"display": "none"}
-        if ("num_qubits" in swept or qubits_alias_swept)
-        else {}
-    )
     cores_style = {"display": "none"} if "num_cores" in swept else {}
+    qpc_style = {"display": "none"} if "qubits_per_core" in swept else {}
     # Comm / buffer qubits are inter-core constructs — meaningless at
     # cores=1.  Hide both rows when the active cores value is 1 (unless
     # the cores axis is itself being swept, in which case the user is
@@ -1438,17 +1451,13 @@ def toggle_noise_rows(*args):
         if ("buffer_qubits" in swept or cores_is_one)
         else {}
     )
-    logi_style = (
-        {"display": "none"}
-        if ("num_logical_qubits" in swept or qubits_alias_swept)
-        else {}
-    )
+    logi_style = {"display": "none"} if "num_logical_qubits" in swept else {}
     cat_styles = [
         {"display": "none"} if cat.key in swept else {} for cat in CATEGORICAL_METRICS
     ]
     return (
         noise_styles
-        + [qubits_style, cores_style, comm_style, buffer_style, logi_style]
+        + [cores_style, qpc_style, comm_style, buffer_style, logi_style]
         + cat_styles
     )
 
