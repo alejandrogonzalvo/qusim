@@ -63,7 +63,7 @@ def collect_session(
         sweep_block = {"present": True}
         for k in (
             "metric_keys", "xs", "ys", "zs", "axes", "shape",
-            "grid", "facets", "facet_keys",
+            "grid", "facets", "facet_keys", "per_qubit_data",
         ):
             if k not in sweep_data:
                 continue
@@ -72,6 +72,13 @@ def collect_session(
             # faceted sweeps round-trip through ``json.dumps``.
             if k == "facets" and isinstance(v, list):
                 v = [_strip_for_save(f) if isinstance(f, dict) else f for f in v]
+            elif k == "per_qubit_data" and isinstance(v, dict):
+                # Drop ``cells`` (heavy per-cell ndarrays, also non-JSON);
+                # keep ``axis_keys`` / ``axis_values`` / ``shape`` /
+                # ``cold_config`` / ``fixed_noise`` so the topology view
+                # can rebuild the scrub-slider scaffolding after a load
+                # and re-derive each cell on demand via run_cold/run_hot.
+                v = {kk: vv for kk, vv in v.items() if kk != "cells"}
             sweep_block[k] = v
 
     return {
@@ -196,7 +203,7 @@ def apply_session(session: Any) -> SessionApply:
             k: sweep_block[k]
             for k in (
                 "metric_keys", "xs", "ys", "zs", "axes", "shape",
-                "grid", "facets", "facet_keys",
+                "grid", "facets", "facet_keys", "per_qubit_data",
             )
             if k in sweep_block
         }

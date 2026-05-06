@@ -206,7 +206,10 @@ def _run_one_sweep(
     sd = result.to_sweep_data()
     if "grid" in sd:
         sd["grid"] = _grid_to_jsonable(sd["grid"], result.ndim)
-    sd.pop("per_qubit_data", None)
+    # Keep per_qubit_data axis metadata (cold_config, axis_keys,
+    # axis_values, shape) so the topology view can rebuild its scrub
+    # sliders after a load and re-derive each cell on demand.
+    # ``_strip_for_save`` drops the heavy ``cells`` field downstream.
     return sd
 
 

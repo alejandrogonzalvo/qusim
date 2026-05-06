@@ -685,18 +685,22 @@ class DSEEngine:
                         ))
                 del noise_dicts, chunk_results
 
-        # Snapshot engine inputs so the topology view's overlay can
-        # rebuild any cell on demand without callers keeping config around.
-        per_qubit_meta: dict | None = None
+        # Always snapshot the engine inputs so the topology view's
+        # overlay can rebuild any cell on demand. ``cells`` (the per-
+        # cell per-qubit grids) is only attached when
+        # ``keep_per_qubit_grids=True``; without it, scrubbing costs a
+        # cold compile per cell, but the slider scaffolding still works
+        # — including after a session load where the heavy ``cells``
+        # dict is stripped before serialisation.
+        per_qubit_meta: dict | None = {
+            "cold_config": dict(cold_config) if cold_config else None,
+            "fixed_noise": dict(fixed_noise) if fixed_noise else None,
+            "axis_keys": list(keys),
+            "axis_values": [ax.tolist() for ax in axes],
+            "shape": list(shape),
+        }
         if keep_per_qubit_grids:
-            per_qubit_meta = {
-                "cold_config": dict(cold_config) if cold_config else None,
-                "fixed_noise": dict(fixed_noise) if fixed_noise else None,
-                "axis_keys": list(keys),
-                "axis_values": [ax.tolist() for ax in axes],
-                "shape": list(shape),
-                "cells": per_qubit_cells,
-            }
+            per_qubit_meta["cells"] = per_qubit_cells
 
         return SweepResult(
             metric_keys=keys, axes=axes, grid=grid,

@@ -5082,6 +5082,27 @@ def _rebuild_topology_graph(
 
     cell_idx = tuple(int(v or 0) for v in axis_slider_vals[: len(pq["axis_keys"])])
 
+    # Per-group rule check: if the swept axes include both K and B and
+    # the current cell has B>K, the architecture is infeasible (white
+    # cell in the heat-map, no per-qubit data). Preserve the previous
+    # render rather than fall back to the right-panel cfg-derived
+    # default — that default doesn't match the swept cell shape and
+    # would flicker the device picture each time the slider transits
+    # an infeasible row.
+    axis_keys = pq["axis_keys"]
+    axis_values = pq.get("axis_values", [])
+    try:
+        d_K = axis_keys.index("communication_qubits")
+        d_B = axis_keys.index("buffer_qubits")
+        if (d_K < len(cell_idx) and d_B < len(cell_idx)
+                and d_K < len(axis_values) and d_B < len(axis_values)):
+            K_val = float(axis_values[d_K][cell_idx[d_K]])
+            B_val = float(axis_values[d_B][cell_idx[d_B]])
+            if B_val > K_val:
+                raise dash.exceptions.PreventUpdate
+    except (ValueError, IndexError):
+        pass
+
     # Memoize per (sweep token, facet, cell_idx). The sweep already paid the
     # compile cost for every cell during the run; keeping the per-qubit
     # output here means scrubbing through the same cells never re-enters
@@ -5095,8 +5116,9 @@ def _rebuild_topology_graph(
             cell = None
         if cell is not None and cache_key is not None:
             _per_cell_cache_put(cache_key, cell)
-    if cell is None:
-        return _clear_fidelity(_build_default_elements())
+    if cell is None or cell.get("infeasible"):
+        # Same rationale as the B>K guard above.
+        raise dash.exceptions.PreventUpdate
 
     # When a sweep cell is in scope, the architecture has to follow the
     # *cell's* cold config, not the right-sidebar — otherwise scrubbing a
