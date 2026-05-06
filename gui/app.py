@@ -1871,189 +1871,6 @@ def _filter_dropdown_options(*args):
 
 
 # ---------------------------------------------------------------------------
-# Callback: custom-QASM upload / clear → populate custom-qasm-store
-# ---------------------------------------------------------------------------
-
-
-@app.callback(
-    Output("custom-qasm-store", "data"),
-    Output("sweep-dirty", "data", allow_duplicate=True),
-    Input("custom-qasm-upload", "contents"),
-    Input({"type": "custom-qasm-clear", "index": ALL}, "n_clicks"),
-    State("custom-qasm-upload", "filename"),
-    State("sweep-dirty", "data"),
-    prevent_initial_call=True,
-)
-def on_custom_qasm_change(contents, clear_clicks, filename, sweep_dirty):
-    import base64
-
-    triggered = ctx.triggered_id
-    cleared = (
-        isinstance(triggered, dict)
-        and triggered.get("type") == "custom-qasm-clear"
-        and any(clear_clicks or [])
-    )
-    if cleared or contents is None:
-        return (
-            {"qasm": None, "filename": None, "num_qubits": None, "error": None},
-            (sweep_dirty or 0) + 1,
-        )
-
-    try:
-        _, b64 = contents.split(",", 1)
-        raw = base64.b64decode(b64)
-        qasm_str = raw.decode("utf-8")
-    except (ValueError, UnicodeDecodeError) as exc:
-        return (
-            {"qasm": None, "filename": filename, "num_qubits": None,
-             "error": f"Failed to decode upload: {exc}"},
-            sweep_dirty or 0,
-        )
-
-    try:
-        from qiskit import qasm2
-        circ = qasm2.loads(qasm_str)
-        num_qubits = int(circ.num_qubits)
-    except Exception as exc:
-        return (
-            {"qasm": None, "filename": filename, "num_qubits": None,
-             "error": f"Not a valid OpenQASM 2.0 circuit: {exc}"},
-            sweep_dirty or 0,
-        )
-
-    return (
-        {"qasm": qasm_str, "filename": filename, "num_qubits": num_qubits, "error": None},
-        (sweep_dirty or 0) + 1,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Callback: render the custom-QASM status line + hide circuit-config rows
-# ---------------------------------------------------------------------------
-
-
-@app.callback(
-    Output("custom-qasm-status", "children"),
-    Output("custom-qasm-status", "style"),
-    Output("custom-qasm-upload-label", "children"),
-    Output("cfg-row-cat-circuit_type-wrap", "style"),
-    Output("cfg-row-num-logical-qubits-wrap", "style"),
-    Output("cfg-row-seed", "style"),
-    Input("custom-qasm-store", "data"),
-)
-def render_custom_qasm_status(data):
-    data = data or {}
-    qasm = data.get("qasm")
-    err = data.get("error")
-    filename = data.get("filename") or "circuit.qasm"
-    nq = data.get("num_qubits")
-
-    hidden = {"display": "none"}
-    visible = {}
-
-    if err:
-        status_children = [
-            html.Div(
-                err,
-                style={
-                    "fontSize": "11px",
-                    "color": FEEDBACK_COLORS["error"]["text"],
-                    "padding": "6px 8px",
-                    "background": FEEDBACK_COLORS["error"]["bg"],
-                    "border": f"1px solid {FEEDBACK_COLORS['error']['border']}",
-                    "borderRadius": "6px",
-                    "marginTop": "6px",
-                },
-            ),
-        ]
-        return (
-            status_children,
-            {"display": "block"},
-            "Upload .qasm",
-            visible, visible, visible,
-        )
-
-    if not qasm:
-        return (
-            [],
-            {"display": "none"},
-            "Upload .qasm",
-            visible, visible, visible,
-        )
-
-    status_children = [
-        html.Div(
-            style={
-                "display": "flex",
-                "alignItems": "center",
-                "justifyContent": "space-between",
-                "gap": "6px",
-                "marginTop": "6px",
-                "padding": "6px 8px",
-                "border": f"1px solid {COLORS['border']}",
-                "borderRadius": "6px",
-                "background": COLORS["surface"],
-            },
-            children=[
-                html.Div(
-                    style={
-                        "minWidth": "0",
-                        "fontSize": "11px",
-                        "color": COLORS["text"],
-                        "overflow": "hidden",
-                        "textOverflow": "ellipsis",
-                        "whiteSpace": "nowrap",
-                    },
-                    title=filename,
-                    children=[
-                        html.Span("✓ ", style={"color": COLORS["brand"]}),
-                        html.Span(filename, style={"fontWeight": "600"}),
-                        html.Span(
-                            f"  ({nq} qubits)" if nq else "",
-                            style={"color": COLORS["text_muted"]},
-                        ),
-                    ],
-                ),
-                html.Button(
-                    "Clear",
-                    id={"type": "custom-qasm-clear", "index": 0},
-                    className="ghost-btn",
-                    n_clicks=0,
-                    style={"padding": "2px 8px", "fontSize": "11px"},
-                ),
-            ],
-        ),
-    ]
-    return (
-        status_children,
-        {"display": "block"},
-        f"Replace ({filename})",
-        hidden, hidden, hidden,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Callback: open / close the custom-QASM help modal
-# ---------------------------------------------------------------------------
-
-
-@app.callback(
-    Output("custom-qasm-help-modal", "is_open"),
-    Input("custom-qasm-help-icon", "n_clicks"),
-    Input("custom-qasm-help-close", "n_clicks"),
-    State("custom-qasm-help-modal", "is_open"),
-    prevent_initial_call=True,
-)
-def toggle_custom_qasm_help_modal(open_clicks, close_clicks, is_open):
-    triggered = ctx.triggered_id
-    if triggered == "custom-qasm-help-icon":
-        return True
-    if triggered == "custom-qasm-help-close":
-        return False
-    return is_open
-
-
-# ---------------------------------------------------------------------------
 # Callback: view tab click — switch plot type without re-sweep
 # ---------------------------------------------------------------------------
 
@@ -2138,27 +1955,6 @@ def on_view_tab_click(
         correlation_mode=correlation_mode or "spearman",
     )
     return fig, view_type, make_view_tab_bar(actual_metrics, view_type)
-
-
-# ---------------------------------------------------------------------------
-# Callback: CSV export
-# ---------------------------------------------------------------------------
-
-
-@app.callback(
-    Output("csv-download", "data"),
-    Input("export-csv-btn", "n_clicks"),
-    State("sweep-result-store", "data"),
-    prevent_initial_call=True,
-)
-def export_csv(n_clicks, sweep_store):
-    if not n_clicks:
-        return dash.no_update
-    full = _get_sweep(sweep_store)
-    if full is None:
-        return dash.no_update
-    csv_str = sweep_to_csv(full)
-    return dict(content=csv_str, filename="dse_sweep.csv", type="text/csv")
 
 
 # ---------------------------------------------------------------------------
@@ -4369,6 +4165,16 @@ def _topology_hover_label(node_data):
         }),
         *metric_lines,
     ]
+
+
+# ---------------------------------------------------------------------------
+# Register extracted callback modules (after the inline @app.callback chain
+# above has wired up all primary outputs).
+# ---------------------------------------------------------------------------
+
+from gui.callbacks import register_all as _register_callbacks
+
+_register_callbacks(app)
 
 
 # ---------------------------------------------------------------------------
