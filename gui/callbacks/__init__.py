@@ -14,7 +14,8 @@ from typing import Any
 def register_all(app: Any) -> None:
     # Import inside the function so importing the package doesn't
     # trigger any of the submodule side-effects until app.py is ready.
-    from . import custom_qasm, export
+    from . import custom_qasm, export, sidebar
 
+    sidebar.register(app)
     custom_qasm.register(app)
     export.register(app)
