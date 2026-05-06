@@ -1131,6 +1131,18 @@ app.clientside_callback(
             window._lastProcessed = processed;
             window._sweepPending = false;
         }
+        // Load-cascade grace period: for ~1.5s after a session load,
+        // ignore any dirty bumps that come from the load's downstream
+        // callbacks (sliders being clobbered, dropdowns settling,
+        // architecture summary recomputing).  Without this, a load
+        // immediately fires a phantom recompile that overwrites the
+        // pre-baked sweep result with one computed against half-
+        // settled cfg state.
+        var loadAt = window._loadCompleteAt || 0;
+        if (loadAt > 0 && (Date.now() - loadAt) < 1500) {
+            window._sweepDirty = window._lastProcessed;
+            return window.dash_clientside.no_update;
+        }
         if (dirty > processed && !window._sweepPending) {
             window._sweepPending = true;
             return n;
@@ -1678,6 +1690,13 @@ _SIM_INPUTS = [
 
 app.clientside_callback(
     """function() {
+        // Don't bump dirty during the load grace period — the cascading
+        // callbacks (architecture summary, sweep-axis dropdowns settling)
+        // would otherwise trigger a phantom recompile right after a load.
+        var loadAt = window._loadCompleteAt || 0;
+        if (loadAt > 0 && (Date.now() - loadAt) < 1500) {
+            return window.dash_clientside.no_update;
+        }
         window._sweepDirty = (window._sweepDirty || 0) + 1;
         return window._sweepDirty;
     }""",
@@ -2462,18 +2481,14 @@ def _arch_clamped_max(
     topology_type: str | None = None,
     buffer_qubits: float | int | None = None,
 ) -> float:
-    """Cap a sweep slider's max under the logical-first model.
+    """No-op under the logical-first model.
 
-    Only ``buffer_qubits`` carries a runtime cap (``B ≤ K`` per-group
-    rule). Comm-qubits and logical-qubits no longer have architectural
-    caps because the architecture (cores or qpc, the unpinned one)
-    grows to absorb whatever overhead the slider demands. Infeasible
-    cells render as white in the heat-map instead of being silently
-    clamped.
+    Sweep-axis sliders no longer carry architectural caps: any
+    infeasible cell (B>K, deduction failure, etc.) renders as a white
+    cell in the heat-map. Clamping the slider would silently shrink
+    the user's requested range and trigger spurious recompiles when a
+    cfg-* value changes.
     """
-    if metric_key == "buffer_qubits":
-        K = max(1, int(comm_qubits or 1))
-        return float(min(slider_max, max(slider_min, float(K))))
     return slider_max
 
 
@@ -2580,63 +2595,13 @@ for _idx in range(MAX_METRICS):
             _tooltip_cfg(m.log_scale, m.unit, always_visible=True),
         )
 
-    # Re-clamp the slider's max when the architecture changes.  Only fires
-    # for axes whose current metric has an architectural cap (currently:
-    # comm_qubits, capped by floor(sqrt(qubits/cores))).  Preserves the
-    # user's range — only clamps the value if it now exceeds the cap.
-    @app.callback(
-        Output(f"metric-slider-{_idx}", "max", allow_duplicate=True),
-        Output(f"metric-slider-{_idx}", "marks", allow_duplicate=True),
-        Output(f"metric-slider-{_idx}", "value", allow_duplicate=True),
-        Input("cfg-qubits-per-core", "value"),
-        Input("cfg-num-cores", "value"),
-        Input("cfg-communication-qubits", "value"),
-        Input("cfg-buffer-qubits", "value"),
-        Input("cfg-routing-algorithm", "value"),
-        Input("cfg-topology", "value"),
-        Input({"type": "metric-dropdown", "index": ALL}, "value"),
-        State(f"metric-dropdown-{_idx}", "value"),
-        State(f"metric-slider-{_idx}", "value"),
-        State(f"metric-slider-{_idx}", "max"),
-        prevent_initial_call=True,
-    )
-    def _reclamp_axis_to_arch(
-        num_qubits, num_cores, comm_qubits, buffer_qubits, routing_algorithm,
-        topology_type, sweep_axis_keys,
-        metric_key, current_value, current_max,
-        _i=_idx,
-    ):
-        no = dash.no_update
-        if not metric_key:
-            return (no, no, no)
-        m = METRIC_BY_KEY.get(metric_key)
-        if m is None:
-            return (no, no, no)
-        smin = float(m.slider_min)
-        routing_axis_active = "routing_algorithm" in (sweep_axis_keys or [])
-        new_max = _arch_clamped_max(
-            metric_key, smin, float(m.slider_max), num_qubits, num_cores,
-            comm_qubits=comm_qubits,
-            routing_algorithm=routing_algorithm,
-            routing_axis_active=routing_axis_active,
-            topology_type=topology_type,
-            buffer_qubits=buffer_qubits,
-        )
-        if current_max is not None and abs(float(current_max) - new_max) < 1e-9:
-            # No-op: cap unchanged for the current architecture.
-            return (no, no, no)
-        marks = (
-            _log_marks(smin, new_max, m.unit)
-            if m.log_scale
-            else _linear_marks(smin, new_max, unit=m.unit)
-        )
-        if isinstance(current_value, (list, tuple)) and len(current_value) == 2:
-            lo = max(smin, min(float(current_value[0]), new_max))
-            hi = max(lo, min(float(current_value[1]), new_max))
-            new_value = [lo, hi]
-        else:
-            new_value = no
-        return (new_max, marks, new_value)
+    # Logical-first: no architectural cap on sweep-axis sliders.
+    # Infeasible cells render as white in the heat-map; the slider's
+    # range is whatever the user (or load) set. The previous re-clamp
+    # callback fired on every cfg-* change and rewrote slider values
+    # whenever the cap moved, which (a) clobbered loaded sweep ranges
+    # during session load and (b) bumped sweep-dirty, triggering a
+    # phantom recompile.
 
 
 # ---------------------------------------------------------------------------
@@ -2665,6 +2630,13 @@ for _idx in range(MAX_METRICS):
         prevent_initial_call=True,
     )
     def _toggle_slider_checklist(metric_key, suppress, _i=_idx):
+        # ``suppress`` output is left untouched (no_update) so that a
+        # session load's suppress=True flag persists for *every* axis's
+        # ``_reconfigure_slider`` call.  Otherwise the per-axis race
+        # between this callback and the slider one resets suppress
+        # for axis 0 before axis 1 reads it, clobbering the loaded
+        # axis-1 slider value to defaults.  The grace-period gate
+        # below resets suppress=False once the load cascade settles.
         no = dash.no_update
         cat = CAT_METRIC_BY_KEY.get(metric_key)
         if cat:
@@ -2677,7 +2649,7 @@ for _idx in range(MAX_METRICS):
                 cat.options,
                 value,
                 {"display": "none"},
-                False,
+                no,
             )
         return (
             {"paddingBottom": "22px"},
@@ -2685,7 +2657,7 @@ for _idx in range(MAX_METRICS):
             [],
             no if suppress else [],
             _RANGE_LABEL_STYLE,
-            False,
+            no,
         )
 
 
@@ -4268,11 +4240,34 @@ app.clientside_callback(
             window._sweepDirty = tick;
             window._lastProcessed = tick;
             window._sweepPending = false;
+            // Stamp the load timestamp so the sweep-trigger gate ignores
+            // any cascading dirty bumps that arrive while downstream
+            // callbacks (sliders, dropdowns, summary) settle around the
+            // newly-loaded values.
+            window._loadCompleteAt = Date.now();
         }
         return window.dash_clientside.no_update;
     }""",
     Output("sweep-trigger", "data", allow_duplicate=True),
     Input("session-loaded-tick", "data"),
+    prevent_initial_call=True,
+)
+
+
+# Reset suppress-cascade=False once the load grace period expires, so
+# subsequent user-driven dropdown changes use registry defaults again.
+# Driven by the same sweep-check interval that owns the trigger gate.
+app.clientside_callback(
+    """function(n) {
+        var loadAt = window._loadCompleteAt || 0;
+        if (loadAt > 0 && (Date.now() - loadAt) > 1500) {
+            window._loadCompleteAt = 0;
+            return false;
+        }
+        return window.dash_clientside.no_update;
+    }""",
+    Output("suppress-cascade", "data", allow_duplicate=True),
+    Input("sweep-check", "n_intervals"),
     prevent_initial_call=True,
 )
 
