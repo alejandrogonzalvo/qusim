@@ -148,7 +148,9 @@ def _log_marks(slider_min: float, slider_max: float, unit: str = "") -> dict:
     return marks
 
 
-def _linear_marks(slider_min: float, slider_max: float, n: int = 5, unit: str = "") -> dict:
+def _linear_marks(
+    slider_min: float, slider_max: float, n: int = 5, unit: str = ""
+) -> dict:
     import numpy as np
 
     n = min(n, 5)
@@ -160,7 +162,9 @@ def _linear_marks(slider_min: float, slider_max: float, n: int = 5, unit: str = 
     return marks
 
 
-def _minmax_marks(slider_min: float, slider_max: float, log_scale: bool, unit: str = "") -> dict:
+def _minmax_marks(
+    slider_min: float, slider_max: float, log_scale: bool, unit: str = ""
+) -> dict:
     """Return ONLY the two endpoint marks — drops intermediate noise.
 
     Used by all right-panel sliders so the user reads the exact value from
@@ -168,14 +172,28 @@ def _minmax_marks(slider_min: float, slider_max: float, log_scale: bool, unit: s
     """
     if log_scale:
         return {
-            str(int(slider_min)): {"label": _fmt_log_mark(int(slider_min), unit), "style": _MARK_STYLE},
-            str(int(slider_max)): {"label": _fmt_log_mark(int(slider_max), unit), "style": _MARK_STYLE},
+            str(int(slider_min)): {
+                "label": _fmt_log_mark(int(slider_min), unit),
+                "style": _MARK_STYLE,
+            },
+            str(int(slider_max)): {
+                "label": _fmt_log_mark(int(slider_max), unit),
+                "style": _MARK_STYLE,
+            },
         }
+
     def _fmt(v: float) -> str:
         return str(int(v)) if v == int(v) else f"{v:g}"
+
     return {
-        str(round(float(slider_min), 6)): {"label": _fmt(slider_min), "style": _MARK_STYLE},
-        str(round(float(slider_max), 6)): {"label": _fmt(slider_max), "style": _MARK_STYLE},
+        str(round(float(slider_min), 6)): {
+            "label": _fmt(slider_min),
+            "style": _MARK_STYLE,
+        },
+        str(round(float(slider_max), 6)): {
+            "label": _fmt(slider_max),
+            "style": _MARK_STYLE,
+        },
     }
 
 
@@ -351,10 +369,9 @@ def make_metric_selector(index: int) -> html.Div:
         else _linear_marks(m.slider_min, m.slider_max, unit=m.unit)
     )
 
-    all_options = (
-        [{"label": nm.label, "value": nm.key} for nm in SWEEPABLE_METRICS]
-        + [{"label": cat.label, "value": cat.key} for cat in CATEGORICAL_METRICS]
-    )
+    all_options = [{"label": nm.label, "value": nm.key} for nm in SWEEPABLE_METRICS] + [
+        {"label": cat.label, "value": cat.key} for cat in CATEGORICAL_METRICS
+    ]
 
     return html.Div(
         id=f"metric-row-{index}",
@@ -442,8 +459,6 @@ def make_metric_selector(index: int) -> html.Div:
         ],
         style=CARD_STYLE,
     )
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -820,7 +835,11 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                         "custom QASM file is uploaded."
                     ),
                     row_id="cfg-row-num-logical-qubits",
-                    row_style=({"display": "none"} if "num_logical_qubits" in swept_keys else {}),
+                    row_style=(
+                        {"display": "none"}
+                        if "num_logical_qubits" in swept_keys
+                        else {}
+                    ),
                 ),
             ),
             html.Div(
@@ -966,7 +985,7 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
             "textAlign": "center",
             "userSelect": "none",
         }
-        cores_active = (pin_value == "cores")
+        cores_active = pin_value == "cores"
         return html.Div(
             style={
                 "display": "flex",
@@ -993,15 +1012,23 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
         )
 
     def _arch_row(
-        *, label: str, slider_id: str,
-        slider_min: int, slider_max: int, value: int,
-        pin_value: str, axis_key: str, derived_id: str,
-        row_id: str, swept_key: str, tooltip: str,
+        *,
+        label: str,
+        slider_id: str,
+        slider_min: int,
+        slider_max: int,
+        value: int,
+        pin_value: str,
+        axis_key: str,
+        derived_id: str,
+        row_id: str,
+        swept_key: str,
+        tooltip: str,
     ) -> html.Div:
         """One architectural axis: either the slider (when pinned) or a
         derived-value display (when the *other* axis is pinned). Hidden
         outright when this axis is being swept (handled upstream)."""
-        is_active = (axis_key == pin_value)
+        is_active = axis_key == pin_value
         return html.Div(
             id=row_id,
             style=({"display": "none"} if (swept_key in swept_keys) else {}),
@@ -1026,7 +1053,9 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                 html.Div(
                     id=derived_id,
                     style=(
-                        {"display": "none"} if is_active else {
+                        {"display": "none"}
+                        if is_active
+                        else {
                             "padding": "6px 8px",
                             "background": COLORS["surface2"],
                             "border": f"1px dashed {COLORS['border']}",
@@ -1105,7 +1134,9 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                     "in the per-core reservation but carry no edges."
                 ),
                 row_id="cfg-row-communication-qubits",
-                row_style=({"display": "none"} if "communication_qubits" in swept_keys else {}),
+                row_style=(
+                    {"display": "none"} if "communication_qubits" in swept_keys else {}
+                ),
             ),
             slider_row(
                 label="Buffer qubits",
@@ -1121,7 +1152,9 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
                     "Per-group rule: B ≤ K (clamped on this slider)."
                 ),
                 row_id="cfg-row-buffer-qubits",
-                row_style=({"display": "none"} if "buffer_qubits" in swept_keys else {}),
+                row_style=(
+                    {"display": "none"} if "buffer_qubits" in swept_keys else {}
+                ),
             ),
             html.Div(
                 id="cfg-row-cat-topology_type",
@@ -1307,7 +1340,9 @@ def _output_tab_children() -> list:
     ]
 
 
-def _collapsible_header(title: str, section_id: str, tooltip: str | None = None) -> html.Div:
+def _collapsible_header(
+    title: str, section_id: str, tooltip: str | None = None
+) -> html.Div:
     """Header row with a chevron toggle for a collapsible bottom section."""
     label = [
         html.Span(
@@ -1385,7 +1420,6 @@ def _collapsible_header(title: str, section_id: str, tooltip: str | None = None)
         },
         children=label,
     )
-
 
 
 def make_performance_panel() -> html.Div:
@@ -1843,10 +1877,15 @@ def make_merit_view_controls() -> html.Div:
                             ),
                             dcc.Slider(
                                 id={"type": "merit-frozen-slider", "index": i},
-                                min=0, max=1, step=None, value=0,
+                                min=0,
+                                max=1,
+                                step=None,
+                                value=0,
                                 marks={},
-                                tooltip={"placement": "bottom",
-                                         "always_visible": False},
+                                tooltip={
+                                    "placement": "bottom",
+                                    "always_visible": False,
+                                },
                                 updatemode="drag",
                                 included=False,
                             ),
@@ -2132,7 +2171,7 @@ def make_merit_controls() -> html.Div:
 
 
 _NODE_SPACING = 55  # px between adjacent qubits inside a core
-_CORE_GAP = 2.0     # extra core-spacing factor (multiplier on core bounding box)
+_CORE_GAP = 2.0  # extra core-spacing factor (multiplier on core bounding box)
 
 
 def _local_qubit_positions(size: int, intracore: str) -> list[tuple[float, float]]:
@@ -2142,6 +2181,7 @@ def _local_qubit_positions(size: int, intracore: str) -> list[tuple[float, float
     intra-core edges over these coordinates minimises crossings.
     """
     import math
+
     if size <= 0:
         return []
     if size == 1:
@@ -2153,8 +2193,10 @@ def _local_qubit_positions(size: int, intracore: str) -> list[tuple[float, float
         r = _NODE_SPACING * size / (2 * math.pi)
         # Start from -π/2 so the first node sits at the top of the ring.
         return [
-            (r * math.cos(-math.pi / 2 + 2 * math.pi * q / size),
-             r * math.sin(-math.pi / 2 + 2 * math.pi * q / size))
+            (
+                r * math.cos(-math.pi / 2 + 2 * math.pi * q / size),
+                r * math.sin(-math.pi / 2 + 2 * math.pi * q / size),
+            )
             for q in range(size)
         ]
     # grid (and the all_to_all fallback): fill row-by-row.
@@ -2170,9 +2212,12 @@ def _local_qubit_positions(size: int, intracore: str) -> list[tuple[float, float
     return pos
 
 
-def _core_centres(num_cores: int, inter: str, core_box: float) -> list[tuple[float, float]]:
+def _core_centres(
+    num_cores: int, inter: str, core_box: float
+) -> list[tuple[float, float]]:
     """(x, y) centre for each core, ``core_box`` apart."""
     import math
+
     if num_cores <= 1:
         return [(0.0, 0.0)]
     inter = (inter or "ring").lower()
@@ -2183,15 +2228,19 @@ def _core_centres(num_cores: int, inter: str, core_box: float) -> list[tuple[flo
         if side * side < num_cores:
             side += 1
         return [
-            (((c % side) - (side - 1) / 2) * core_box,
-             ((c // side) - (side - 1) / 2) * core_box)
+            (
+                ((c % side) - (side - 1) / 2) * core_box,
+                ((c // side) - (side - 1) / 2) * core_box,
+            )
             for c in range(num_cores)
         ]
     # ring / all_to_all
     r = max(core_box, num_cores * core_box / (2 * math.pi))
     return [
-        (r * math.cos(-math.pi / 2 + 2 * math.pi * c / num_cores),
-         r * math.sin(-math.pi / 2 + 2 * math.pi * c / num_cores))
+        (
+            r * math.cos(-math.pi / 2 + 2 * math.pi * c / num_cores),
+            r * math.sin(-math.pi / 2 + 2 * math.pi * c / num_cores),
+        )
         for c in range(num_cores)
     ]
 
@@ -2231,10 +2280,13 @@ def build_topology_elements(
     link.
     """
     import math
+
+    from gui.dse_engine import (
+        assign_core_slots,
+        inter_core_edges,
+    )
     from gui.dse_engine import (
         inter_core_neighbors as _nbrs_for_view,
-        inter_core_edges,
-        assign_core_slots,
     )
 
     num_cores = max(1, int(num_cores or 1))
@@ -2259,10 +2311,13 @@ def build_topology_elements(
 
     # Resolve per-core role assignments (data / comm / buffer slots).
     per_core_layout = [
-        assign_core_slots(core_sizes[c], intracore_topology,
-                          groups_per_core[c] if K >= 1 else 0,
-                          K if K >= 1 else 0,
-                          b_per_group=B if K >= 1 else 0)
+        assign_core_slots(
+            core_sizes[c],
+            intracore_topology,
+            groups_per_core[c] if K >= 1 else 0,
+            K if K >= 1 else 0,
+            b_per_group=B if K >= 1 else 0,
+        )
         for c in range(num_cores)
     ]
 
@@ -2273,8 +2328,7 @@ def build_topology_elements(
     ]
     if local_pos_per_core and local_pos_per_core[0]:
         max_extent = max(
-            max(abs(x), abs(y))
-            for poss in local_pos_per_core for x, y in poss
+            max(abs(x), abs(y)) for poss in local_pos_per_core for x, y in poss
         )
     else:
         max_extent = _NODE_SPACING
@@ -2358,11 +2412,13 @@ def build_topology_elements(
             }
             if g is not None:
                 data_dict["group"] = g
-            elements.append({
-                "data": data_dict,
-                "position": {"x": cx + lx, "y": cy + ly},
-                "classes": role,
-            })
+            elements.append(
+                {
+                    "data": data_dict,
+                    "position": {"x": cx + lx, "y": cy + ly},
+                    "classes": role,
+                }
+            )
 
     # ---- Intra-core edges: full ``intracore_topology`` over slot order -----
     # This matches the engine's _add_intracore_edges so the visualization
@@ -2370,7 +2426,8 @@ def build_topology_elements(
     # node-id map per core.
     def _slot_to_id(c: int, slot: int) -> str:
         role, g, k_idx = (
-            ("data", None, None) if slot in per_core_layout[c]["data"]
+            ("data", None, None)
+            if slot in per_core_layout[c]["data"]
             else _resolve_role(c, slot)
         )
         if role == "data":
@@ -2397,58 +2454,75 @@ def build_topology_elements(
         if intracore_topology == "all_to_all":
             for i in range(size):
                 for j in range(i + 1, size):
-                    elements.append({
-                        "data": {"source": ids[i], "target": ids[j]},
-                        "classes": "intra",
-                    })
+                    elements.append(
+                        {
+                            "data": {"source": ids[i], "target": ids[j]},
+                            "classes": "intra",
+                        }
+                    )
         elif intracore_topology == "linear":
             for i in range(size - 1):
-                elements.append({
-                    "data": {"source": ids[i], "target": ids[i + 1]},
-                    "classes": "intra",
-                })
+                elements.append(
+                    {
+                        "data": {"source": ids[i], "target": ids[i + 1]},
+                        "classes": "intra",
+                    }
+                )
         elif intracore_topology == "ring":
             for i in range(size):
-                elements.append({
-                    "data": {"source": ids[i], "target": ids[(i + 1) % size]},
-                    "classes": "intra",
-                })
+                elements.append(
+                    {
+                        "data": {"source": ids[i], "target": ids[(i + 1) % size]},
+                        "classes": "intra",
+                    }
+                )
         elif intracore_topology == "grid":
             from gui.dse_engine import _grid_side
+
             side = _grid_side(size)
             for q in range(size):
                 row, col = divmod(q, side)
                 if col + 1 < side and q + 1 < size:
-                    elements.append({
-                        "data": {"source": ids[q], "target": ids[q + 1]},
-                        "classes": "intra",
-                    })
+                    elements.append(
+                        {
+                            "data": {"source": ids[q], "target": ids[q + 1]},
+                            "classes": "intra",
+                        }
+                    )
                 if q + side < size:
-                    elements.append({
-                        "data": {"source": ids[q], "target": ids[q + side]},
-                        "classes": "intra",
-                    })
+                    elements.append(
+                        {
+                            "data": {"source": ids[q], "target": ids[q + side]},
+                            "classes": "intra",
+                        }
+                    )
         else:
             for i in range(size):
                 for j in range(i + 1, size):
-                    elements.append({
-                        "data": {"source": ids[i], "target": ids[j]},
-                        "classes": "intra",
-                    })
+                    elements.append(
+                        {
+                            "data": {"source": ids[i], "target": ids[j]},
+                            "classes": "intra",
+                        }
+                    )
 
     # ---- Inter-core edges: K parallel one-to-one links per neighbour pair --
     if num_cores < 2 or K < 1:
         return elements
     for (a_core, a_g, a_k), (b_core, b_g, b_k) in inter_core_edges(
-        num_cores, K, topology,
+        num_cores,
+        K,
+        topology,
     ):
-        elements.append({
-            "data": {
-                "source": f"c{a_core}_g{a_g}_k{a_k}",
-                "target": f"c{b_core}_g{b_g}_k{b_k}",
-            },
-            "classes": "inter",
-        })
+        elements.append(
+            {
+                "data": {
+                    "source": f"c{a_core}_g{a_g}_k{a_k}",
+                    "target": f"c{b_core}_g{b_g}_k{b_k}",
+                },
+                "classes": "inter",
+            }
+        )
 
     return elements
 
@@ -2687,9 +2761,15 @@ def make_topology_view_panel() -> html.Div:
                                 id="topology-overlay-metric",
                                 options=[
                                     {"label": "Overall", "value": "overall_fidelity"},
-                                    {"label": "Algorithmic", "value": "algorithmic_fidelity"},
+                                    {
+                                        "label": "Algorithmic",
+                                        "value": "algorithmic_fidelity",
+                                    },
                                     {"label": "Routing", "value": "routing_fidelity"},
-                                    {"label": "Coherence", "value": "coherence_fidelity"},
+                                    {
+                                        "label": "Coherence",
+                                        "value": "coherence_fidelity",
+                                    },
                                 ],
                                 value="overall_fidelity",
                                 clearable=False,
@@ -2712,7 +2792,10 @@ def make_topology_view_panel() -> html.Div:
                                         },
                                         children=[
                                             html.Span(
-                                                id={"type": "topology-axis-label", "index": i},
+                                                id={
+                                                    "type": "topology-axis-label",
+                                                    "index": i,
+                                                },
                                                 style={
                                                     "fontSize": "11px",
                                                     "fontWeight": "600",
@@ -2733,8 +2816,14 @@ def make_topology_view_panel() -> html.Div:
                                                 children=[
                                                     html.Div(
                                                         dcc.Slider(
-                                                            id={"type": "topology-axis-slider", "index": i},
-                                                            min=0, max=1, step=1, value=0,
+                                                            id={
+                                                                "type": "topology-axis-slider",
+                                                                "index": i,
+                                                            },
+                                                            min=0,
+                                                            max=1,
+                                                            step=1,
+                                                            value=0,
                                                             marks={},
                                                             # The slider's value
                                                             # is the 0-based cell
@@ -2753,10 +2842,16 @@ def make_topology_view_panel() -> html.Div:
                                                             allow_direct_input=False,
                                                             className="dse-slider",
                                                         ),
-                                                        style={"flex": "1", "minWidth": 0},
+                                                        style={
+                                                            "flex": "1",
+                                                            "minWidth": 0,
+                                                        },
                                                     ),
                                                     dcc.Input(
-                                                        id={"type": "topology-axis-value", "index": i},
+                                                        id={
+                                                            "type": "topology-axis-value",
+                                                            "index": i,
+                                                        },
                                                         type="text",
                                                         debounce=True,
                                                         spellCheck=False,
@@ -2867,22 +2962,6 @@ def make_topology_view_panel() -> html.Div:
                         ],
                     ),
                 ],
-            ),
-            html.Div(
-                # Future hook: user-uploaded coupling map will replace the
-                # synthetic elements built from the right-sidebar config.
-                style={
-                    "position": "absolute",
-                    "bottom": "8px",
-                    "left": "12px",
-                    "fontSize": "10px",
-                    "color": COLORS["text_muted"],
-                    "fontStyle": "italic",
-                },
-                children=(
-                    "Visualizing the current architecture. "
-                    "Custom coupling map upload coming soon."
-                ),
             ),
         ],
     )

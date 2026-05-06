@@ -40,6 +40,20 @@ body {
    SLIDERS  (Dash 4.x – Radix UI primitives + dash-slider-* classes)
    ═══════════════════════════════════════════════════════════════════ */
 
+/* Inset every slider from its parent so the 14px handle (extending
+   ±7px past the rail) and the centred tooltip popup at value-min /
+   value-max have room to render. Without this, the surrounding
+   scroll container (overflow: auto on .config-scroll / .sidebar-scroll)
+   clips the handle's outer half and the tooltip text.
+
+   Margin (not padding) is required: the thumb is `position: absolute`
+   inside .dash-slider-container, so its `left: 0/100%` resolves to the
+   container's padding edge — padding wouldn't move it inward. */
+.dash-slider-container {
+    margin-left: 12px !important;
+    margin-right: 12px !important;
+}
+
 /* Track (rail) */
 .dash-slider-track {
     background: var(--border) !important;
