@@ -146,6 +146,14 @@ the full layout, [`docs/DSE_VIEWS.md`](docs/DSE_VIEWS.md) for the view
 catalog, and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the
 GUI sits on top of the library.
 
+## Deploy
+
+For personal use, `qusim-dse` from a venv is enough. For a public URL
+backed by a Cloudflare named tunnel with auto-recovery and
+auto-deploy from `origin/main`, see
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). The same doc covers
+bootstrapping the deployment from scratch on a fresh VM.
+
 ## Cold path vs. hot path
 
 DSE separates two cost regimes:
