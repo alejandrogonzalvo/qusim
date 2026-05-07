@@ -1,6 +1,6 @@
 [project]
 name = "quadris"
-version = "0.1.0"
+version = "1.0.0"
 description = "Multi-core quantum architecture simulator with built-in Design Space Exploration"
 authors = [
     {name = "Alejandro Gonzalvo",email = "alejandrogonhid@gmail.com"}
