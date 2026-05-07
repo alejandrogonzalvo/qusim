@@ -2889,6 +2889,22 @@ def make_topology_view_panel() -> html.Div:
                             for i in range(MAX_SWEEP_AXES)
                         ],
                     ),
+                    # Two stacked status lines below the scrub sliders:
+                    #   * persistent: rendered while the current cell is
+                    #     NaN and no nearby valid cell could be reached
+                    #   * ephemeral: a brief toast acknowledging an
+                    #     auto-snap when the user dragged into invalid
+                    #     territory (fades out after ~2.5 s).
+                    html.Div(
+                        id="topology-cell-warning",
+                        style={"display": "none"},
+                        children=[],
+                    ),
+                    html.Div(
+                        id="topology-cell-toast",
+                        style={"display": "none"},
+                        children="",
+                    ),
                 ],
             ),
             cyto.Cytoscape(

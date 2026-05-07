@@ -2541,48 +2541,39 @@ def _is_finite(x) -> bool:
         return False
 
 
-@app.callback(
-    Output({"type": "topology-axis-slider", "index": ALL}, "value", allow_duplicate=True),
-    Input({"type": "topology-axis-slider", "index": ALL}, "value"),
-    State("sweep-result-store", "data"),
-    State("topology-facet-selector", "value"),
-    prevent_initial_call=True,
-)
-def _topology_clamp_to_valid_cells(slider_vals, sweep_store, facet_idx):
-    """Snap the just-moved scrub slider back to the nearest non-NaN cell.
+_TOAST_VISIBLE_STYLE = {
+    "display": "block",
+    "marginTop": "8px",
+    "padding": "6px 10px",
+    "background": COLORS["brand_wash"],
+    "border": f"1px solid {COLORS['brand']}",
+    "borderRadius": "4px",
+    "fontSize": "11px",
+    "color": COLORS["brand_press"],
+    "transition": "opacity 0.4s ease-out",
+    "opacity": "1",
+}
 
-    The sweep grid's ``overall_fidelity`` is NaN exactly for the cells
-    the engine refused to compute (B>K, infeasible deduction, etc.).
-    On every slider change, build the resulting cell index tuple,
-    check the grid, and walk the moved axis backward (then forward as
-    a fallback) until a finite cell is found.
-    """
-    no = dash.no_update
-    n = len(slider_vals)
-    no_change = [no] * n
+_WARNING_VISIBLE_STYLE = {
+    "display": "block",
+    "marginTop": "8px",
+    "padding": "6px 10px",
+    "background": FEEDBACK_COLORS["warning"]["bg"],
+    "border": f"1px solid {FEEDBACK_COLORS['warning']['border']}",
+    "borderLeft": f"3px solid {FEEDBACK_COLORS['warning']['border']}",
+    "borderRadius": "4px",
+    "fontSize": "11px",
+    "color": FEEDBACK_COLORS["warning"]["text"],
+}
 
-    triggered = ctx.triggered_id
-    if not isinstance(triggered, dict) or triggered.get("type") != "topology-axis-slider":
-        return no_change
-    moved_d = triggered.get("index")
-    if not isinstance(moved_d, int) or moved_d >= n:
-        return no_change
 
-    full = _get_sweep(sweep_store) if sweep_store else None
-    if not isinstance(full, dict):
-        return no_change
+def _resolve_grid_and_meta(full, facet_idx):
+    """Helper: extract per-facet grid + axis metadata from a sweep result."""
     pq = _facet_per_qubit_data(full, facet_idx)
     if not pq or not pq.get("axis_keys"):
-        return no_change
+        return None, None, None
     axis_keys = pq["axis_keys"]
-    shape = pq.get("shape") or [
-        len(v) for v in pq.get("axis_values", [])
-    ]
-    if moved_d >= len(shape):
-        return no_change
-
-    # Resolve the grid for this facet (top-level for non-faceted sweeps,
-    # otherwise inside the chosen facet entry).
+    shape = pq.get("shape") or [len(v) for v in pq.get("axis_values", [])]
     facets = full.get("facets")
     if facets:
         i = int(facet_idx or 0)
@@ -2591,38 +2582,150 @@ def _topology_clamp_to_valid_cells(slider_vals, sweep_store, facet_idx):
         grid = facets[i].get("grid")
     else:
         grid = full.get("grid")
-    if grid is None:
-        return no_change
+    return grid, axis_keys, shape
+
+
+def _walk_axis_to_valid(grid, cell_idx, moved_d, shape):
+    """Walk ``moved_d`` backward then forward until a finite cell is
+    found.  Returns the new index or ``None`` if no valid cell exists
+    on this axis (every cell along it is NaN, given the other axes)."""
+    original = cell_idx[moved_d]
+    for new_idx in range(original - 1, -1, -1):
+        cell_idx[moved_d] = new_idx
+        if _is_finite(_cell_overall_fidelity(grid, tuple(cell_idx))):
+            return new_idx
+    for new_idx in range(original + 1, int(shape[moved_d])):
+        cell_idx[moved_d] = new_idx
+        if _is_finite(_cell_overall_fidelity(grid, tuple(cell_idx))):
+            return new_idx
+    cell_idx[moved_d] = original  # restore
+    return None
+
+
+@app.callback(
+    Output({"type": "topology-axis-slider", "index": ALL}, "value", allow_duplicate=True),
+    Output("topology-cell-toast", "children"),
+    Output("topology-cell-toast", "style"),
+    Output("topology-cell-warning", "children"),
+    Output("topology-cell-warning", "style"),
+    Input({"type": "topology-axis-slider", "index": ALL}, "value"),
+    Input("sweep-result-store", "data"),
+    State("topology-facet-selector", "value"),
+    prevent_initial_call=True,
+)
+def _topology_clamp_to_valid_cells(slider_vals, sweep_store, facet_idx):
+    """Snap scrub sliders off NaN cells and surface UI feedback.
+
+    The sweep grid's ``overall_fidelity`` is NaN exactly for cells the
+    engine refused to compute (B>K, infeasible deduction, no nc fits…).
+
+    Two trigger paths:
+
+      * **Slider drag**: the just-moved axis walks backward (then
+        forward) along the grid until a finite cell is found. The
+        ``topology-cell-toast`` div shows an ephemeral acknowledgement
+        ("Buffer Qubits → 4: B=6 has no valid cell at this K"). A
+        clientside fade-out clears it after ~2.5 s.
+      * **Sweep-store change** (session load, hot reload): re-validate
+        every axis. If the current cell is NaN, walk *each* axis until
+        valid. Same toast.
+
+    Persistent warning ``topology-cell-warning`` lights up when no
+    valid cell could be reached on the current axes — e.g. an entire
+    sweep returned NaN under the current pin axis. The user must move
+    multiple axes manually to escape.
+    """
+    n = len(slider_vals)
+    no_slider_change = [dash.no_update] * n
+    no_toast = (dash.no_update, {"display": "none"})
+    no_warn = (dash.no_update, {"display": "none"})
+
+    triggered = ctx.triggered_id
+    is_slider_trigger = (
+        isinstance(triggered, dict)
+        and triggered.get("type") == "topology-axis-slider"
+    )
+    is_store_trigger = triggered == "sweep-result-store"
+
+    full = _get_sweep(sweep_store) if sweep_store else None
+    if not isinstance(full, dict):
+        return [*no_slider_change, *no_toast, *no_warn]
+    grid, axis_keys, shape = _resolve_grid_and_meta(full, facet_idx)
+    if grid is None or not axis_keys:
+        return [*no_slider_change, *no_toast, *no_warn]
 
     cell_idx = [
         max(0, min(int(slider_vals[d] or 0), max(0, int(shape[d]) - 1)))
         for d in range(len(axis_keys))
     ]
-    fid = _cell_overall_fidelity(grid, tuple(cell_idx))
-    if _is_finite(fid):
-        return no_change
+    if _is_finite(_cell_overall_fidelity(grid, tuple(cell_idx))):
+        # Already valid — clear any persistent warning.
+        return [*no_slider_change, "", {"display": "none"}, "", {"display": "none"}]
 
-    # Walk the just-moved axis backward, then forward, until we land on
-    # a finite cell. This keeps every other axis fixed so the user's
-    # mental model (`I just moved K, only K should jump`) holds.
-    original = cell_idx[moved_d]
-    found = None
-    for new_idx in range(original - 1, -1, -1):
-        cell_idx[moved_d] = new_idx
-        if _is_finite(_cell_overall_fidelity(grid, tuple(cell_idx))):
-            found = new_idx
-            break
-    if found is None:
-        for new_idx in range(original + 1, int(shape[moved_d])):
-            cell_idx[moved_d] = new_idx
-            if _is_finite(_cell_overall_fidelity(grid, tuple(cell_idx))):
-                found = new_idx
-                break
-    if found is None or found == original:
-        return no_change
-    out = list(no_change)
-    out[moved_d] = found
-    return out
+    # We're on a NaN cell. Decide which axes to walk.
+    if is_slider_trigger:
+        moved_d = triggered.get("index")
+        axes_to_walk = [moved_d] if isinstance(moved_d, int) and moved_d < n else []
+    elif is_store_trigger:
+        # New grid arrived — try to clamp every axis whose current cell is NaN.
+        axes_to_walk = list(range(min(n, len(axis_keys))))
+    else:
+        return [*no_slider_change, *no_toast, *no_warn]
+
+    out = list(no_slider_change)
+    moves: list[tuple[str, int, int]] = []  # (label, original, new)
+    for d in axes_to_walk:
+        if d >= len(axis_keys):
+            continue
+        original = cell_idx[d]
+        new_idx = _walk_axis_to_valid(grid, cell_idx, d, shape)
+        if new_idx is None or new_idx == original:
+            continue
+        out[d] = new_idx
+        cell_idx[d] = new_idx
+        m = METRIC_BY_KEY.get(axis_keys[d])
+        label = m.label if m else axis_keys[d]
+        moves.append((label, original, new_idx))
+
+    # If the cell is still NaN after walking, no valid cell along these
+    # axes — show the persistent warning.
+    final_valid = _is_finite(_cell_overall_fidelity(grid, tuple(cell_idx)))
+    if not final_valid:
+        warn = (
+            "⚠ The current cell has no valid result. Move sliders "
+            "until a non-white cell is reached, or re-run the sweep."
+        )
+        return [*out, "", {"display": "none"}, warn, _WARNING_VISIBLE_STYLE]
+
+    if moves:
+        parts = [f"{lbl}: {orig + 1} → {new + 1}" for lbl, orig, new in moves]
+        toast = "Snapped off invalid cell — " + ", ".join(parts)
+        return [*out, toast, _TOAST_VISIBLE_STYLE, "", {"display": "none"}]
+
+    return [*no_slider_change, *no_toast, *no_warn]
+
+
+# ---------------------------------------------------------------------------
+# Clientside fade-out for the topology toast: when its text is set,
+# fade opacity to 0 after ~2.5 s. Fully clearing the children would
+# need a server round-trip; opacity fade is a pure CSS transition.
+# ---------------------------------------------------------------------------
+
+app.clientside_callback(
+    """function(text) {
+        if (!text) return window.dash_clientside.no_update;
+        // Re-arm any prior timer.
+        if (window._topoToastTimer) clearTimeout(window._topoToastTimer);
+        window._topoToastTimer = setTimeout(function () {
+            var el = document.getElementById("topology-cell-toast");
+            if (el) el.style.opacity = "0";
+        }, 2500);
+        return window.dash_clientside.no_update;
+    }""",
+    Output("topology-cell-toast", "children", allow_duplicate=True),
+    Input("topology-cell-toast", "children"),
+    prevent_initial_call=True,
+)
 
 
 # ---------------------------------------------------------------------------
