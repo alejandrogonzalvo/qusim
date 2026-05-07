@@ -987,26 +987,39 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
         }
         cores_active = pin_value == "cores"
         return html.Div(
-            style={
-                "display": "flex",
-                "alignItems": "stretch",
-                "gap": "0",
-                "borderRadius": "6px",
-                "overflow": "hidden",
-                "marginBottom": "10px",
-            },
+            style={"marginBottom": "10px"},
             children=[
                 html.Div(
-                    "Cores",
-                    id="cfg-pin-cores-btn",
-                    n_clicks=0,
-                    style=(active_style if cores_active else inactive_style),
+                    style={
+                        "display": "flex",
+                        "alignItems": "stretch",
+                        "gap": "0",
+                        "borderRadius": "6px",
+                        "overflow": "hidden",
+                    },
+                    children=[
+                        html.Div(
+                            "Cores",
+                            id="cfg-pin-cores-btn",
+                            n_clicks=0,
+                            style=(active_style if cores_active else inactive_style),
+                        ),
+                        html.Div(
+                            "Qubits per core",
+                            id="cfg-pin-qpc-btn",
+                            n_clicks=0,
+                            style=(inactive_style if cores_active else active_style),
+                        ),
+                    ],
                 ),
+                # Toast: surfaces a brief message when the user clicks
+                # the *other* pin button while a sweep axis is using
+                # the current pin (so flipping would un-sweep). Hidden
+                # by default; the pin-toggle callback writes + fades it.
                 html.Div(
-                    "Qubits per core",
-                    id="cfg-pin-qpc-btn",
-                    n_clicks=0,
-                    style=(inactive_style if cores_active else active_style),
+                    id="cfg-pin-toast",
+                    style={"display": "none"},
+                    children="",
                 ),
             ],
         )

@@ -64,6 +64,23 @@ _PIN_TOGGLE_BTN_INACTIVE = {
     "textAlign": "center",
     "userSelect": "none",
 }
+# Same as INACTIVE but greyed out: shown when an architectural axis is on a
+# sweep, so flipping the pin would un-sweep it. The button is still clickable
+# (Dash has no built-in disabled state for ``html.Div`` toggles); the callback
+# blocks the flip and surfaces a toast.
+_PIN_TOGGLE_BTN_LOCKED_INACTIVE = {
+    **_PIN_TOGGLE_BTN_INACTIVE,
+    "color": COLORS["text_muted"],
+    "cursor": "not-allowed",
+    "opacity": "0.55",
+}
+_PIN_TOAST_VISIBLE_STYLE = {
+    **_feedback_style("error"),
+    "marginTop": "8px",
+    "marginBottom": "0",
+    "transition": "opacity 0.4s ease-out",
+    "opacity": "1",
+}
 _DERIVED_BADGE_STYLE = {
     "padding": "6px 8px",
     "background": COLORS["surface2"],
@@ -354,27 +371,84 @@ def _register_pin_axis(app: Any) -> None:
         Output("cfg-row-qubits-per-core-slider-row", "style"),
         Output("cfg-num-cores-derived", "style"),
         Output("cfg-qubits-per-core-derived", "style"),
+        Output("cfg-pin-toast", "children"),
+        Output("cfg-pin-toast", "style"),
         Input("cfg-pin-cores-btn", "n_clicks"),
         Input("cfg-pin-qpc-btn", "n_clicks"),
         Input("cfg-pin-axis", "data"),
+        Input("num-metrics-store", "data"),
+        *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
         prevent_initial_call=True,
     )
-    def _toggle_pin_axis(_n_cores, _n_qpc, current):
+    def _toggle_pin_axis(_n_cores, _n_qpc, current, num_metrics, *dropdown_vals):
         """Flip the pin axis when either toggle button is clicked, or
         refresh visuals when ``cfg-pin-axis`` is set programmatically (e.g.
         by the load-session callback).
+
+        When an architectural axis (``num_cores`` or ``qubits_per_core``)
+        is active on a sweep, flipping the pin to the *other* axis would
+        un-sweep it (the unpinned axis becomes derived per cell). To
+        prevent that we lock the pin to whichever axis is being swept,
+        grey out the other button, and surface a brief toast if the user
+        clicks the locked side anyway.
         """
         triggered = ctx.triggered_id
-        if triggered == "cfg-pin-cores-btn":
-            new_pin = "cores"
-        elif triggered == "cfg-pin-qpc-btn":
-            new_pin = "qubits_per_core"
+
+        n = int(num_metrics or 1)
+        swept_keys: set[str] = set()
+        for i in range(min(n, MAX_METRICS)):
+            k = dropdown_vals[i] if i < len(dropdown_vals) else None
+            if k:
+                swept_keys.add(k)
+        if "num_cores" in swept_keys:
+            pin_lock: str | None = "cores"
+        elif "qubits_per_core" in swept_keys:
+            pin_lock = "qubits_per_core"
         else:
-            new_pin = current or "cores"
+            pin_lock = None
+
+        current = current or "cores"
+        if triggered == "cfg-pin-cores-btn":
+            target = "cores"
+        elif triggered == "cfg-pin-qpc-btn":
+            target = "qubits_per_core"
+        else:
+            target = current  # programmatic / dropdown / num-metrics trigger
+
+        toast_text = ""
+        toast_style: dict = {"display": "none"}
+        is_button_click = triggered in ("cfg-pin-cores-btn", "cfg-pin-qpc-btn")
+        if pin_lock is not None and is_button_click and target != pin_lock:
+            new_pin = current
+            swept_label = "num_cores" if pin_lock == "cores" else "qubits_per_core"
+            target_label = "Cores" if target == "cores" else "Qubits/core"
+            toast_text = (
+                f"Can't switch to {target_label}: '{swept_label}' is on a "
+                f"sweep axis. Remove that axis first."
+            )
+            toast_style = _PIN_TOAST_VISIBLE_STYLE
+        else:
+            new_pin = target
 
         cores_active = new_pin == "cores"
-        cores_btn = _PIN_TOGGLE_BTN_ACTIVE if cores_active else _PIN_TOGGLE_BTN_INACTIVE
-        qpc_btn = _PIN_TOGGLE_BTN_INACTIVE if cores_active else _PIN_TOGGLE_BTN_ACTIVE
+        if pin_lock is not None:
+            cores_btn = (
+                _PIN_TOGGLE_BTN_ACTIVE if cores_active
+                else _PIN_TOGGLE_BTN_LOCKED_INACTIVE
+            )
+            qpc_btn = (
+                _PIN_TOGGLE_BTN_LOCKED_INACTIVE if cores_active
+                else _PIN_TOGGLE_BTN_ACTIVE
+            )
+        else:
+            cores_btn = (
+                _PIN_TOGGLE_BTN_ACTIVE if cores_active
+                else _PIN_TOGGLE_BTN_INACTIVE
+            )
+            qpc_btn = (
+                _PIN_TOGGLE_BTN_INACTIVE if cores_active
+                else _PIN_TOGGLE_BTN_ACTIVE
+            )
         cores_slider_style = {} if cores_active else {"display": "none"}
         qpc_slider_style = {"display": "none"} if cores_active else {}
         cores_derived_style = {"display": "none"} if cores_active else _DERIVED_BADGE_STYLE
@@ -383,7 +457,25 @@ def _register_pin_axis(app: Any) -> None:
             new_pin, cores_btn, qpc_btn,
             cores_slider_style, qpc_slider_style,
             cores_derived_style, qpc_derived_style,
+            toast_text, toast_style,
         )
+
+    # Clientside fade-out for the pin-axis toast: when its text is set,
+    # fade opacity to 0 after ~2.5 s. Mirrors the topology toast pattern.
+    app.clientside_callback(
+        """function(text) {
+            if (!text) return window.dash_clientside.no_update;
+            if (window._pinToastTimer) clearTimeout(window._pinToastTimer);
+            window._pinToastTimer = setTimeout(function () {
+                var el = document.getElementById("cfg-pin-toast");
+                if (el) el.style.opacity = "0";
+            }, 2500);
+            return window.dash_clientside.no_update;
+        }""",
+        Output("cfg-pin-toast", "children", allow_duplicate=True),
+        Input("cfg-pin-toast", "children"),
+        prevent_initial_call=True,
+    )
 
 
 # ---------------------------------------------------------------------------
