@@ -96,6 +96,76 @@ _ALL_METRIC_OPTIONS = (
 _CUSTOM_QASM_DISABLED_KEYS = {"circuit_type", "num_logical_qubits"}
 
 
+# ---------------------------------------------------------------------------
+# Axis-availability registry
+# ---------------------------------------------------------------------------
+#
+# A *rule* maps a snapshot of the GUI state (an ``AvailabilityContext``) to
+# a ``{metric_key: human_reason}`` dict listing every metric the rule wants
+# disabled.  Three callbacks consume the union of all rule outputs:
+#
+#   * ``_filter_dropdown_options`` greys the disabled options out (preserving
+#     the user's current selection so a pin-flip doesn't silently change it).
+#   * ``toggle_metric_rows`` skips disabled keys when auto-assigning a
+#     newly-revealed sweep-axis row, so the +Add button never lands on an
+#     option that's immediately greyed.
+#   * ``run_sweep`` (in ``app.py``) refuses to start a sweep that includes a
+#     disabled axis, surfacing the rule's reason in an error banner.
+#
+# Adding a new rule is *one* dataclass entry plus, if needed, a new
+# ``AvailabilityContext`` field. Adding a new consumer is one extra import
+# of :func:`axis_availability`.
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass
+from typing import Callable
+
+
+@dataclass(frozen=True)
+class AvailabilityContext:
+    """All GUI inputs any rule might depend on.  Add a field here only
+    when introducing a rule that consumes new state — the wiring stays
+    contained because every consumer constructs the context the same
+    way."""
+    pin_axis: str = "cores"          # ``cfg-pin-axis.data``
+    custom_qasm_active: bool = False  # ``custom-qasm-store.data["qasm"]`` truthy
+
+
+def _rule_pin_axis(ctx: AvailabilityContext) -> dict[str, str]:
+    """Pin axis owns Cores/Qpc; the unpinned one is *derived* per cell
+    by the resolver and would be silently overwritten if swept."""
+    if ctx.pin_axis == "cores":
+        return {"qubits_per_core":
+                "Pin axis is Cores; qubits-per-core is derived per cell"}
+    return {"num_cores":
+            "Pin axis is Qubits/core; cores is derived per cell"}
+
+
+def _rule_custom_qasm(ctx: AvailabilityContext) -> dict[str, str]:
+    """A custom QASM upload pins the circuit shape, so sweeping it
+    produces identical cells."""
+    if ctx.custom_qasm_active:
+        return {k: "Custom QASM uploaded; circuit shape is fixed by the file"
+                for k in _CUSTOM_QASM_DISABLED_KEYS}
+    return {}
+
+
+_AVAILABILITY_RULES: list[Callable[[AvailabilityContext], dict[str, str]]] = [
+    _rule_pin_axis,
+    _rule_custom_qasm,
+]
+
+
+def axis_availability(ctx: AvailabilityContext) -> dict[str, str]:
+    """Union of every rule's disabled-key dict.  First reason wins on
+    collision."""
+    out: dict[str, str] = {}
+    for rule in _AVAILABILITY_RULES:
+        for k, reason in rule(ctx).items():
+            out.setdefault(k, reason)
+    return out
+
+
 def register(app: Any) -> None:
     _register_metric_rows(app)
     _register_threshold_rows(app)
@@ -144,9 +214,14 @@ def _register_metric_rows(app: Any) -> None:
         Input("remove-metric-btn", "n_clicks"),
         State("num-metrics-store", "data"),
         *[State(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
+        State("cfg-pin-axis", "data"),
+        State("custom-qasm-store", "data"),
         prevent_initial_call=True,
     )
-    def toggle_metric_rows(add_clicks, remove_clicks, num_metrics, *dropdown_vals):
+    def toggle_metric_rows(add_clicks, remove_clicks, num_metrics, *all_states):
+        dropdown_vals = all_states[:MAX_METRICS]
+        pin_axis = all_states[MAX_METRICS] or "cores"
+        custom_qasm = all_states[MAX_METRICS + 1] or {}
         triggered = ctx.triggered_id
         old_num = num_metrics
         if triggered == "add-metric-btn":
@@ -155,13 +230,22 @@ def _register_metric_rows(app: Any) -> None:
             num_metrics = max(1, num_metrics - 1)
 
         taken = {dropdown_vals[i] for i in range(old_num) if dropdown_vals[i]}
+        # Ask the registry which keys are globally unavailable so a freshly-
+        # revealed row never auto-picks something that's immediately greyed.
+        disabled_globally = set(axis_availability(AvailabilityContext(
+            pin_axis=pin_axis,
+            custom_qasm_active=bool(custom_qasm.get("qasm")),
+        )).keys())
         all_keys = [m.key for m in SWEEPABLE_METRICS]
 
         new_values = list(dropdown_vals)
         for i in range(old_num, num_metrics):
             current = new_values[i]
-            if current in taken:
-                available = [k for k in all_keys if k not in taken]
+            if current in taken or current in disabled_globally:
+                available = [
+                    k for k in all_keys
+                    if k not in taken and k not in disabled_globally
+                ]
                 new_values[i] = available[0] if available else current
             taken.add(new_values[i])
 
@@ -476,23 +560,42 @@ def _register_dropdown_filter(app: Any) -> None:
         *[Input(f"metric-dropdown-{i}", "value") for i in range(MAX_METRICS)],
         Input("num-metrics-store", "data"),
         Input("custom-qasm-store", "data"),
+        Input("cfg-pin-axis", "data"),
         prevent_initial_call=True,
     )
     def _filter_dropdown_options(*args):
         values = args[:MAX_METRICS]
         num_metrics = args[MAX_METRICS] or 1
         custom_qasm = args[MAX_METRICS + 1] or {}
-        custom_active = bool(custom_qasm.get("qasm"))
+        pin_axis = args[MAX_METRICS + 2] or "cores"
+        ctx = AvailabilityContext(
+            pin_axis=pin_axis,
+            custom_qasm_active=bool(custom_qasm.get("qasm")),
+        )
+        # ``disabled_globally`` flags incompatibility regardless of which
+        # axis the user is looking at; ``taken`` is the per-axis "another
+        # row already picked this metric" rule.
+        disabled_globally = axis_availability(ctx)
         results = []
         for i in range(MAX_METRICS):
             taken = {values[j] for j in range(num_metrics) if j != i and values[j]}
+            own = values[i]
             results.append([
                 {
                     **opt,
+                    # The user's current selection on this axis is never
+                    # greyed: a pin flip should make the now-incompatible
+                    # selection visible, not erase it.  Run-time
+                    # validation refuses the sweep instead.
                     "disabled": (
-                        opt["value"] in taken
-                        or (custom_active and opt["value"] in _CUSTOM_QASM_DISABLED_KEYS)
+                        opt["value"] != own
+                        and (opt["value"] in taken
+                             or opt["value"] in disabled_globally)
                     ),
+                    # Tooltip-on-option isn't supported by all dropdown
+                    # renderers, but we set ``title`` anyway — it shows
+                    # in dev tools / future dropdown widgets.
+                    "title": disabled_globally.get(opt["value"]),
                 }
                 for opt in _ALL_METRIC_OPTIONS
             ])

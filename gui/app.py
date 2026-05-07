@@ -634,9 +634,29 @@ def run_sweep(
         active_numeric = []
         active_categorical = []
         seen: set = set()
+        # Single source of truth for which metrics are sweepable in the
+        # current GUI state (pin axis, custom QASM, …). The dropdown
+        # filter and auto-assign already grey/skip these; here we
+        # additionally refuse to start a sweep when one of them is
+        # *selected and active* — surfacing the rule's reason instead of
+        # producing a degenerate sweep where the engine silently
+        # overrides the swept value.
+        from gui.callbacks.sidebar import (
+            AvailabilityContext as _AvailCtx,
+            axis_availability as _axis_availability,
+        )
+        _avail_ctx = _AvailCtx(
+            pin_axis=pin_axis or "cores",
+            custom_qasm_active=bool(custom_qasm_str),
+        )
+        _disabled_axis_reasons = _axis_availability(_avail_ctx)
+        _violations: list[tuple[int, str, str]] = []  # (axis_idx, key, reason)
         for i in range(int(num_metrics or 1)):
             k = dropdown_vals[i]
             if not k or k in seen:
+                continue
+            if k in _disabled_axis_reasons:
+                _violations.append((i + 1, k, _disabled_axis_reasons[k]))
                 continue
             # When a custom QASM circuit is loaded, circuit-shape axes are
             # meaningless — silently drop them so the sweep can still run.
@@ -652,6 +672,28 @@ def run_sweep(
                 r = slider_vals[i]
                 if r:
                     active_numeric.append((k, r))
+
+        if _violations:
+            lines = "; ".join(
+                f"Axis {idx} ({k}): {reason}"
+                for idx, k, reason in _violations
+            )
+            banner = _build_error_banner_children(
+                "Sweep configuration invalid",
+                f"{lines}. Either change the metric on those axes, or "
+                f"flip the pin axis / remove the custom QASM upload to "
+                f"make them compatible.",
+            )
+            return (
+                plot_empty("Sweep blocked: incompatible axis selection"),
+                dash.no_update, "Sweep blocked",
+                dash.no_update, dash.no_update,
+                dirty, None,
+                {"display": "none"},
+                dash.no_update, dash.no_update, dash.no_update,
+                dash.no_update, dash.no_update,
+                banner, _error_banner_visible_style(),
+            )
 
         active = active_numeric + active_categorical
         if not active:
