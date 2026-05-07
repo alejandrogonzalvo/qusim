@@ -2,6 +2,17 @@ mod ffi;
 pub mod reconstruct;
 
 use std::ffi::CString;
+use std::sync::Mutex;
+
+/// Serializes calls into the C TeleSABRE library.
+///
+/// The reference C implementation uses `srand`/`rand` for tie-breaking, so
+/// concurrent calls from multiple Rust threads would interleave their RNG
+/// state and produce non-deterministic results. ``TeleSabre::run`` acquires
+/// this mutex for the full duration of the C call so cargo's parallel
+/// test runner (and any future multi-threaded caller) sees the same output
+/// as a serial run.
+static FFI_LOCK: Mutex<()> = Mutex::new(());
 
 pub struct TeleSabreResult {
     pub num_teledata: i32,
@@ -26,8 +37,10 @@ pub struct TeleSabreResult {
 ///
 /// # Thread safety
 /// The underlying C library calls `srand`/`rand` (global state) and uses
-/// `printf` extensively.  Do not share a `TeleSabre` across threads and run
-/// any tests that call `run()` with `--test-threads=1`.
+/// `printf` extensively.  Do not share a `TeleSabre` instance across
+/// threads. Concurrent calls to `run()` from different instances are
+/// safe because `run()` acquires `FFI_LOCK` for the whole duration of
+/// the C call (so they execute one at a time, deterministically).
 pub struct TeleSabre {
     config: *mut ffi::ConfigT,
     device: *mut ffi::DeviceT,
@@ -78,7 +91,19 @@ impl TeleSabre {
     /// This calls `telesabre_run` which internally calls `srand(config->seed)`.
     /// The config, device and circuit pointers remain valid afterwards; you
     /// may call `run` again if needed.
+    ///
+    /// Acquires the process-wide `FFI_LOCK` for the duration of the C call
+    /// so concurrent invocations from other threads are serialized
+    /// (the C library is not reentrant — see module docs).
     pub fn run(&mut self) -> TeleSabreResult {
+        // A previous panic-while-holding the lock can poison it. The C side
+        // can't unwind across the FFI boundary, so poisoning could only come
+        // from a panic in the post-call slice copies; recovering the inner
+        // guard is safe because that work doesn't mutate any shared state.
+        let _guard = FFI_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+
         // Safety: all three pointers are valid and owned by self.
         let mut r = unsafe { ffi::telesabre_run(self.config, self.device, self.circuit) };
 

@@ -24,7 +24,8 @@ jobs:
         echo "$HOME/.local/bin" >> $GITHUB_PATH
 
     - name: Install Python dependencies
-      run: poetry install --no-root
+      # `dev` extras pull in pytest + pytest-benchmark for the bench step.
+      run: poetry install --no-root --extras dev
 
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
