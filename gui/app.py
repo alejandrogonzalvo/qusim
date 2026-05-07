@@ -2499,15 +2499,46 @@ def _topology_axis_value_to_slider(
 
 
 # ---------------------------------------------------------------------------
-# Logical-first model: the topology-overlay slider no longer needs to
-# clamp comm qubits — any cell whose architecture can't be deduced
-# renders as NaN/white in the heat-map upstream of this view.
+# Topology scrub clamp: the sweep grid encodes its own validity through
+# NaN ``overall_fidelity`` cells (B>K, infeasible architecture, no nc
+# satisfies the fixpoint, …). When the user drags a scrub slider into
+# a NaN cell, the rebuild upstream raises PreventUpdate — leaving the
+# slider visually pointing at an invalid cell while the cytoscape shows
+# stale data. Walk the just-moved axis back to the nearest valid index
+# instead.
 #
-# But B>K cells *do* exist in K×B sweeps as NaN holes, and the topology
-# view should not let the user scrub onto them — there's nothing to
-# render. Clamp the buffer-qubits scrub slider so its index resolves
-# to a value ≤ the comm slider's current value.
+# This subsumes the older B≤K-only clamp: B>K is just one of many ways a
+# cell becomes NaN, and the grid's NaN signal is the single source of
+# truth that doesn't need rule-by-rule coding.
 # ---------------------------------------------------------------------------
+
+
+def _cell_overall_fidelity(grid, idx_tuple):
+    """Index ``grid`` (nested list / structured ndarray / flat list)
+    by ``idx_tuple`` and return the cell's ``overall_fidelity``, or
+    ``None`` if the lookup fails or the value is missing."""
+    import numpy as _np
+    try:
+        v = grid
+        for k in idx_tuple:
+            v = v[k]
+        if isinstance(v, dict):
+            return v.get("overall_fidelity")
+        if isinstance(v, _np.void):
+            return float(v["overall_fidelity"])
+        return None
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
+def _is_finite(x) -> bool:
+    import math
+    if x is None:
+        return False
+    try:
+        return math.isfinite(float(x))
+    except (TypeError, ValueError):
+        return False
 
 
 @app.callback(
@@ -2517,46 +2548,80 @@ def _topology_axis_value_to_slider(
     State("topology-facet-selector", "value"),
     prevent_initial_call=True,
 )
-def _topology_clamp_buffer_to_comm(slider_vals, sweep_store, facet_idx):
-    """Per-group rule: buffer ≤ comm. Walk the buffer scrub slider back
-    whenever it would resolve to a value larger than the comm slider's
-    current value (the underlying cell is NaN — nothing to overlay)."""
+def _topology_clamp_to_valid_cells(slider_vals, sweep_store, facet_idx):
+    """Snap the just-moved scrub slider back to the nearest non-NaN cell.
+
+    The sweep grid's ``overall_fidelity`` is NaN exactly for the cells
+    the engine refused to compute (B>K, infeasible deduction, etc.).
+    On every slider change, build the resulting cell index tuple,
+    check the grid, and walk the moved axis backward (then forward as
+    a fallback) until a finite cell is found.
+    """
     no = dash.no_update
     n = len(slider_vals)
     no_change = [no] * n
+
+    triggered = ctx.triggered_id
+    if not isinstance(triggered, dict) or triggered.get("type") != "topology-axis-slider":
+        return no_change
+    moved_d = triggered.get("index")
+    if not isinstance(moved_d, int) or moved_d >= n:
+        return no_change
+
     full = _get_sweep(sweep_store) if sweep_store else None
+    if not isinstance(full, dict):
+        return no_change
     pq = _facet_per_qubit_data(full, facet_idx)
     if not pq or not pq.get("axis_keys"):
         return no_change
     axis_keys = pq["axis_keys"]
-    axis_values = pq.get("axis_values", [])
-    try:
-        d_K = axis_keys.index("communication_qubits")
-        d_B = axis_keys.index("buffer_qubits")
-    except ValueError:
+    shape = pq.get("shape") or [
+        len(v) for v in pq.get("axis_values", [])
+    ]
+    if moved_d >= len(shape):
         return no_change
-    if d_K >= n or d_B >= n:
+
+    # Resolve the grid for this facet (top-level for non-faceted sweeps,
+    # otherwise inside the chosen facet entry).
+    facets = full.get("facets")
+    if facets:
+        i = int(facet_idx or 0)
+        if i < 0 or i >= len(facets):
+            i = 0
+        grid = facets[i].get("grid")
+    else:
+        grid = full.get("grid")
+    if grid is None:
         return no_change
-    if d_K >= len(axis_values) or d_B >= len(axis_values):
+
+    cell_idx = [
+        max(0, min(int(slider_vals[d] or 0), max(0, int(shape[d]) - 1)))
+        for d in range(len(axis_keys))
+    ]
+    fid = _cell_overall_fidelity(grid, tuple(cell_idx))
+    if _is_finite(fid):
         return no_change
-    K_axis = axis_values[d_K]
-    B_axis = axis_values[d_B]
-    if not K_axis or not B_axis:
-        return no_change
-    K_idx = max(0, min(int(slider_vals[d_K] or 0), len(K_axis) - 1))
-    B_idx = max(0, min(int(slider_vals[d_B] or 0), len(B_axis) - 1))
-    K_val = float(K_axis[K_idx])
-    B_val = float(B_axis[B_idx])
-    if B_val <= K_val:
-        return no_change
-    # Walk B index down to the largest value ≤ K_val.
-    new_B_idx = B_idx
-    while new_B_idx > 0 and float(B_axis[new_B_idx]) > K_val:
-        new_B_idx -= 1
-    if new_B_idx == B_idx:
+
+    # Walk the just-moved axis backward, then forward, until we land on
+    # a finite cell. This keeps every other axis fixed so the user's
+    # mental model (`I just moved K, only K should jump`) holds.
+    original = cell_idx[moved_d]
+    found = None
+    for new_idx in range(original - 1, -1, -1):
+        cell_idx[moved_d] = new_idx
+        if _is_finite(_cell_overall_fidelity(grid, tuple(cell_idx))):
+            found = new_idx
+            break
+    if found is None:
+        for new_idx in range(original + 1, int(shape[moved_d])):
+            cell_idx[moved_d] = new_idx
+            if _is_finite(_cell_overall_fidelity(grid, tuple(cell_idx))):
+                found = new_idx
+                break
+    if found is None or found == original:
         return no_change
     out = list(no_change)
-    out[d_B] = new_B_idx
+    out[moved_d] = found
     return out
 
 
