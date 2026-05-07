@@ -1205,10 +1205,19 @@ def make_fixed_config_panel(swept_keys: set = None) -> html.Div:
     noise_controls = []
     for m in SWEEPABLE_METRICS:
         default_val = NOISE_DEFAULTS.get(m.key)
-        if default_val is not None:
-            default_slider = math.log10(default_val) if m.log_scale else default_val
-        else:
+        if default_val is None:
             default_slider = m.slider_default_low
+        elif m.log_scale:
+            # log10 is undefined at 0/negative; fall back to the
+            # registry's slider_default_low, which is already in
+            # log-space (an exponent) for log-scale metrics.
+            try:
+                v = float(default_val)
+                default_slider = math.log10(v) if v > 0 else m.slider_default_low
+            except (TypeError, ValueError):
+                default_slider = m.slider_default_low
+        else:
+            default_slider = default_val
         hidden = m.is_cold_path or m.key in swept_keys
         noise_controls.append(
             slider_row(
