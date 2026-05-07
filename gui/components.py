@@ -2330,6 +2330,20 @@ def build_topology_elements(
         for c in range(num_cores)
     ]
 
+    # ``assign_core_slots`` may return fewer than K comm slots per group
+    # when the core can't fit the full ``G·(K+B)`` reservation (e.g.
+    # qpc=16 with G=2, K=6, B=6 reserves 24 > 16 — the second group runs
+    # out of free slots). Without this clamp, ``inter_core_edges`` emits
+    # edges referencing comm-qubit indices that no node was created for,
+    # which Cytoscape rejects with "Can not create edge with nonexistant
+    # source". Use the actual minimum placed-comm count as the effective
+    # K for inter-core edge emission.
+    placed_K = K
+    if K >= 1:
+        for layout in per_core_layout:
+            for grp in layout["groups"]:
+                placed_K = min(placed_K, len(grp["comm"]))
+
     # Local positions for the *full* per-core grid (so the shape is fixed).
     local_pos_per_core = [
         _local_qubit_positions(core_sizes[c], intracore_topology)
@@ -2516,11 +2530,11 @@ def build_topology_elements(
                     )
 
     # ---- Inter-core edges: K parallel one-to-one links per neighbour pair --
-    if num_cores < 2 or K < 1:
+    if num_cores < 2 or placed_K < 1:
         return elements
     for (a_core, a_g, a_k), (b_core, b_g, b_k) in inter_core_edges(
         num_cores,
-        K,
+        placed_K,
         topology,
     ):
         elements.append(
