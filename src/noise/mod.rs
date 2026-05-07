@@ -60,7 +60,7 @@ impl Default for ArchitectureParams {
             single_gate_time: 20.0,
             two_gate_time: 100.0,
             teleportation_time_per_hop: 1000.0,
-            epr_error_per_hop: 9e-3,
+            epr_error_per_hop: 0.0,
             measurement_error: 1e-3,
             t1: 100_000.0,
             t2: 50_000.0,
@@ -159,31 +159,11 @@ pub struct FidelityReport {
     pub coherence_fidelity_grid: Vec<f64>,
 }
 
-// ---------------------------------------------------------------------------
-// Placeholder noise equations — replace with physical models
-// ---------------------------------------------------------------------------
-
-/// Depolarizing gate fidelity: F = 1 − ε.
-#[inline]
-fn gate_fidelity(error_rate: f64) -> f64 {
-    1.0 - error_rate
-}
-
-/// Convert a gate error rate to the depolarization parameter λ (paper Eq. 39).
+/// Convert a gate error rate to the depolarization parameter λ.
 /// d = 2 for single-qubit gates, d = 4 for two-qubit gates.
 #[inline]
 fn depolarization_lambda(gate_error: f64, d: f64) -> f64 {
     d * gate_error / (d - 1.0)
-}
-
-/// Teleportation fidelity decays exponentially with network distance.
-///
-/// Used by the *legacy* multiplicative teleportation model — kept so existing
-/// fixtures and benchmarks that pass `teleportation_error_per_hop` directly
-/// (bypassing the η-coupled protocol cost) still match their original numbers.
-#[inline]
-fn teleportation_fidelity(error_per_hop: f64, distance: i32) -> f64 {
-    (1.0 - error_per_hop).powi(distance)
 }
 
 /// Apply one η-coupled CNOT update to a (qubit, partner) fidelity pair.

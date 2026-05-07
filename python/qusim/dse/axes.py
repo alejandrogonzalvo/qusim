@@ -253,7 +253,7 @@ DEFAULT_SWEEP_AXES = ["t1", "t2", "two_gate_time"]
 NOISE_DEFAULTS = {
     "single_gate_error": 1e-4,
     "two_gate_error": 1e-3,
-    "epr_error_per_hop": 9e-3,
+    "epr_error_per_hop": 0.0,
     "measurement_error": 1e-3,
     "teleportation_error_per_hop": 1e-2,
     "t1": 100_000.0,
