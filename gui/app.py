@@ -2651,8 +2651,17 @@ def _topology_clamp_to_valid_cells(slider_vals, sweep_store, facet_idx):
     """
     n = len(slider_vals)
     no_slider_change = [dash.no_update] * n
-    no_toast = (dash.no_update, {"display": "none"})
-    no_warn = (dash.no_update, {"display": "none"})
+    # Dash's return shape for a multi-output callback that includes a
+    # pattern-matched ALL Output: each Output gets ONE entry in the
+    # return tuple. The ALL Output's entry is a *list* of values (one
+    # per matching component), the scalar Outputs each get a single
+    # value. Flattening the slider list into the tuple would assign
+    # individual slider values to the toast/warning Outputs and crash.
+    no_change = (
+        no_slider_change,
+        dash.no_update, {"display": "none"},
+        dash.no_update, {"display": "none"},
+    )
 
     triggered = ctx.triggered_id
     is_slider_trigger = (
@@ -2663,10 +2672,10 @@ def _topology_clamp_to_valid_cells(slider_vals, sweep_store, facet_idx):
 
     full = _get_sweep(sweep_store) if sweep_store else None
     if not isinstance(full, dict):
-        return [*no_slider_change, *no_toast, *no_warn]
+        return no_change
     grid, axis_keys, shape = _resolve_grid_and_meta(full, facet_idx)
     if grid is None or not axis_keys:
-        return [*no_slider_change, *no_toast, *no_warn]
+        return no_change
 
     cell_idx = [
         max(0, min(int(slider_vals[d] or 0), max(0, int(shape[d]) - 1)))
@@ -2674,7 +2683,11 @@ def _topology_clamp_to_valid_cells(slider_vals, sweep_store, facet_idx):
     ]
     if _is_finite(_cell_overall_fidelity(grid, tuple(cell_idx))):
         # Already valid — clear any persistent warning.
-        return [*no_slider_change, "", {"display": "none"}, "", {"display": "none"}]
+        return (
+            no_slider_change,
+            "", {"display": "none"},
+            "", {"display": "none"},
+        )
 
     # We're on a NaN cell. Decide which axes to walk.
     if is_slider_trigger:
@@ -2684,7 +2697,7 @@ def _topology_clamp_to_valid_cells(slider_vals, sweep_store, facet_idx):
         # New grid arrived — try to clamp every axis whose current cell is NaN.
         axes_to_walk = list(range(min(n, len(axis_keys))))
     else:
-        return [*no_slider_change, *no_toast, *no_warn]
+        return no_change
 
     out = list(no_slider_change)
     moves: list[tuple[str, int, int]] = []  # (label, original, new)
@@ -2709,14 +2722,22 @@ def _topology_clamp_to_valid_cells(slider_vals, sweep_store, facet_idx):
             "⚠ The current cell has no valid result. Move sliders "
             "until a non-white cell is reached, or re-run the sweep."
         )
-        return [*out, "", {"display": "none"}, warn, _WARNING_VISIBLE_STYLE]
+        return (
+            out,
+            "", {"display": "none"},
+            warn, _WARNING_VISIBLE_STYLE,
+        )
 
     if moves:
         parts = [f"{lbl}: {orig + 1} → {new + 1}" for lbl, orig, new in moves]
         toast = "Snapped off invalid cell — " + ", ".join(parts)
-        return [*out, toast, _TOAST_VISIBLE_STYLE, "", {"display": "none"}]
+        return (
+            out,
+            toast, _TOAST_VISIBLE_STYLE,
+            "", {"display": "none"},
+        )
 
-    return [*no_slider_change, *no_toast, *no_warn]
+    return no_change
 
 
 # ---------------------------------------------------------------------------
