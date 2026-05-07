@@ -2297,15 +2297,22 @@ _FACET_ROW_VISIBLE = {
     *[Output({"type": "topology-axis-label", "index": i}, "children") for i in range(MAX_METRICS)],
     Input("sweep-result-store", "data"),
     Input("num-metrics-store", "data"),
+    *[State({"type": "topology-axis-slider", "index": i}, "value") for i in range(MAX_METRICS)],
     prevent_initial_call=False,
 )
-def _init_topology_sliders(sweep_store, num_metrics):
+def _init_topology_sliders(sweep_store, num_metrics, *current_slider_vals):
     """Reveal one slider per active sweep axis after a sweep.
 
     Visible count is clamped to ``num_metrics`` (the live left-sidebar
     axis count) so axes the user has just removed disappear from the
     topology panel even before the next sweep runs.  Adding axes keeps
     the new row hidden until the next sweep populates data for it.
+
+    On hot-reload (sweep result refreshes for the same axes), the
+    user's existing slider position is preserved as long as it still
+    fits the new shape; it's only clamped into bounds. Resetting to
+    last-index on every refresh would clobber the feasibility-aware
+    clamp that runs alongside us, leaving sliders parked on NaN cells.
     """
     panel_hidden = {"display": "none"}
     panel_visible = {
@@ -2354,16 +2361,23 @@ def _init_topology_sliders(sweep_store, num_metrics):
         if d < visible:
             row_styles.append({})
             sz = max(1, int(shape[d]))
-            maxes.append(max(0, sz - 1))
-            # Default each slider to the LAST index — the richest end of
-            # the swept range (largest cores, longest T1, etc.). This is
-            # the most informative starting frame for the topology view;
-            # the cold-config snapshot is typically the lowest value (1
-            # core, 1 comm qubit, …) which renders an uninformative
-            # single-node graph.  The comm-qubits clamp callback then
-            # walks the comm slider back to its valid max for the
-            # current cores selection.
-            values.append(max(0, sz - 1))
+            new_max = max(0, sz - 1)
+            maxes.append(new_max)
+            # Preserve the user's current slider position when it still
+            # fits the new axis bounds. Reset to the last index (richest
+            # end of the swept range) only on a fresh load where no
+            # current value exists. The feasibility-aware clamp callback
+            # is responsible for walking off NaN cells; resetting here
+            # on every store change would overwrite its work.
+            cur = current_slider_vals[d] if d < len(current_slider_vals) else None
+            try:
+                cur_int = int(cur) if cur is not None else None
+            except (TypeError, ValueError):
+                cur_int = None
+            if cur_int is not None and 0 <= cur_int <= new_max:
+                values.append(cur_int)
+            else:
+                values.append(new_max)
             # End-marks formatted as actual axis magnitudes (e.g. "1 µs", "10 ms").
             if sz > 1 and d < len(axis_values) and len(axis_values[d]) >= 2:
                 lo = _human_axis_value(axis_keys[d], axis_values[d][0])
