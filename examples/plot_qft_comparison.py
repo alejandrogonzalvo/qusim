@@ -2,7 +2,7 @@ from qiskit.circuit.library import QFT
 import matplotlib.pyplot as plt
 
 from plot_fidelities_utils import simulate, SimulationConfig
-from qusim.hqa.placement import InitialPlacement
+from quadris.hqa.placement import InitialPlacement
 
 def plot_qft_comparison():
     nq = 30

@@ -16,7 +16,7 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import numpy as np
 
-from qusim.dse import DSEEngine, NOISE_DEFAULTS
+from quadris.dse import DSEEngine, NOISE_DEFAULTS
 
 
 def main() -> None:
@@ -43,7 +43,7 @@ def main() -> None:
     )
 
     # Hot path — sweep two-qubit gate error from 1e-5 to 1e-1.
-    # The metric is log_scale (see qusim.dse.axes), so endpoints are exponents.
+    # The metric is log_scale (see quadris.dse.axes), so endpoints are exponents.
     # Default count is SWEEP_POINTS_1D = 60.
     xs, results = engine.sweep_1d(
         cached=cached,

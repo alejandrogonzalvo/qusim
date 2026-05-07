@@ -11,8 +11,8 @@ from typing import Any
 
 import numpy as np
 
-from qusim.dse.axes import PARETO_METRIC_ORIENTATION
-from qusim.dse.flatten import flatten_sweep_to_table
+from quadris.dse.axes import PARETO_METRIC_ORIENTATION
+from quadris.dse.flatten import flatten_sweep_to_table
 
 
 def pareto_front_mask(num: np.ndarray, den: np.ndarray) -> np.ndarray:
@@ -50,13 +50,13 @@ def pareto_front(
     Parameters
     ----------
     sweep
-        A :class:`qusim.dse.SweepResult` (which knows how to convert
+        A :class:`quadris.dse.SweepResult` (which knows how to convert
         itself via ``.to_sweep_data()``), or any sweep dict that
         :func:`flatten_sweep_to_table` accepts.
     objective_x, objective_y
         Output metric keys (e.g. ``"total_epr_pairs"``,
         ``"overall_fidelity"``). Each axis is min/max-imised according to
-        :data:`qusim.dse.axes.PARETO_METRIC_ORIENTATION`.
+        :data:`quadris.dse.axes.PARETO_METRIC_ORIENTATION`.
 
     Returns
     -------

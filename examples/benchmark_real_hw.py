@@ -1,12 +1,12 @@
 """
-Benchmark qusim fidelity predictions using real IBM Q calibration data.
+Benchmark quadris fidelity predictions using real IBM Q calibration data.
 
 Generates standard circuits (QFT, GHZ, random), runs the mirror-circuit
 methodology, and compares four models:
   1. ESP + T1/T2 (uniform medians from calibration)
   2. Paper's depolarizing model (uniform medians)
-  3. qusim (uniform medians)
-  4. qusim (per-qubit/per-pair from live calibration)
+  3. quadris (uniform medians)
+  4. quadris (per-qubit/per-pair from live calibration)
 
 Usage:
   python examples/benchmark_real_hw.py [--calibration data/calibration_ibm_marrakesh_2026-04-07.json]
@@ -25,14 +25,14 @@ from qiskit.transpiler import CouplingMap
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'python'))
-from qusim import map_circuit, InitialPlacement
+from quadris import map_circuit, InitialPlacement
 
 
 # ---------------------------------------------------------------------------
 # Calibration loader
 # ---------------------------------------------------------------------------
 def load_calibration(path, basis_1q='sx', basis_2q='cz'):
-    """Load a calibration snapshot JSON into qusim-compatible parameters."""
+    """Load a calibration snapshot JSON into quadris-compatible parameters."""
     with open(path) as f:
         cal = json.load(f)
 
@@ -230,7 +230,7 @@ def estimate_depol(circ, params):
 
 
 # ---------------------------------------------------------------------------
-# qusim model
+# quadris model
 # ---------------------------------------------------------------------------
 def build_single_core_setup(num_qubits):
     edges = []
@@ -243,8 +243,8 @@ def build_single_core_setup(num_qubits):
     return coupling_map, core_mapping
 
 
-def estimate_qusim(transp, params, per_qubit=False):
-    """Run qusim fidelity estimation. If per_qubit=True, use calibration arrays."""
+def estimate_quadris(transp, params, per_qubit=False):
+    """Run quadris fidelity estimation. If per_qubit=True, use calibration arrays."""
     n = transp.num_qubits
     coupling_map, core_mapping = build_single_core_setup(n)
 
@@ -306,7 +306,7 @@ def estimate_qusim(transp, params, per_qubit=False):
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description='Benchmark qusim with real IBM Q calibration')
+    parser = argparse.ArgumentParser(description='Benchmark quadris with real IBM Q calibration')
     parser.add_argument('--calibration', type=str,
                         default=os.path.join(os.path.dirname(__file__), '..', 'data',
                                              'calibration_ibm_marrakesh_2026-04-07.json'),
@@ -330,11 +330,11 @@ def main():
     circuits = generate_benchmark_circuits()
     results = {
         'name': [], 'num_qubits': [], 'num_gates': [],
-        'esp': [], 'depol': [], 'qusim_uniform': [], 'qusim_perqubit': [],
+        'esp': [], 'depol': [], 'quadris_uniform': [], 'quadris_perqubit': [],
     }
 
     print(f"{'Circuit':<18} {'Qubits':>6} {'Gates':>6} "
-          f"{'ESP':>8} {'Depol':>8} {'qusim(U)':>9} {'qusim(PQ)':>9} {'Delta':>8}")
+          f"{'ESP':>8} {'Depol':>8} {'quadris(U)':>9} {'quadris(PQ)':>9} {'Delta':>8}")
     print('-' * 82)
 
     for name, circ in circuits:
@@ -347,8 +347,8 @@ def main():
 
             fid_esp = estimate_esp(transp, params)
             fid_depol = estimate_depol(transp, params)
-            fid_uniform = estimate_qusim(transp, params, per_qubit=False)
-            fid_perqubit = estimate_qusim(transp, params, per_qubit=True)
+            fid_uniform = estimate_quadris(transp, params, per_qubit=False)
+            fid_perqubit = estimate_quadris(transp, params, per_qubit=True)
 
             delta = fid_perqubit - fid_uniform
 
@@ -357,8 +357,8 @@ def main():
             results['num_gates'].append(n_gates)
             results['esp'].append(fid_esp)
             results['depol'].append(fid_depol)
-            results['qusim_uniform'].append(fid_uniform)
-            results['qusim_perqubit'].append(fid_perqubit)
+            results['quadris_uniform'].append(fid_uniform)
+            results['quadris_perqubit'].append(fid_perqubit)
 
             print(f"  {name:<16} {circ.num_qubits:>6} {n_gates:>6} "
                   f"{fid_esp:>8.4f} {fid_depol:>8.4f} {fid_uniform:>9.4f} {fid_perqubit:>9.4f} "
@@ -383,11 +383,11 @@ def main():
     ax1.scatter(v_gates, results['depol'],
                 label=f"Depol. + $T_{{1,2}}$ (uniform)", color='tab:green', alpha=0.75,
                 s=[scatter_size * q for q in v_nq])
-    ax1.scatter(v_gates, results['qusim_uniform'],
-                label='qusim (uniform)', color='tab:red', alpha=0.75,
+    ax1.scatter(v_gates, results['quadris_uniform'],
+                label='quadris (uniform)', color='tab:red', alpha=0.75,
                 s=[scatter_size * q for q in v_nq], marker='x')
-    ax1.scatter(v_gates, results['qusim_perqubit'],
-                label=f"qusim (per-qubit, {params['backend_name']})", color='tab:blue', alpha=0.85,
+    ax1.scatter(v_gates, results['quadris_perqubit'],
+                label=f"quadris (per-qubit, {params['backend_name']})", color='tab:blue', alpha=0.85,
                 s=[scatter_size * q for q in v_nq], marker='D')
 
     ax1.set_xscale('log')
@@ -399,9 +399,9 @@ def main():
     ax1.set_ylim(bottom=-0.05, top=1.05)
 
     # Right: boxplot of differences (per-qubit vs uniform)
-    esp_diff = [results['esp'][i] - results['qusim_uniform'][i] for i in range(len(v_gates))]
-    depol_diff = [results['depol'][i] - results['qusim_uniform'][i] for i in range(len(v_gates))]
-    pq_diff = [results['qusim_perqubit'][i] - results['qusim_uniform'][i] for i in range(len(v_gates))]
+    esp_diff = [results['esp'][i] - results['quadris_uniform'][i] for i in range(len(v_gates))]
+    depol_diff = [results['depol'][i] - results['quadris_uniform'][i] for i in range(len(v_gates))]
+    pq_diff = [results['quadris_perqubit'][i] - results['quadris_uniform'][i] for i in range(len(v_gates))]
 
     colors = ['tab:orange', 'tab:green', 'tab:blue']
     labels = ['ESP\nvs uniform', 'Depol\nvs uniform', 'Per-qubit\nvs uniform']
@@ -419,7 +419,7 @@ def main():
     for median in box['medians']:
         median.set_color('black')
 
-    ax2.set_ylabel('Fidelity Difference vs qusim(uniform)', fontsize=14)
+    ax2.set_ylabel('Fidelity Difference vs quadris(uniform)', fontsize=14)
     ax2.tick_params(axis='both', which='major', labelsize=12)
     ax2.axhline(y=0, color='gray', linestyle='--', zorder=-10)
     ax2.set_title('Model Comparison', fontsize=14)

@@ -1,6 +1,6 @@
-# Qusim Noise Model
+# Quadris Noise Model
 
-The `qusim::noise` module provides a discrete-time fidelity simulator for evaluating the physical performance of hardware-aware compiling (HAC) pipelines and qubit routing.
+The `quadris::noise` module provides a discrete-time fidelity simulator for evaluating the physical performance of hardware-aware compiling (HAC) pipelines and qubit routing.
 
 Unlike full unitary state-vector simulators which scale exponentially and fail for $>30$ qubits, our fidelity model acts as an aggregated error budget tracker. It parses a mapped quantum DAG and assigns temporal penalties across the individual logical qubits as they wait in memory, execute local gates, or undergo state teleportation.
 
@@ -35,4 +35,4 @@ $$ F_{coh} = \exp\left(-\frac{t_{\text{idle}}}{T_1}\right) \times \exp\left(-\fr
 
 ## Rust Implementation
 
-You can find the core continuous-time summation loop inside `src/noise/mod.rs` $\rightarrow$ `estimate_fidelity(...)`. The results are wrapped into zero-cost `ndarray` tables and piped back up to the python frontend for heatmap rendering via `QusimResult`.
+You can find the core continuous-time summation loop inside `src/noise/mod.rs` $\rightarrow$ `estimate_fidelity(...)`. The results are wrapped into zero-cost `ndarray` tables and piped back up to the python frontend for heatmap rendering via `QuadrisResult`.

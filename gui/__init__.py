@@ -1,1 +1,1 @@
-# qusim DSE GUI package
+# quadris DSE GUI package

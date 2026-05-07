@@ -249,7 +249,7 @@ MAX_SWEEP_AXES = len(SWEEPABLE_METRICS)
 DEFAULT_SWEEP_AXES = ["t1", "t2", "two_gate_time"]
 
 # Default scalar noise values. Programmatic sweeps merge these with overrides
-# (see ``qusim.dse.engine._merge_noise``).
+# (see ``quadris.dse.engine._merge_noise``).
 NOISE_DEFAULTS = {
     "single_gate_error": 1e-4,
     "two_gate_error": 1e-3,

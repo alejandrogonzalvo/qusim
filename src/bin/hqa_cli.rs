@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
 use std::time::Instant;
 
-use qusim::circuit::InteractionTensor;
-use qusim::hqa::hqa_mapping;
-use qusim::noise::{estimate_fidelity, ArchitectureParams};
-use qusim::routing::extract_inter_core_communications;
+use quadris::circuit::InteractionTensor;
+use quadris::hqa::hqa_mapping;
+use quadris::noise::{estimate_fidelity, ArchitectureParams};
+use quadris::routing::extract_inter_core_communications;
 
 #[derive(Deserialize)]
 struct HqaInput {

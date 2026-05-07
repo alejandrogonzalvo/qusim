@@ -1,4 +1,4 @@
-# qusim deployment
+# quadris deployment
 
 How to run the DSE GUI for personal use, and how to put it behind a public
 URL with auto-recovery and continuous deployment from `origin/main`.
@@ -19,15 +19,15 @@ from any working directory (cron, systemd, another shell).
 For development on your laptop. No tunnel, no watchdog, no cron.
 
 ```bash
-git clone <repo> qusim && cd qusim
+git clone <repo> quadris && cd quadris
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install maturin
 maturin develop --release          # builds the Rust extension into the venv
 pip install -e ".[gui]"            # Dash + Cytoscape
-qusim-dse                          # → http://127.0.0.1:8050
+quadris-dse                          # → http://127.0.0.1:8050
 ```
 
-Override the bind address with `QUSIM_HOST=0.0.0.0 QUSIM_PORT=8080 qusim-dse`
+Override the bind address with `QUADRIS_HOST=0.0.0.0 QUADRIS_PORT=8080 quadris-dse`
 if you want LAN access. See [`README.md`](../README.md) for the full
 install matrix (`[dev]` extras, `cargo test`, etc.).
 
@@ -51,7 +51,7 @@ the Rust core).
             │ signals
             ▼
 ┌──── serve_public.sh (foreground supervisor) ────────┐
-│   ├─ qusim-dse (gui/app.py)  bound to 127.0.0.1     │
+│   ├─ quadris-dse (gui/app.py)  bound to 127.0.0.1     │
 │   └─ cloudflared tunnel run <name>                  │
 └─────────────────────────────────────────────────────┘
             │
@@ -100,7 +100,7 @@ If the repo is not available on your distro, grab the static `.deb` /
 #### 3. Clone and build
 
 ```bash
-git clone <repo> ~/qusim && cd ~/qusim
+git clone <repo> ~/quadris && cd ~/quadris
 python3.12 -m venv .venv
 .venv/bin/pip install maturin
 .venv/bin/maturin develop --release
@@ -118,7 +118,7 @@ cloudflared tunnel create <tunnel-name>           # writes ~/.cloudflared/<UUID>
 cloudflared tunnel route dns <tunnel-name> <hostname>
 ```
 
-`<hostname>` is whatever DNS record you want (e.g. `qusim.example.org`).
+`<hostname>` is whatever DNS record you want (e.g. `quadris.example.org`).
 Note the UUID; you will pass it to `serve_public.sh` as `TUNNEL_UUID`.
 
 The script does **not** depend on `~/.cloudflared/config.yml`. It
@@ -131,13 +131,13 @@ on each run, using the env vars below.
 TUNNEL_NAME=<tunnel-name> \
 TUNNEL_UUID=<uuid> \
 TUNNEL_HOSTNAME=<hostname> \
-QUSIM_PORT=8060 \
+QUADRIS_PORT=8060 \
 ./scripts/serve_public.sh
 ```
 
 The script waits for the app port and a `Registered tunnel connection`
 log line before printing the public URL. Hit it from a browser to
-confirm. Logs land in `/tmp/qusim-serve/{app,cloudflared}.log` (override
+confirm. Logs land in `/tmp/quadris-serve/{app,cloudflared}.log` (override
 with `LOG_DIR=...`).
 
 `Ctrl+C` shuts both children down via the trap.
@@ -148,19 +148,19 @@ Once the foreground run is healthy, install the cron entries and let
 the system babysit it. `crontab -e`:
 
 ```cron
-# qusim deployment
-*/5 * * * * QUSIM_URL=https://<hostname> QUSIM_PORT=8060 \
+# quadris deployment
+*/5 * * * * QUADRIS_URL=https://<hostname> QUADRIS_PORT=8060 \
     TUNNEL_NAME=<tunnel-name> TUNNEL_UUID=<uuid> TUNNEL_HOSTNAME=<hostname> \
-    /home/<user>/qusim/scripts/health_check.sh
-*/5 * * * * /home/<user>/qusim/scripts/pull_and_restart.sh
-@reboot     QUSIM_URL=https://<hostname> QUSIM_PORT=8060 \
+    /home/<user>/quadris/scripts/health_check.sh
+*/5 * * * * /home/<user>/quadris/scripts/pull_and_restart.sh
+@reboot     QUADRIS_URL=https://<hostname> QUADRIS_PORT=8060 \
     TUNNEL_NAME=<tunnel-name> TUNNEL_UUID=<uuid> TUNNEL_HOSTNAME=<hostname> \
-    /home/<user>/qusim/scripts/health_check.sh
+    /home/<user>/quadris/scripts/health_check.sh
 ```
 
 What each line does:
 
-- `health_check.sh` probes `QUSIM_URL` every 5 min. After 3 failures it
+- `health_check.sh` probes `QUADRIS_URL` every 5 min. After 3 failures it
   kills any stale supervisor and starts a fresh one. The `@reboot`
   entry boots the supervisor on startup; no separate systemd unit is
   required.
@@ -172,7 +172,7 @@ What each line does:
 
 The pull script needs an SSH key reachable from cron (the repo uses an
 SSH remote and cron has no ssh-agent). Default is `~/.ssh/id_ed25519`;
-override with `QUSIM_SSH_KEY=/path/to/key` in the crontab line if
+override with `QUADRIS_SSH_KEY=/path/to/key` in the crontab line if
 needed. See [`pull_and_restart.sh`](../scripts/pull_and_restart.sh)
 lines 35-41.
 
@@ -180,7 +180,7 @@ lines 35-41.
 
 #### Logs
 
-All under `$LOG_DIR` (default `/tmp/qusim-serve/`):
+All under `$LOG_DIR` (default `/tmp/quadris-serve/`):
 
 | File | Contents |
 |---|---|
@@ -191,7 +191,7 @@ All under `$LOG_DIR` (default `/tmp/qusim-serve/`):
 | `supervisor.out` | `nohup` output of supervisors started by the watchdog |
 
 `/tmp` is volatile; if you want logs to survive reboots, set
-`LOG_DIR=/var/log/qusim` (and create it with the right ownership) in
+`LOG_DIR=/var/log/quadris` (and create it with the right ownership) in
 both the cron lines and `serve_public.sh` invocations.
 
 #### Manual restart
@@ -200,7 +200,7 @@ both the cron lines and `serve_public.sh` invocations.
 pkill -f "serve_public.sh"     # supervisor + children exit via trap
 # wait ~5 min for the @reboot/cron health_check to relaunch, OR:
 TUNNEL_NAME=... TUNNEL_UUID=... TUNNEL_HOSTNAME=... \
-  nohup ./scripts/serve_public.sh > /tmp/qusim-serve/supervisor.out 2>&1 &
+  nohup ./scripts/serve_public.sh > /tmp/quadris-serve/supervisor.out 2>&1 &
 disown
 ```
 
@@ -210,7 +210,7 @@ The pull script only acts on commits already on `origin/main`. If you
 need to ship something faster than the 5-minute cron tick:
 
 ```bash
-cd ~/qusim
+cd ~/quadris
 git fetch && git pull --ff-only
 pkill -f ".venv/bin/python.*gui/app.py"   # supervisor respawns it
 ```
@@ -218,7 +218,7 @@ pkill -f ".venv/bin/python.*gui/app.py"   # supervisor respawns it
 #### Changing port / hostname / tunnel
 
 All three scripts read the same env vars (`TUNNEL_NAME`, `TUNNEL_UUID`,
-`TUNNEL_HOSTNAME`, `QUSIM_HOST`, `QUSIM_PORT`, `QUSIM_URL` for
+`TUNNEL_HOSTNAME`, `QUADRIS_HOST`, `QUADRIS_PORT`, `QUADRIS_URL` for
 `health_check.sh`). Update both cron entries and any active supervisor
 process. The defaults in `serve_public.sh` are the original author's
 tunnel; rely on the env vars rather than editing the script.
@@ -234,7 +234,7 @@ If you are moving the deployment off this laptop and onto a VM:
    in the codebase hardcodes a public URL.
 2. On the **old laptop**, stop and disable the deployment:
    ```bash
-   crontab -e                      # remove the qusim lines
+   crontab -e                      # remove the quadris lines
    pkill -f serve_public.sh
    pkill -f "cloudflared.*tunnel run"
    ```
@@ -259,7 +259,7 @@ read by the three shell scripts.
   itself is broken, nothing recovers automatically.
 - No HTTPS termination on the origin. Cloudflare handles TLS; the app
   only listens on `127.0.0.1` so it is not directly reachable from the
-  LAN. `QUSIM_HOST=0.0.0.0` opens that up if you need to bypass the
+  LAN. `QUADRIS_HOST=0.0.0.0` opens that up if you need to bypass the
   tunnel for debugging.
 - Sweep results live in process memory. A restart drops everything in
   the current GUI session; users can save/load via the `Sessions` panel

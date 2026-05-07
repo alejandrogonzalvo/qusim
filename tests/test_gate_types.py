@@ -1,8 +1,8 @@
 import pytest
 import qiskit
 import numpy as np
-from qusim import map_circuit
-from qusim.hqa.placement import InitialPlacement
+from quadris import map_circuit
+from quadris.hqa.placement import InitialPlacement
 from qiskit.transpiler import CouplingMap
 
 class TestGateTypeBehavior:

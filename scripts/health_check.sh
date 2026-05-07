@@ -16,22 +16,22 @@
 # pull_and_restart.sh cron does on every new commit).
 #
 # Environment (all optional — defaults match serve_public.sh):
-#   QUSIM_URL         URL to probe (default: https://$TUNNEL_HOSTNAME)
+#   QUADRIS_URL         URL to probe (default: https://$TUNNEL_HOSTNAME)
 #   TUNNEL_NAME       passed through to serve_public.sh
 #   TUNNEL_UUID       passed through to serve_public.sh
 #   TUNNEL_HOSTNAME   passed through to serve_public.sh (also used to derive
-#                     QUSIM_URL when not set)
-#   QUSIM_HOST        passed through to serve_public.sh
-#   QUSIM_PORT        passed through to serve_public.sh
-#   LOG_DIR           default /tmp/qusim-serve
+#                     QUADRIS_URL when not set)
+#   QUADRIS_HOST        passed through to serve_public.sh
+#   QUADRIS_PORT        passed through to serve_public.sh
+#   LOG_DIR           default /tmp/quadris-serve
 #   PROBE_TIMEOUT     curl --max-time, default 10
 #   PROBE_RETRIES     attempts before declaring down, default 3
 #   PROBE_RETRY_GAP   seconds between retries, default 5
 #
-# Cron suggestion (this laptop, qusim.gonzalvo.dev):
-#   */5 * * * * QUSIM_URL=https://qusim.gonzalvo.dev TUNNEL_NAME=qusim-dse \
-#       TUNNEL_UUID=<uuid> TUNNEL_HOSTNAME=qusim.gonzalvo.dev \
-#       /home/alejandro/dev/qusim/scripts/health_check.sh
+# Cron suggestion (this laptop, quadris.gonzalvo.dev):
+#   */5 * * * * QUADRIS_URL=https://quadris.gonzalvo.dev TUNNEL_NAME=quadris-dse \
+#       TUNNEL_UUID=<uuid> TUNNEL_HOSTNAME=quadris.gonzalvo.dev \
+#       /home/alejandro/dev/quadris/scripts/health_check.sh
 
 set -euo pipefail
 
@@ -39,9 +39,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-upv-dse.gonzalvo.dev}"
-QUSIM_URL="${QUSIM_URL:-https://$TUNNEL_HOSTNAME}"
+QUADRIS_URL="${QUADRIS_URL:-https://$TUNNEL_HOSTNAME}"
 
-LOG_DIR="${LOG_DIR:-/tmp/qusim-serve}"
+LOG_DIR="${LOG_DIR:-/tmp/quadris-serve}"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/health.log"
 SUPERVISOR_OUT="$LOG_DIR/supervisor.out"
@@ -56,7 +56,7 @@ log() {
 
 probe_once() {
   local code
-  code=$(curl -s -o /dev/null --max-time "$PROBE_TIMEOUT" -w "%{http_code}" "$QUSIM_URL" || echo "000")
+  code=$(curl -s -o /dev/null --max-time "$PROBE_TIMEOUT" -w "%{http_code}" "$QUADRIS_URL" || echo "000")
   # Treat any 2xx as healthy. Cloudflare returns 502/520-525 when the origin
   # is unreachable, 530 when the tunnel is gone — all flagged as down.
   [[ "$code" =~ ^2[0-9][0-9]$ ]]
@@ -81,7 +81,7 @@ while (( attempt <= PROBE_RETRIES )); do
   attempt=$(( attempt + 1 ))
 done
 
-log "DOWN: $QUSIM_URL failed $PROBE_RETRIES probes (timeout=${PROBE_TIMEOUT}s)"
+log "DOWN: $QUADRIS_URL failed $PROBE_RETRIES probes (timeout=${PROBE_TIMEOUT}s)"
 
 # --- Stop any existing supervisor --------------------------------------------
 existing=$(supervisor_pid || true)
@@ -112,15 +112,15 @@ nohup env \
   ${TUNNEL_NAME:+TUNNEL_NAME="$TUNNEL_NAME"} \
   ${TUNNEL_UUID:+TUNNEL_UUID="$TUNNEL_UUID"} \
   ${TUNNEL_HOSTNAME:+TUNNEL_HOSTNAME="$TUNNEL_HOSTNAME"} \
-  ${QUSIM_HOST:+QUSIM_HOST="$QUSIM_HOST"} \
-  ${QUSIM_PORT:+QUSIM_PORT="$QUSIM_PORT"} \
+  ${QUADRIS_HOST:+QUADRIS_HOST="$QUADRIS_HOST"} \
+  ${QUADRIS_PORT:+QUADRIS_PORT="$QUADRIS_PORT"} \
   "$PROJECT_ROOT/scripts/serve_public.sh" >> "$SUPERVISOR_OUT" 2>&1 &
 disown
 
 # Wait briefly so we can log whether it managed to bring the URL back.
 sleep 15
 if probe_once; then
-  log "RECOVERED: $QUSIM_URL is back"
+  log "RECOVERED: $QUADRIS_URL is back"
 else
   log "still down after relaunch attempt — see $SUPERVISOR_OUT and $LOG_DIR/{app,cloudflared}.log"
 fi

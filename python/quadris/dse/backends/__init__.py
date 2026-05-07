@@ -3,13 +3,13 @@ Routing-algorithm backends for the DSE cold path.
 
 Each backend takes a cold-config dict (circuit, topology, placement,
 seed, ...) plus a merged-noise dict and returns a fully-populated
-:class:`qusim.dse.results.CachedMapping` that the hot path consumes.
+:class:`quadris.dse.results.CachedMapping` that the hot path consumes.
 
 Currently registered:
 
 * ``hqa_sabre`` — HQA initial mapping + SABRE swap insertion (the
-  default; calls :func:`qusim.map_circuit`).
-* ``telesabre`` — TeleSABRE C library via :mod:`qusim.rust_core`
+  default; calls :func:`quadris.map_circuit`).
+* ``telesabre`` — TeleSABRE C library via :mod:`quadris.rust_core`
   (writes QASM + device JSON to temp files, then re-imports the
   routed placements into DAG-layer space).
 """

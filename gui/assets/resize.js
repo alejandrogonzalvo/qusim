@@ -12,7 +12,7 @@
     var DIVIDER_ID = "right-panel-divider";
     var UPPER_ID = "fixed-config-container";
     var LOWER_ID = "performance-container";
-    var STORAGE_KEY = "qusim.rightPanelSplit";
+    var STORAGE_KEY = "quadris.rightPanelSplit";
     var MIN_PX = 60;
 
     function getNodes() {

@@ -9,7 +9,7 @@ from plot_fidelities_utils import (
     build_single_core_grid,
     SimulationConfig,
 )
-from qusim.hqa.placement import InitialPlacement
+from quadris.hqa.placement import InitialPlacement
 
 
 def plot_qft_topology_comparison():

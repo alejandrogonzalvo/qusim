@@ -1,6 +1,6 @@
 # DSE GUI — View Catalog
 
-Catalog of all plot types available in the qusim Design Space Exploration GUI, organized by the research question each answers.
+Catalog of all plot types available in the quadris Design Space Exploration GUI, organized by the research question each answers.
 
 ---
 

@@ -253,11 +253,11 @@ def primitives_for_sweep(sweep_data: dict) -> tuple[list[str], list[str]]:
     """Return (input_primitives, output_primitives) for a given sweep.
 
     Input primitives are whatever is currently on the sweep axes;
-    output primitives are every QusimResult field discovered in a sample row.
+    output primitives are every QuadrisResult field discovered in a sample row.
     Kept out of ``plotting.py`` to avoid the heavy import on the UI path.
     """
     # Local import avoids a circular dependency at module load time.
-    from qusim.dse.flatten import flatten_sweep_to_table as _flatten_sweep_to_table
+    from quadris.dse.flatten import flatten_sweep_to_table as _flatten_sweep_to_table
 
     metric_keys, outputs, _ = _flatten_sweep_to_table(sweep_data)
     return list(metric_keys), list(outputs)
@@ -268,7 +268,7 @@ def compute_for_sweep(sweep_data: dict, config: FomConfig) -> FomResult:
 
     Never raises — user-facing errors are surfaced via ``FomResult.error``.
     """
-    from qusim.dse.flatten import flatten_sweep_to_table as _flatten_sweep_to_table
+    from quadris.dse.flatten import flatten_sweep_to_table as _flatten_sweep_to_table
 
     try:
         metric_keys, outputs, rows = _flatten_sweep_to_table(sweep_data)
@@ -333,7 +333,7 @@ def compute_breakdown(sweep_data: dict, config: FomConfig) -> FomBreakdown:
 
     Never raises — user-facing errors are surfaced via ``FomBreakdown.error``.
     """
-    from qusim.dse.flatten import flatten_sweep_to_table as _flatten_sweep_to_table
+    from quadris.dse.flatten import flatten_sweep_to_table as _flatten_sweep_to_table
 
     try:
         metric_keys, outputs, rows = _flatten_sweep_to_table(sweep_data)

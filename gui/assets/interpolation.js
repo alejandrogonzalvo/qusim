@@ -5,7 +5,7 @@
  * Runs entirely in the browser — no server round-trip on slider drag.
  */
 
-window.qusimInterp = (function () {
+window.quadrisInterp = (function () {
   "use strict";
 
   function bisect(xs, x) {

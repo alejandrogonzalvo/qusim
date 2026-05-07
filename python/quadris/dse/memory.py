@@ -128,7 +128,7 @@ def _mem_budget_mb() -> int:
 def cap_thread_pools() -> None:
     """Pin per-process thread pools to 1 thread.
 
-    Must be called BEFORE importing numpy / qiskit / qusim so their
+    Must be called BEFORE importing numpy / qiskit / quadris so their
     Rayon / OpenMP / BLAS pools initialize at 1 thread. Otherwise each
     cold-path worker spawns ~34 threads and 8 parallel workers
     oversubscribe the CPU (272 threads on 16 cores) until the scheduler

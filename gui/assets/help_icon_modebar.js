@@ -12,7 +12,7 @@
  *
  * Help text is keyed by view-type-store value; Merit further keys by
  * merit-mode-store ("merit:<mode>"). The active key is pushed in from a Dash
- * clientside callback via window.qusimUpdatePlotHelp. Each entry has a
+ * clientside callback via window.quadrisUpdatePlotHelp. Each entry has a
  * `body` (what the plot shows) and a `useFor` (questions it answers / metrics
  * it makes easy to compare).
  */
@@ -176,8 +176,8 @@
     }
 
     function bindTrigger(el, helpKey) {
-        if (!el || el.dataset.qusimHelpBound === "1") return;
-        el.dataset.qusimHelpBound = "1";
+        if (!el || el.dataset.quadrisHelpBound === "1") return;
+        el.dataset.quadrisHelpBound = "1";
         // Strip the browser-native tooltip — we render our own popup on
         // hover and showing both at once is noisy.
         if (el.hasAttribute("title")) el.removeAttribute("title");
@@ -238,7 +238,7 @@
         bindTrigger(document.getElementById("topology-help-icon"), "topology");
     }
 
-    window.qusimUpdatePlotHelp = function (viewType, meritMode) {
+    window.quadrisUpdatePlotHelp = function (viewType, meritMode) {
         current = helpFor(viewType, meritMode);
         var tip = document.getElementById(TIP_ID);
         if (tip && tip.style.display === "block") renderTip(tip);

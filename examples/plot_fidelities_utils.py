@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from qiskit import transpile
 from qiskit.transpiler import CouplingMap
 
-import qusim
+import quadris
 from dataclasses import dataclass
 
 @dataclass
@@ -105,7 +105,7 @@ def build_single_core_grid(rows: int, cols: int):
     return full_coupling_map, core_mapping
 
 
-from qusim.hqa.placement import InitialPlacement
+from quadris.hqa.placement import InitialPlacement
 
 def simulate(circuit, config: SimulationConfig):
     print(f"Transpiling to basis gates for {config.initial_placement.value} placement...")
@@ -125,9 +125,9 @@ def simulate(circuit, config: SimulationConfig):
         )
 
     print(
-        f"Running qusim (Cores: {config.num_cores}, Qubits/Core: {config.qubits_per_core}, SABRE Enabled, Policy: {config.initial_placement.value})..."
+        f"Running quadris (Cores: {config.num_cores}, Qubits/Core: {config.qubits_per_core}, SABRE Enabled, Policy: {config.initial_placement.value})..."
     )
-    result = qusim.map_circuit(
+    result = quadris.map_circuit(
         circuit=transp_circ,
         full_coupling_map=full_coupling_map,
         core_mapping=core_mapping,

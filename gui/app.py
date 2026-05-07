@@ -1,5 +1,5 @@
 """
-qusim DSE GUI — main Dash application.
+quadris DSE GUI — main Dash application.
 
 Launch:
     python gui/app.py   (from project root)
@@ -472,7 +472,7 @@ app.clientside_callback(
     """function(_n, existing) {
         var sid = existing;
         if (!sid) {
-            try { sid = sessionStorage.getItem('qusim_sid') || ''; } catch (e) { sid = ''; }
+            try { sid = sessionStorage.getItem('quadris_sid') || ''; } catch (e) { sid = ''; }
         }
         if (!sid) {
             if (window.crypto && window.crypto.randomUUID) {
@@ -481,7 +481,7 @@ app.clientside_callback(
                 sid = 'sid-' + Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
             }
         }
-        try { sessionStorage.setItem('qusim_sid', sid); } catch (e) {}
+        try { sessionStorage.setItem('quadris_sid', sid); } catch (e) {}
         window._userSid = sid;
         return sid;
     }""",
@@ -1359,7 +1359,7 @@ def on_save_session(n_clicks, *all_args):
     raw = dump(session)
 
     stem = sanitize_filename(session_name or "")
-    fname = _time.strftime(f"{stem}-%Y%m%d-%H%M%S.qusim.json.gz")
+    fname = _time.strftime(f"{stem}-%Y%m%d-%H%M%S.quadris.json.gz")
     import base64
     return dict(
         content=base64.b64encode(raw).decode("ascii"),
@@ -1783,7 +1783,7 @@ app.clientside_callback(
             return [window.dash_clientside.no_update, label];
         }
 
-        var qi = window.qusimInterp;
+        var qi = window.quadrisInterp;
         if (!qi) {
             return [window.dash_clientside.no_update, label];
         }
@@ -2637,7 +2637,7 @@ def _rebuild_topology_graph(
     # exactly. Without this, switching pin from cores to qpc leaves the
     # hidden cores slider at a stale value (e.g. 8) and the picture shows
     # 8 cores while the badge says "Cores: 1 (derived)".
-    from qusim.dse.config import _resolve_architecture
+    from quadris.dse.config import _resolve_architecture
     cfg = {
         "num_logical_qubits": int(num_logical_qubits or 16),
         "num_cores": int(num_cores or 1),
@@ -2961,7 +2961,7 @@ _register_callbacks(app)
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    """Console-script entry point (`qusim-dse`).
+    """Console-script entry point (`quadris-dse`).
 
     Multi-user knobs:
       - debug=False: no hot-reload (which breaks under concurrent requests)
@@ -2970,11 +2970,11 @@ def main() -> None:
         port; nothing on the LAN can connect directly.
       - threaded=True: the Flask dev server serves each request on its own
         thread, so polling endpoints stay responsive while a sweep runs.
-      - Override host via QUSIM_HOST=0.0.0.0 if you need direct LAN access.
+      - Override host via QUADRIS_HOST=0.0.0.0 if you need direct LAN access.
     """
-    host = os.environ.get("QUSIM_HOST", "127.0.0.1")
-    port = int(os.environ.get("QUSIM_PORT", "8050"))
-    print(f"qusim DSE GUI starting at http://{host}:{port}")
+    host = os.environ.get("QUADRIS_HOST", "127.0.0.1")
+    port = int(os.environ.get("QUADRIS_PORT", "8050"))
+    print(f"quadris DSE GUI starting at http://{host}:{port}")
     app.run(debug=False, host=host, port=port, threaded=True)
 
 

@@ -309,7 +309,7 @@ class TestMemoryCappedMaxHot:
         assert requested == 10_000
 
     def test_cap_clamps_oversized_budget(self, engine, monkeypatch):
-        from qusim.dse import engine as dse_engine
+        from quadris.dse import engine as dse_engine
 
         monkeypatch.setattr(dse_engine, "_max_hot_points_for_memory", lambda: 500_000)
         effective, requested = engine._memory_capped_max_hot(100_000_000)
@@ -317,7 +317,7 @@ class TestMemoryCappedMaxHot:
         assert effective == 500_000
 
     def test_cap_uses_default_when_none(self, engine, monkeypatch):
-        from qusim.dse import engine as dse_engine
+        from quadris.dse import engine as dse_engine
 
         monkeypatch.setattr(dse_engine, "_max_hot_points_for_memory", lambda: 500_000)
         effective, requested = engine._memory_capped_max_hot(None)
@@ -329,7 +329,7 @@ class TestMemoryCappedMaxHot:
         """When RAM caps hot_budget below the sweep's min_total, the error
         must cite the memory cap so the user understands why their
         configured max_hot didn't apply."""
-        from qusim.dse import engine as dse_engine
+        from quadris.dse import engine as dse_engine
 
         monkeypatch.setattr(dse_engine, "_max_hot_points_for_memory", lambda: 10_000)
 

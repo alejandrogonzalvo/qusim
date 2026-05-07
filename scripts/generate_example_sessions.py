@@ -318,7 +318,7 @@ def _generate_one(spec: ExampleSpec, engine: DSEEngine, out_dir: Path) -> None:
     raw = dump(session)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{spec.id}.qusim.json.gz"
+    out_path = out_dir / f"{spec.id}.quadris.json.gz"
     out_path.write_bytes(raw)
     size_kb = len(raw) / 1024
     print(f"[{spec.id}] wrote {out_path}  ({size_kb:.1f} KB)")

@@ -139,7 +139,7 @@
 
     function getSid() {
         if (window._userSid) return window._userSid;
-        try { return sessionStorage.getItem("qusim_sid") || ""; } catch (e) { return ""; }
+        try { return sessionStorage.getItem("quadris_sid") || ""; } catch (e) { return ""; }
     }
 
     function poll() {

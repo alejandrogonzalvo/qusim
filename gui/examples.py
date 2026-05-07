@@ -348,7 +348,7 @@ def example_by_id(eid: str) -> ExampleSpec | None:
 
 def example_path(eid: str) -> Path:
     """Filesystem path to the gzipped session for *eid*."""
-    return EXAMPLES_DIR / f"{eid}.qusim.json.gz"
+    return EXAMPLES_DIR / f"{eid}.quadris.json.gz"
 
 
 def load_example_bytes(eid: str) -> bytes:

@@ -1,6 +1,6 @@
 from qiskit.circuit.library import QFT
 from plot_fidelities_utils import simulate_and_plot, SimulationConfig
-from qusim.hqa.placement import InitialPlacement
+from quadris.hqa.placement import InitialPlacement
 
 def plot_qft_fidelities():
     nq = 30

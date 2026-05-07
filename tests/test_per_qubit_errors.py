@@ -14,7 +14,7 @@ from qiskit.circuit.library import QFT
 from qiskit.transpiler import CouplingMap
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'python'))
-from qusim import map_circuit, InitialPlacement
+from quadris import map_circuit, InitialPlacement
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ class TestVirtualGateFiltering:
 
     def test_rz_gates_included_in_sparse_tensor(self):
         """rz gates should appear in the sparse interaction tensor for layer preservation."""
-        from qusim import _qiskit_circ_to_sparse_list
+        from quadris import _qiskit_circ_to_sparse_list
 
         # Build a circuit with both rz (virtual) and sx (physical) gates
         circ = qiskit.QuantumCircuit(2)
@@ -263,7 +263,7 @@ class TestVirtualGateFiltering:
 
     def test_rz_only_circuit_produces_native_fidelity(self):
         """A circuit with only rz gates should produce a tensor and have perfect fidelity."""
-        from qusim import _qiskit_circ_to_sparse_list
+        from quadris import _qiskit_circ_to_sparse_list
 
         circ = qiskit.QuantumCircuit(3)
         circ.rz(0.5, 0)

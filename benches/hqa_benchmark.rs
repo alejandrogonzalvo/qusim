@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ndarray::Array2;
-use qusim::circuit::InteractionTensor;
-use qusim::hqa::hqa_mapping;
+use quadris::circuit::InteractionTensor;
+use quadris::hqa::hqa_mapping;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;

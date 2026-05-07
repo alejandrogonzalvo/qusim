@@ -4,9 +4,9 @@ import qiskit
 from qiskit.circuit.library import QFT
 from qiskit import transpile
 
-import qusim
+import quadris
 
-print("Qusim imported successfully!")
+print("Quadris imported successfully!")
 
 def test_qft():
     # 1. Create a 5 qubit QFT circuit
@@ -25,8 +25,8 @@ def test_qft():
     num_cores = 2
     qubits_per_core = [3, 2] # Exact fit for 5 qubits
     
-    print("Running qusim python pipeline directly...")
-    result = qusim.map_circuit(
+    print("Running quadris python pipeline directly...")
+    result = quadris.map_circuit(
         circuit=transp_circ,
         num_cores=num_cores,
         qubits_per_core=qubits_per_core,

@@ -84,7 +84,7 @@ def collect_session(
     return {
         "schema_version": SCHEMA_VERSION,
         "saved_at": _utc_now_iso(),
-        "app": {"name": "qusim-dse"},
+        "app": {"name": "quadris-dse"},
         "name": name or "",
         "controls": controls,
         "view": view,
@@ -99,7 +99,7 @@ def sanitize_filename(name: str) -> str:
     """Return a safe filename stem for a user-supplied session title.
 
     Replaces filesystem-unsafe characters and whitespace with hyphens, collapses
-    runs of hyphens, and falls back to ``"qusim-session"`` when the result is
+    runs of hyphens, and falls back to ``"quadris-session"`` when the result is
     empty.
     """
     cleaned = _FILENAME_SAFE_RE.sub("-", (name or "").strip())
@@ -107,7 +107,7 @@ def sanitize_filename(name: str) -> str:
     # Collapse any run of hyphens to a single one.
     while "--" in cleaned:
         cleaned = cleaned.replace("--", "-")
-    return cleaned or "qusim-session"
+    return cleaned or "quadris-session"
 
 
 class SessionError(ValueError):

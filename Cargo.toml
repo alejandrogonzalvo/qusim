@@ -1,12 +1,12 @@
 [package]
-name = "qusim"
+name = "quadris"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-name = "qusim"
+name = "quadris"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

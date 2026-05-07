@@ -1,6 +1,6 @@
-# qusim architecture
+# quadris architecture
 
-`qusim` is a multi-core quantum architecture simulator with a built-in
+`quadris` is a multi-core quantum architecture simulator with a built-in
 Design Space Exploration (DSE) toolkit. It splits cleanly into three
 layers — a Rust core, a Python library, and an optional Dash GUI — so
 the same machinery drives both interactive exploration and headless
@@ -23,18 +23,18 @@ scripts/notebooks.
 │  derivatives.py, interpolation.py — analysis-tab helpers           │
 │                                                                    │
 │  Backwards-compat shims:  gui/dse_engine.py, gui/fom.py            │
-│                          (re-export from qusim.dse / qusim.analysis)│
+│                          (re-export from quadris.dse / quadris.analysis)│
 └────────────────────────┬───────────────────────────────────────────┘
                          │  imports
                          ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │                        PYTHON  LIBRARY                             │
-│                     python/qusim/                                  │
+│                     python/quadris/                                  │
 │                                                                    │
-│  qusim/                                                            │
+│  quadris/                                                            │
 │  ├─ __init__.py         — map_circuit, telesabre_map_circuit,      │
 │  │                        estimate_fidelity_from_cache[_batch],    │
-│  │                        QusimResult                              │
+│  │                        QuadrisResult                              │
 │  ├─ orchestrator.py     — MultiCoreOrchestrator (SABRE pass)       │
 │  ├─ hqa/                — HQA initial-placement policies           │
 │  │  └─ placement.py     — InitialPlacement, PlacementConfig,       │
@@ -80,7 +80,7 @@ scripts/notebooks.
 
 ```mermaid
 graph TD
-    subgraph GUI ["gui/  (optional, install via qusim[gui])"]
+    subgraph GUI ["gui/  (optional, install via quadris[gui])"]
         APP[app.py<br/>Dash callbacks]
         COMP[components.py]
         PLOT[plotting.py<br/>Plotly figures]
@@ -88,12 +88,12 @@ graph TD
         SHIMS[gui.dse_engine, gui.fom<br/>backwards-compat shims]
     end
 
-    subgraph LIB ["qusim Python library"]
-        QUSIM[qusim<br/>map_circuit, QusimResult]
-        DSE[qusim.dse<br/>DSEEngine, SweepResult,<br/>SWEEPABLE_METRICS]
-        ANALYSIS[qusim.analysis<br/>FomConfig, pareto_front]
-        HQA[qusim.hqa<br/>placement policies]
-        ORCH[qusim.orchestrator<br/>SABRE pass]
+    subgraph LIB ["quadris Python library"]
+        QUADRIS[quadris<br/>map_circuit, QuadrisResult]
+        DSE[quadris.dse<br/>DSEEngine, SweepResult,<br/>SWEEPABLE_METRICS]
+        ANALYSIS[quadris.analysis<br/>FomConfig, pareto_front]
+        HQA[quadris.hqa<br/>placement policies]
+        ORCH[quadris.orchestrator<br/>SABRE pass]
     end
 
     subgraph RUST ["Rust core (PyO3)"]
@@ -109,18 +109,18 @@ graph TD
     SHIMS -.->|re-export| DSE
     SHIMS -.->|re-export| ANALYSIS
 
-    DSE --> QUSIM
+    DSE --> QUADRIS
     DSE --> HQA
     ANALYSIS --> DSE
-    QUSIM --> ORCH
-    QUSIM --> RC
+    QUADRIS --> ORCH
+    QUADRIS --> RC
     ORCH --> RC
 
     classDef gui fill:#FAE8E8,stroke:#D73027
     classDef lib fill:#E8F4FA,stroke:#2B6CB0
     classDef rust fill:#FAF3DD,stroke:#B45309
     class APP,COMP,PLOT,SESSION,SHIMS gui
-    class QUSIM,DSE,ANALYSIS,HQA,ORCH lib
+    class QUADRIS,DSE,ANALYSIS,HQA,ORCH lib
     class RC rust
 ```
 
@@ -128,14 +128,14 @@ graph TD
 
 | Goal | Import |
 |---|---|
-| Map a single circuit | `from qusim import map_circuit, QusimResult` |
-| Run a 1-D / N-D parameter sweep | `from qusim.dse import DSEEngine, NOISE_DEFAULTS` |
-| Inspect the parameter registry | `from qusim.dse import SWEEPABLE_METRICS, METRIC_BY_KEY` |
-| Re-evaluate cached fidelity | `from qusim import estimate_fidelity_from_cache_batch` |
-| Define a custom Figure of Merit | `from qusim.analysis import FomConfig, compute_for_sweep` |
-| Build a Pareto frontier | `from qusim.analysis import pareto_front, pareto_front_mask` |
-| Drop a sweep into a flat table | `from qusim.dse import flatten_sweep_to_table` |
-| Launch the Dash GUI | `qusim-dse` (installed by `pip install qusim[gui]`) |
+| Map a single circuit | `from quadris import map_circuit, QuadrisResult` |
+| Run a 1-D / N-D parameter sweep | `from quadris.dse import DSEEngine, NOISE_DEFAULTS` |
+| Inspect the parameter registry | `from quadris.dse import SWEEPABLE_METRICS, METRIC_BY_KEY` |
+| Re-evaluate cached fidelity | `from quadris import estimate_fidelity_from_cache_batch` |
+| Define a custom Figure of Merit | `from quadris.analysis import FomConfig, compute_for_sweep` |
+| Build a Pareto frontier | `from quadris.analysis import pareto_front, pareto_front_mask` |
+| Drop a sweep into a flat table | `from quadris.dse import flatten_sweep_to_table` |
+| Launch the Dash GUI | `quadris-dse` (installed by `pip install quadris[gui]`) |
 
 ## Cold-vs-hot path (DSE performance model)
 
@@ -177,16 +177,16 @@ forkserver pool, capping concurrent workers by an empirical RAM model
 - `examples/dse_1d_noise_sweep.py` — minimal library-only DSE script.
 - `examples/dse_2d_pareto.py` — architectural sweep + Pareto frontier.
 - `examples/dse_fom_heatmap.py` — custom FoM evaluation.
-- `python/qusim/dse/__init__.py` — public surface of the DSE package
+- `python/quadris/dse/__init__.py` — public surface of the DSE package
   with a copy-pasteable usage sketch in the module docstring.
 
-## `qusim/dse/` internal layout
+## `quadris/dse/` internal layout
 
 The DSE package is split along its concern boundaries — every file
 has one reason to change:
 
 ```
-qusim/dse/
+quadris/dse/
 ├── axes.py            # Parameter registry (MetricDef, SWEEPABLE_METRICS,
 │                        NOISE_DEFAULTS, OUTPUT_METRICS, orientation)
 ├── memory.py          # /proc/meminfo helpers; thread-pool capping
@@ -213,11 +213,11 @@ Three duplications were collapsed during the split:
 2. HQA path ↔ TeleSABRE path are now `Backend` strategies; the
    shared cold-path skeleton lives in `_compile_one`. Adding a third
    routing algorithm is one new file plus an entry in
-   `qusim/dse/backends/__init__.py:_BACKENDS`.
+   `quadris/dse/backends/__init__.py:_BACKENDS`.
 3. `sweep_1d` / `sweep_2d` / `sweep_3d` collapse to thin wrappers
    around `sweep_nd` that reshape the legacy
    `(xs[, ys[, zs]], grid)` tuple from a `SweepResult`.
 
 Backwards compatibility is preserved via the `gui/dse_engine.py` and
-`gui/fom.py` shims; the public `qusim.dse` / `qusim.analysis` API is
+`gui/fom.py` shims; the public `quadris.dse` / `quadris.analysis` API is
 stable.

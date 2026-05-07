@@ -20,8 +20,8 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import numpy as np
 
-from qusim.analysis import pareto_front
-from qusim.dse import DSEEngine, NOISE_DEFAULTS, SweepProgress
+from quadris.analysis import pareto_front
+from quadris.dse import DSEEngine, NOISE_DEFAULTS, SweepProgress
 
 
 NUM_QUBITS = 32

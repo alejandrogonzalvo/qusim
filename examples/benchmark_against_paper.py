@@ -1,8 +1,8 @@
 """
-Benchmark qusim fidelity predictions against the paper's results
+Benchmark quadris fidelity predictions against the paper's results
 (arXiv:2503.06693v2) and real IBM Q hardware measurements.
 
-Loads the paper's QASM circuits, runs ESP / paper's depolarizing model / qusim
+Loads the paper's QASM circuits, runs ESP / paper's depolarizing model / quadris
 all with the SAME uniform error rates, and plots against IBM Q hardware data.
 
 TODO: When IBM Q access is available, use backend.properties() to pull
@@ -20,7 +20,7 @@ from qiskit.transpiler import CouplingMap
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'python'))
-from qusim import map_circuit, InitialPlacement
+from quadris import map_circuit, InitialPlacement
 
 # ---------------------------------------------------------------------------
 # Configuration — typical IBM Q error rates (uniform for all qubits/gates)
@@ -168,7 +168,7 @@ def estimate_depol_thermal(circ):
 
 
 # ---------------------------------------------------------------------------
-# qusim model
+# quadris model
 # ---------------------------------------------------------------------------
 def build_single_core_setup(num_qubits):
     """Create a single-core all-to-all setup for benchmarking without routing overhead."""
@@ -182,8 +182,8 @@ def build_single_core_setup(num_qubits):
     return coupling_map, core_mapping
 
 
-def estimate_qusim(transp):
-    """Run qusim fidelity estimation on a transpiled circuit."""
+def estimate_quadris(transp):
+    """Run quadris fidelity estimation on a transpiled circuit."""
     n = transp.num_qubits
     coupling_map, core_mapping = build_single_core_setup(n)
 
@@ -228,7 +228,7 @@ def main():
     paper_data = load_paper_data(DATA_FILE)
     filenames = paper_data['filenames']
 
-    results = {'qusim': [], 'esp': [], 'depol': [], 'gates': []}
+    results = {'quadris': [], 'esp': [], 'depol': [], 'gates': []}
     valid_indices = []
 
     for i, fname in enumerate(filenames):
@@ -254,18 +254,18 @@ def main():
                 optimization_level=3,
             )
 
-            fid_qusim = estimate_qusim(transp)
+            fid_quadris = estimate_quadris(transp)
             fid_esp = estimate_esp_thermal(transp)
             fid_depol = estimate_depol_thermal(transp)
 
-            results['qusim'].append(fid_qusim)
+            results['quadris'].append(fid_quadris)
             results['esp'].append(fid_esp)
             results['depol'].append(fid_depol)
             results['gates'].append(len(transp.data))
             valid_indices.append(i)
 
             print(f"  [{i+1}/{len(filenames)}] {fname}: "
-                  f"qusim={fid_qusim:.4f}, esp={fid_esp:.4f}, depol={fid_depol:.4f}, "
+                  f"quadris={fid_quadris:.4f}, esp={fid_esp:.4f}, depol={fid_depol:.4f}, "
                   f"IBM={paper_data['sr_mit_IBMQ'][i]:.4f}")
 
         except Exception as e:
@@ -289,7 +289,7 @@ def main():
                s=[scatter_size * q for q in v_nq])
     ax.scatter(v_gates, results['depol'], label='Depol. + $T_{1,2}$ (uniform)', color='tab:green', alpha=0.75,
                s=[scatter_size * q for q in v_nq])
-    ax.scatter(v_gates, results['qusim'], label='qusim', color='tab:red', alpha=0.75,
+    ax.scatter(v_gates, results['quadris'], label='quadris', color='tab:red', alpha=0.75,
                s=[scatter_size * q for q in v_nq], marker='x')
 
     ax.set_xscale('log')
@@ -306,13 +306,13 @@ def main():
 
     esp_diff = [results['esp'][i] - v_ibmq[i] for i in range(len(v_ibmq))]
     depol_diff = [results['depol'][i] - v_ibmq[i] for i in range(len(v_ibmq))]
-    qusim_diff = [results['qusim'][i] - v_ibmq[i] for i in range(len(v_ibmq))]
+    quadris_diff = [results['quadris'][i] - v_ibmq[i] for i in range(len(v_ibmq))]
 
     colors = ['tab:orange', 'tab:green', 'tab:red']
     box = axins.boxplot(
-        [esp_diff, depol_diff, qusim_diff],
+        [esp_diff, depol_diff, quadris_diff],
         positions=[1, 2, 3],
-        labels=['ESP', 'Depol.', 'qusim'],
+        labels=['ESP', 'Depol.', 'quadris'],
         patch_artist=True,
         widths=0.45,
     )

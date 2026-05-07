@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# serve_public.sh — start the qusim DSE GUI behind a Cloudflare named tunnel.
+# serve_public.sh — start the quadris DSE GUI behind a Cloudflare named tunnel.
 #
 # Defaults are tuned for ~3 concurrent users (e.g. teachers trying the tool).
 # The Dash app binds to 127.0.0.1 so only cloudflared (or the local browser)
@@ -17,8 +17,8 @@
 #      Or copy ~/.cloudflared/ from a machine that already has it.
 #
 # Environment overrides:
-#   QUSIM_HOST       (default: 127.0.0.1) bind address for the Dash app
-#   QUSIM_PORT       (default: 8050)      bind port for the Dash app
+#   QUADRIS_HOST       (default: 127.0.0.1) bind address for the Dash app
+#   QUADRIS_PORT       (default: 8050)      bind port for the Dash app
 #   TUNNEL_NAME      (default: upv-dse)   name passed to `cloudflared tunnel run`
 #   PUBLIC_URL       (default: https://upv-dse.gonzalvo.dev) URL printed for sharing
 #   SKIP_TUNNEL=1    start the app without the tunnel
@@ -34,13 +34,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-QUSIM_HOST="${QUSIM_HOST:-127.0.0.1}"
-QUSIM_PORT="${QUSIM_PORT:-8050}"
+QUADRIS_HOST="${QUADRIS_HOST:-127.0.0.1}"
+QUADRIS_PORT="${QUADRIS_PORT:-8050}"
 TUNNEL_NAME="${TUNNEL_NAME:-upv-dse}"
 TUNNEL_UUID="${TUNNEL_UUID:-ac904953-2386-4224-870b-d30ac8e94e37}"
 TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-upv-dse.gonzalvo.dev}"
 DEFAULT_PUBLIC_URL="https://$TUNNEL_HOSTNAME"
-LOG_DIR="${LOG_DIR:-/tmp/qusim-serve}"
+LOG_DIR="${LOG_DIR:-/tmp/quadris-serve}"
 mkdir -p "$LOG_DIR"
 APP_LOG="$LOG_DIR/app.log"
 TUNNEL_LOG="$LOG_DIR/cloudflared.log"
@@ -92,15 +92,15 @@ fi
 
 # --- Start the Dash app (extracted into a function so we can respawn) --------
 start_app() {
-  echo "[serve] starting Dash app on http://$QUSIM_HOST:$QUSIM_PORT (log: $APP_LOG)"
-  QUSIM_HOST="$QUSIM_HOST" QUSIM_PORT="$QUSIM_PORT" \
+  echo "[serve] starting Dash app on http://$QUADRIS_HOST:$QUADRIS_PORT (log: $APP_LOG)"
+  QUADRIS_HOST="$QUADRIS_HOST" QUADRIS_PORT="$QUADRIS_PORT" \
     "$PROJECT_ROOT/.venv/bin/python" "$PROJECT_ROOT/gui/app.py" \
     >> "$APP_LOG" 2>&1 &
   APP_PID=$!
 
   # Wait for the port to start accepting connections (max ~15s).
   for _ in $(seq 1 30); do
-    if (echo > "/dev/tcp/$QUSIM_HOST/$QUSIM_PORT") 2>/dev/null; then
+    if (echo > "/dev/tcp/$QUADRIS_HOST/$QUADRIS_PORT") 2>/dev/null; then
       return 0
     fi
     if ! kill -0 "$APP_PID" 2>/dev/null; then
@@ -128,7 +128,7 @@ tunnel: $TUNNEL_UUID
 credentials-file: $HOME/.cloudflared/$TUNNEL_UUID.json
 ingress:
   - hostname: $TUNNEL_HOSTNAME
-    service: http://$QUSIM_HOST:$QUSIM_PORT
+    service: http://$QUADRIS_HOST:$QUADRIS_PORT
   - service: http_status:404
 EOF
 

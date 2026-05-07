@@ -3,7 +3,7 @@ from qiskit.circuit.library import QFT
 from qiskit import transpile
 import matplotlib.pyplot as plt
 import time
-import qusim
+import quadris
 
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -63,7 +63,7 @@ def run_dse_qft():
                 full_coupling_map.add_edge(p1, p2)
                 full_coupling_map.add_edge(p2, p1)
         
-        result = qusim.map_circuit(
+        result = quadris.map_circuit(
             circuit=transp_circ,
             full_coupling_map=full_coupling_map,
             core_mapping=core_mapping,

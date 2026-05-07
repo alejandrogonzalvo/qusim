@@ -3,12 +3,12 @@ GUI-only presentation knobs for the DSE app.
 
 The pure-data parts of the parameter registry (``MetricDef``,
 ``SWEEPABLE_METRICS``, ``NOISE_DEFAULTS``, etc.) live in
-:mod:`qusim.dse.axes` so Python users can consume them without pulling
+:mod:`quadris.dse.axes` so Python users can consume them without pulling
 Dash. This module re-exports them and adds the bits that only matter
 to the Dash callbacks (view-tab choices, view-mode dropdowns, ...).
 """
 
-from qusim.dse.axes import (  # noqa: F401  — re-export for back-compat
+from quadris.dse.axes import (  # noqa: F401  — re-export for back-compat
     CAT_METRIC_BY_KEY,
     CATEGORICAL_METRICS,
     CIRCUIT_TYPES,

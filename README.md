@@ -1,19 +1,19 @@
-# qusim
+# quadris
 
 Multi-core quantum architecture simulator with a built-in Design Space
 Exploration (DSE) toolkit. A Rust core (PyO3-bound) does the heavy
-lifting; a GUI-agnostic Python library (`qusim`, `qusim.dse`,
-`qusim.analysis`) drives both interactive exploration and headless
-scripts; an optional Dash app (`qusim-dse`) puts a UI on top.
+lifting; a GUI-agnostic Python library (`quadris`, `quadris.dse`,
+`quadris.analysis`) drives both interactive exploration and headless
+scripts; an optional Dash app (`quadris-dse`) puts a UI on top.
 
 ```
 ┌──────── Dash GUI (optional)  ────────┐
-│  qusim-dse                            │   pip install qusim[gui]
+│  quadris-dse                            │   pip install quadris[gui]
 └─────────────────┬────────────────────┘
                   │   imports
 ┌─────────────────▼────────────────────┐
-│  Python library (qusim, qusim.dse,    │   pip install qusim
-│  qusim.analysis)                      │
+│  Python library (quadris, quadris.dse,    │   pip install quadris
+│  quadris.analysis)                      │
 └─────────────────┬────────────────────┘
                   │   PyO3
 ┌─────────────────▼────────────────────┐
@@ -31,24 +31,24 @@ For the layered diagram, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 python3 -m venv .venv && source .venv/bin/activate
 pip install maturin
 
-# Build the Rust extension and install qusim in editable mode
+# Build the Rust extension and install quadris in editable mode
 maturin develop --release
 
 # Optional: pull in the Dash GUI
 pip install -e ".[gui]"
 ```
 
-`pip install qusim` is headless — Dash isn't a runtime dependency. Add
+`pip install quadris` is headless — Dash isn't a runtime dependency. Add
 `[gui]` (or `[dev]` for the test/docs tooling) only when you need them.
 
 ## What's in the box
 
 | Package | What it gives you | Read more |
 |---|---|---|
-| `qusim` | `map_circuit`, `telesabre_map_circuit`, `estimate_fidelity_from_cache[_batch]`, `QusimResult` | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
-| `qusim.dse` | `DSEEngine`, `SweepResult`, `SWEEPABLE_METRICS`, `NOISE_DEFAULTS`, parameter registry | [`python/qusim/dse/README.md`](python/qusim/dse/README.md) |
-| `qusim.analysis` | `FomConfig`, `compute_for_sweep`, `pareto_front`, `pareto_front_mask` | [`python/qusim/analysis/README.md`](python/qusim/analysis/README.md) |
-| `qusim.hqa` | Initial-placement policies (random, spectral clustering) | — |
+| `quadris` | `map_circuit`, `telesabre_map_circuit`, `estimate_fidelity_from_cache[_batch]`, `QuadrisResult` | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| `quadris.dse` | `DSEEngine`, `SweepResult`, `SWEEPABLE_METRICS`, `NOISE_DEFAULTS`, parameter registry | [`python/quadris/dse/README.md`](python/quadris/dse/README.md) |
+| `quadris.analysis` | `FomConfig`, `compute_for_sweep`, `pareto_front`, `pareto_front_mask` | [`python/quadris/analysis/README.md`](python/quadris/analysis/README.md) |
+| `quadris.hqa` | Initial-placement policies (random, spectral clustering) | — |
 | GUI app | Interactive DSE explorer (Dash) | [`gui/README.md`](gui/README.md) |
 | Rust core | HQA, noise model, routing, TeleSABRE | [`src/hqa/README.md`](src/hqa/README.md), [`src/noise/README.md`](src/noise/README.md) |
 
@@ -60,8 +60,8 @@ from qiskit import transpile
 from qiskit.circuit.library import QFT
 from qiskit.transpiler import CouplingMap
 
-import qusim
-from qusim.hqa.placement import InitialPlacement
+import quadris
+from quadris.hqa.placement import InitialPlacement
 
 # 1. Transpile to the basis the noise model expects.
 circ = QFT(30)
@@ -72,7 +72,7 @@ transp = transpile(
 )
 
 # 2. Describe the device: which physical qubit lives on which core, and how
-#    the cores are wired. (The GUI / qusim.dse builders compute this for you.)
+#    the cores are wired. (The GUI / quadris.dse builders compute this for you.)
 num_cores, qubits_per_core = 5, 6
 core_mapping = {q: q // qubits_per_core for q in range(num_cores * qubits_per_core)}
 edges = [(c, (c + 1) % num_cores) for c in range(num_cores)]   # ring of cores
@@ -84,7 +84,7 @@ coupling = CouplingMap.from_edge_list(intra + [
 ])
 
 # 3. Run HQA + SABRE + fidelity estimation.
-result: qusim.QusimResult = qusim.map_circuit(
+result: quadris.QuadrisResult = quadris.map_circuit(
     circuit=transp,
     full_coupling_map=coupling,
     core_mapping=core_mapping,
@@ -106,7 +106,7 @@ coh_grid     = result.coherence_fidelity_grid
 ## DSE example (parameter sweep)
 
 ```python
-from qusim.dse import DSEEngine, NOISE_DEFAULTS
+from quadris.dse import DSEEngine, NOISE_DEFAULTS
 
 engine = DSEEngine()
 cached = engine.run_cold(
@@ -134,7 +134,7 @@ See [`examples/`](examples/) for three full end-to-end scripts:
 
 ```bash
 pip install -e ".[gui]"
-qusim-dse              # → http://127.0.0.1:8050
+quadris-dse              # → http://127.0.0.1:8050
 ```
 
 On startup it auto-runs a 3-D sweep (T1 × T2 × 2Q gate time) on a
@@ -148,7 +148,7 @@ GUI sits on top of the library.
 
 ## Deploy
 
-For personal use, `qusim-dse` from a venv is enough. For a public URL
+For personal use, `quadris-dse` from a venv is enough. For a public URL
 backed by a Cloudflare named tunnel with auto-recovery and
 auto-deploy from `origin/main`, see
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). The same doc covers
@@ -200,8 +200,8 @@ for the HQA / noise hot loops.
 csrc/             # Vendored TeleSABRE C library
 docs/             # Long-form docs (this README links into them)
 examples/         # End-to-end Python scripts (library only)
-gui/              # Dash app (qusim-dse). Re-exports library names for back-compat.
-python/qusim/     # Public Python package
+gui/              # Dash app (quadris-dse). Re-exports library names for back-compat.
+python/quadris/     # Public Python package
   __init__.py        # map_circuit, telesabre_map_circuit, ...
   dse/               # DSEEngine, sweeps, parameter registry, backends
   analysis/          # FoM evaluator + Pareto frontier
@@ -212,7 +212,7 @@ tests/            # Python test suite
 
 ## License & citation
 
-If you use `qusim` for academic work, the HQA algorithm is based on
+If you use `quadris` for academic work, the HQA algorithm is based on
 Pau Escofet *et al.*, "Hungarian Qubit Assignment for Optimized Mapping
 of Quantum Circuits on Multi-Core Architectures"
 ([arXiv:2309.12182](https://arxiv.org/pdf/2309.12182)).

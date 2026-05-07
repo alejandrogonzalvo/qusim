@@ -109,14 +109,14 @@ class TestDumpLoad:
     def test_load_accepts_plain_json_string(self):
         from gui.session import load
         import json as _json
-        payload = {"schema_version": 1, "controls": {}, "view": {}, "sweep": {"present": False}, "saved_at": "x", "app": {"name": "qusim-dse"}}
+        payload = {"schema_version": 1, "controls": {}, "view": {}, "sweep": {"present": False}, "saved_at": "x", "app": {"name": "quadris-dse"}}
         back = load(_json.dumps(payload))
         assert back == payload
 
     def test_load_accepts_plain_json_bytes(self):
         from gui.session import load
         import json as _json
-        payload = {"schema_version": 1, "controls": {}, "view": {}, "sweep": {"present": False}, "saved_at": "x", "app": {"name": "qusim-dse"}}
+        payload = {"schema_version": 1, "controls": {}, "view": {}, "sweep": {"present": False}, "saved_at": "x", "app": {"name": "quadris-dse"}}
         back = load(_json.dumps(payload).encode("utf-8"))
         assert back == payload
 
@@ -130,7 +130,7 @@ class TestValidate:
         return {
             "schema_version": 1,
             "saved_at": "2026-04-23T00:00:00Z",
-            "app": {"name": "qusim-dse"},
+            "app": {"name": "quadris-dse"},
             "controls": {}, "view": {},
             "sweep": {"present": False},
         }
@@ -197,7 +197,7 @@ class TestApplySession:
         view = {"view_type": "heatmap", "frozen_axis": 2, "frozen_slider_value": 0.5}
         s = {
             "schema_version": 1,
-            "saved_at": "x", "app": {"name": "qusim-dse"},
+            "saved_at": "x", "app": {"name": "quadris-dse"},
             "controls": ctrls, "view": view,
             "sweep": {"present": False},
         }
@@ -376,7 +376,7 @@ class TestSessionName:
         from gui.session import apply_session
         s = {
             "schema_version": 1,
-            "saved_at": "x", "app": {"name": "qusim-dse"},
+            "saved_at": "x", "app": {"name": "quadris-dse"},
             "controls": {}, "view": {},
             "sweep": {"present": False},
         }
@@ -399,11 +399,11 @@ class TestSanitizeFilename:
 
     def test_empty_returns_default(self):
         from gui.session import sanitize_filename
-        assert sanitize_filename("") == "qusim-session"
+        assert sanitize_filename("") == "quadris-session"
 
     def test_whitespace_only_returns_default(self):
         from gui.session import sanitize_filename
-        assert sanitize_filename("   ") == "qusim-session"
+        assert sanitize_filename("   ") == "quadris-session"
 
     def test_collapses_repeat_separators(self):
         from gui.session import sanitize_filename

@@ -391,7 +391,7 @@ def _build_topology(
     participate in the intra-core topology only — like buffer slots).
 
     ``num_qubits`` MUST equal ``num_cores · qpc`` exactly; the deduction
-    layer in :mod:`qusim.dse.config` is responsible for making that
+    layer in :mod:`quadris.dse.config` is responsible for making that
     arithmetic land on a whole number.  When it doesn't (e.g. legacy
     callers pass mismatched values), the remainder cores get an extra
     qubit to keep the total honest, but the data/comm slot accounting
@@ -518,7 +518,7 @@ def _compute_distance_matrix(
 ) -> np.ndarray:
     """All-pairs shortest-hop matrix between cores (Floyd-Warshall).
 
-    Mirrors the construction in ``qusim.map_circuit`` so that hot-path
+    Mirrors the construction in ``quadris.map_circuit`` so that hot-path
     fidelity estimation can run without re-deriving it.
     """
     core_adj = np.zeros((num_cores, num_cores), dtype=np.int32)

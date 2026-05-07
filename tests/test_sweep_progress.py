@@ -64,7 +64,7 @@ class TestProgressCallback:
         def on_progress(p: SweepProgress):
             calls.append(p)
 
-        # Use a mock engine that doesn't need real qusim
+        # Use a mock engine that doesn't need real quadris
         from gui.dse_engine import DSEEngine
         engine = DSEEngine()
 
@@ -196,7 +196,7 @@ class TestProgressCallback:
 # ---------------------------------------------------------------------------
 
 def _make_fake_cached():
-    """Create a minimal fake CachedMapping for testing without real qusim."""
+    """Create a minimal fake CachedMapping for testing without real quadris."""
     from gui.dse_engine import CachedMapping
     import numpy as np
     return CachedMapping(

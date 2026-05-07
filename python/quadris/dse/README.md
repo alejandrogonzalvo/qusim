@@ -1,4 +1,4 @@
-# `qusim.dse`
+# `quadris.dse`
 
 Design Space Exploration toolkit. Build N-dimensional sweeps over
 circuit, topology, and noise parameters; cache the expensive
@@ -11,7 +11,7 @@ identically by the Dash app and by user scripts / notebooks.
 ## Quick start
 
 ```python
-from qusim.dse import DSEEngine, NOISE_DEFAULTS
+from quadris.dse import DSEEngine, NOISE_DEFAULTS
 
 engine = DSEEngine()
 
@@ -35,7 +35,7 @@ xs, results = engine.sweep_1d(
 ## Public surface
 
 ```python
-from qusim.dse import (
+from quadris.dse import (
     # Engine
     DSEEngine, SweepResult, SweepProgress, CachedMapping,
 
@@ -97,14 +97,14 @@ metrics are on the axes.
 
 ## Backends
 
-Routing dispatch is via `qusim.dse.backends`. Each backend implements
+Routing dispatch is via `quadris.dse.backends`. Each backend implements
 the `Backend` protocol — one ``compile(cold_cfg, noise, key) ->
 CachedMapping`` method.
 
 | Backend name | Module | Notes |
 |---|---|---|
-| `hqa_sabre` (default) | `backends/hqa_sabre.py` | HQA initial mapping + SABRE swap insertion via `qusim.map_circuit` |
-| `telesabre`           | `backends/telesabre.py` | TeleSABRE C library via `qusim.rust_core.telesabre_map_and_estimate`; remaps placements/swaps from gate-step space to DAG-layer space |
+| `hqa_sabre` (default) | `backends/hqa_sabre.py` | HQA initial mapping + SABRE swap insertion via `quadris.map_circuit` |
+| `telesabre`           | `backends/telesabre.py` | TeleSABRE C library via `quadris.rust_core.telesabre_map_and_estimate`; remaps placements/swaps from gate-step space to DAG-layer space |
 
 Adding a new backend is one file plus an entry in
 `backends/__init__.py:_BACKENDS`. See `backends/base.py` for the
@@ -157,7 +157,7 @@ sweep sizes typical of the GUI.
 ## Parameter registry
 
 ```python
-from qusim.dse import SWEEPABLE_METRICS, METRIC_BY_KEY
+from quadris.dse import SWEEPABLE_METRICS, METRIC_BY_KEY
 
 for m in SWEEPABLE_METRICS[:3]:
     print(m.key, m.label, "log" if m.log_scale else "lin",
@@ -194,6 +194,6 @@ threading would just oversubscribe the CPU and stall the scheduler.
 
 ## See also
 
-- `qusim.analysis` — FoM evaluator + Pareto frontier ([`../analysis/README.md`](../analysis/README.md)).
+- `quadris.analysis` — FoM evaluator + Pareto frontier ([`../analysis/README.md`](../analysis/README.md)).
 - `examples/` — three end-to-end scripts using only the library API.
 - `docs/ARCHITECTURE.md` — layered diagram of the whole stack.

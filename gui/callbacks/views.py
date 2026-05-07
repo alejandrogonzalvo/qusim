@@ -149,8 +149,8 @@ def register(app: Any) -> None:
     # looking at.
     app.clientside_callback(
         """function(viewType, meritMode) {
-            if (window.qusimUpdatePlotHelp) {
-                window.qusimUpdatePlotHelp(viewType, meritMode);
+            if (window.quadrisUpdatePlotHelp) {
+                window.quadrisUpdatePlotHelp(viewType, meritMode);
             }
             return window.dash_clientside.no_update;
         }""",

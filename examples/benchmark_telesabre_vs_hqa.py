@@ -27,11 +27,11 @@ _CUSTOM_INSTRUCTIONS = [
     CustomInstruction("sx", 0, 1, SXGate, builtin=True),
 ]
 
-# Make sure the qusim package is importable when running from repo root
+# Make sure the quadris package is importable when running from repo root
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
 
-from qusim import map_circuit, telesabre_map_circuit
-from qusim.hqa.placement import InitialPlacement
+from quadris import map_circuit, telesabre_map_circuit
+from quadris.hqa.placement import InitialPlacement
 
 # ---------------------------------------------------------------------------
 # Paths (relative to repo root)
@@ -77,7 +77,7 @@ def load_device_topology():
 
 def run_hqa_sabre(circuit_path: Path, coupling_map: CouplingMap, core_mapping: dict) -> dict:
     """
-    Run HQA+Sabre via qusim.map_circuit and return {swaps, teleportations, fidelity}.
+    Run HQA+Sabre via quadris.map_circuit and return {swaps, teleportations, fidelity}.
     """
     circuit = qasm2.load(str(circuit_path), custom_instructions=_CUSTOM_INSTRUCTIONS)
     result = map_circuit(

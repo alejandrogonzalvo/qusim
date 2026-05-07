@@ -1,4 +1,4 @@
-# qusim DSE GUI
+# quadris DSE GUI
 
 Interactive Design Space Explorer for multi-core quantum
 architectures. Sweep up to six hardware / architectural parameters,
@@ -10,15 +10,15 @@ custom Figures of Merit — all rendered in your browser.
 ```bash
 # From the repo root
 pip install -e ".[gui]"      # core + Dash + Cytoscape
-qusim-dse                    # → http://127.0.0.1:8050
+quadris-dse                    # → http://127.0.0.1:8050
 
 # Or the legacy way (still works):
 python gui/app.py
 ```
 
-`qusim-dse` is a console script wired to `gui.app:main`; both routes
+`quadris-dse` is a console script wired to `gui.app:main`; both routes
 hit the same Dash app. Override the bind address with
-`QUSIM_HOST=0.0.0.0 QUSIM_PORT=8080 qusim-dse`. On startup the app
+`QUADRIS_HOST=0.0.0.0 QUADRIS_PORT=8080 quadris-dse`. On startup the app
 auto-runs a 3-D sweep (T1 × T2 × 2Q gate time) and shows an
 isosurface.
 
@@ -26,18 +26,18 @@ isosurface.
 
 The Dash app is a *thin* orchestrator. Every piece of "real work"
 (sweep generation, parameter registry, FoM evaluation, Pareto math,
-sweep flattening) lives in the `qusim.dse` and `qusim.analysis`
+sweep flattening) lives in the `quadris.dse` and `quadris.analysis`
 library packages. The GUI consumes those libraries the same way a
 user script would.
 
 ```
 gui/
 ├── app.py            # Dash callbacks, layout, state stores. Imports
-│                       qusim.dse.DSEEngine + qusim.analysis.FomConfig.
+│                       quadris.dse.DSEEngine + quadris.analysis.FomConfig.
 ├── components.py     # Sidebar / topbar / right-panel widget factories
 ├── plotting.py       # Plotly figure builders — Plotly is the only
 │                       GUI-specific dep here. Calls into
-│                       qusim.dse.flatten + qusim.analysis.pareto
+│                       quadris.dse.flatten + quadris.analysis.pareto
 │                       for the math.
 ├── session.py        # Save / load full UI state (Dash-free, testable)
 ├── examples.py       # Canned DSE sessions for the Examples dropdown
@@ -45,26 +45,26 @@ gui/
 ├── interpolation.py  # Trilinear → bilinear interp for Frozen views
 ├── constants.py      # GUI-only presentation knobs (VIEW_TABS,
 │                       VIEW_MODES). The data registry it used to own
-│                       now lives in qusim.dse.axes; this file
+│                       now lives in quadris.dse.axes; this file
 │                       re-exports it for back-compat.
 ├── assets/style.css  # Light-theme stylesheet
 ├── requirements.txt  # Legacy pin file; pyproject [gui] extras are canonical
 ├── __init__.py
 │
-│ # Backwards-compat shims (re-export from qusim library):
-├── dse_engine.py     # ⇒ qusim.dse.engine
-└── fom.py            # ⇒ qusim.analysis.fom
+│ # Backwards-compat shims (re-export from quadris library):
+├── dse_engine.py     # ⇒ quadris.dse.engine
+└── fom.py            # ⇒ quadris.analysis.fom
 ```
 
 The shims exist so older code (`from gui.dse_engine import DSEEngine`,
 test fixtures patching `gui.dse_engine.X`) keeps working. New code
-should import from `qusim.dse` / `qusim.analysis` directly.
+should import from `quadris.dse` / `quadris.analysis` directly.
 
 ## Layout
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ Topbar  qusim-dse · Examples ▾ · status · [▶ Run] · save / load   │
+│ Topbar  quadris-dse · Examples ▾ · status · [▶ Run] · save / load   │
 ├──────────┬───────────────────────────────────┬───────────────────┤
 │ Sweep    │ View tabs   [Line|Heat|3D|Par|Pareto|Merit|…]  [CSV]   │
 │ axes     ├───────────────────────────────────┤   Configuration    │
@@ -105,7 +105,7 @@ current dimensionality are filtered out automatically.
 ## Sweepable parameters
 
 20 axes across noise, hardware, and architecture. Defined in
-[`qusim.dse.axes`](../python/qusim/dse/axes.py) (`SWEEPABLE_METRICS`)
+[`quadris.dse.axes`](../python/quadris/dse/axes.py) (`SWEEPABLE_METRICS`)
 plus a categorical layer (`CATEGORICAL_METRICS`) for non-numeric axes.
 
 Numeric noise (hot-path; cheap):
@@ -141,7 +141,7 @@ forkserver pool so concurrent compiles never exceed `MemAvailable`.
 
 ## Sweep budgets
 
-The default budgets (in [`qusim.dse.axes`](../python/qusim/dse/axes.py)):
+The default budgets (in [`quadris.dse.axes`](../python/quadris/dse/axes.py)):
 
 | Axes | Hot-path total | Cold-path total |
 |---|---|---|
@@ -181,5 +181,5 @@ Coverage focuses on the GUI-bound code:
 
 - [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) — layered diagram.
 - [`../docs/DSE_VIEWS.md`](../docs/DSE_VIEWS.md) — view catalogue.
-- [`../python/qusim/dse/README.md`](../python/qusim/dse/README.md) — DSE library reference.
-- [`../python/qusim/analysis/README.md`](../python/qusim/analysis/README.md) — FoM + Pareto reference.
+- [`../python/quadris/dse/README.md`](../python/quadris/dse/README.md) — DSE library reference.
+- [`../python/quadris/analysis/README.md`](../python/quadris/analysis/README.md) — FoM + Pareto reference.

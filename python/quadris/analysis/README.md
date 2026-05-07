@@ -1,18 +1,18 @@
-# `qusim.analysis`
+# `quadris.analysis`
 
 Analysis primitives over sweep results: a safe expression evaluator
 for user-defined Figures of Merit, and Pareto-frontier helpers.
 
 These are the algorithmic backbones of the GUI's Merit and Pareto
-views, but they work on any `qusim.dse.SweepResult` (or its
+views, but they work on any `quadris.dse.SweepResult` (or its
 ``.to_sweep_data()`` form), so custom Python scripts get the same
 machinery as the Dash app.
 
 ## Quick start
 
 ```python
-from qusim.dse import DSEEngine, NOISE_DEFAULTS
-from qusim.analysis import FomConfig, compute_for_sweep, pareto_front
+from quadris.dse import DSEEngine, NOISE_DEFAULTS
+from quadris.analysis import FomConfig, compute_for_sweep, pareto_front
 
 engine = DSEEngine()
 cached = engine.run_cold(
@@ -46,7 +46,7 @@ print(result.values.shape, result.error)
 ## Public surface
 
 ```python
-from qusim.analysis import (
+from quadris.analysis import (
     # Figure of Merit
     FomConfig, FomResult, FomBreakdown, FomError,
     PRESETS, PRESET_OPTIONS, DEFAULT_FOM, SAFE_FUNCS,
@@ -120,10 +120,10 @@ front = pareto_front(sr, objective_x="total_epr_pairs",
 | `pareto.py` | `pareto_front_mask` (low-level), `pareto_front` (sweep-aware) |
 
 Both modules are pure-numpy — no Plotly / Dash dependency. They're
-safe to import in any environment that has `qusim` installed.
+safe to import in any environment that has `quadris` installed.
 
 ## See also
 
-- `qusim.dse` — sweep engine + parameter registry ([`../dse/README.md`](../dse/README.md)).
+- `quadris.dse` — sweep engine + parameter registry ([`../dse/README.md`](../dse/README.md)).
 - `examples/dse_fom_heatmap.py` — Figure-of-Merit example end-to-end.
 - `examples/dse_2d_pareto.py` — Pareto frontier example end-to-end.

@@ -19,8 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
 from gui import dse_engine
 from gui.dse_engine import DSEEngine, SweepProgress, _estimate_cold_mb
-from qusim.dse import sweep as _sweep_mod
-from qusim.dse import memory as _memory_mod
+from quadris.dse import sweep as _sweep_mod
+from quadris.dse import memory as _memory_mod
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ def _fake_eval_cold_batch(cold_config, noise, swept_list, rss_cap_bytes=None, ke
     the actual num_qubits the worker would have built — keeping the
     fake's "work size" consistent with the scheduler's cost estimate.
     """
-    from qusim.dse.config import _resolve_architecture
+    from quadris.dse.config import _resolve_architecture
     cfg = dict(cold_config)
     cfg.update(swept_list[0])
     _resolve_architecture(cfg)

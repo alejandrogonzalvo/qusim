@@ -44,8 +44,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from qusim.dse import DSEEngine, NOISE_DEFAULTS  # noqa: E402
-from qusim.dse.results import _RESULT_DTYPE  # noqa: E402
+from quadris.dse import DSEEngine, NOISE_DEFAULTS  # noqa: E402
+from quadris.dse.results import _RESULT_DTYPE  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ import os, resource, sys
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("RAYON_NUM_THREADS", "1")
 sys.path.insert(0, {root!r})
-from qusim.dse import DSEEngine
+from quadris.dse import DSEEngine
 e = DSEEngine()
 c = e.run_cold(
     circuit_type="qft", num_logical_qubits={L}, num_cores={NC},

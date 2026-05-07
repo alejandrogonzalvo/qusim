@@ -16,8 +16,8 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import numpy as np
 
-from qusim.analysis import FomConfig, compute_for_sweep
-from qusim.dse import DSEEngine, NOISE_DEFAULTS
+from quadris.analysis import FomConfig, compute_for_sweep
+from quadris.dse import DSEEngine, NOISE_DEFAULTS
 
 
 def main() -> None:

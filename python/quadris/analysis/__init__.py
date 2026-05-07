@@ -2,7 +2,7 @@
 Analysis primitives over sweep results: Figure-of-Merit and Pareto frontiers.
 
 These are the algorithmic helpers behind the GUI's Merit / Pareto views, but
-work on any :class:`qusim.dse.SweepResult` (or its ``.as_dict()`` form), so
+work on any :class:`quadris.dse.SweepResult` (or its ``.as_dict()`` form), so
 custom Python scripts get the same machinery as the Dash app.
 """
 

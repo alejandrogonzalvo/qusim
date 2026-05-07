@@ -3,7 +3,7 @@ Sweep orchestration: shared cold-path helper, parallel pool scheduler,
 and the worker-side cold-batch entry point used by the multiprocessing
 :class:`ProcessPoolExecutor`.
 
-Pulled out of :mod:`qusim.dse.engine` so the same ``_compile_one`` is
+Pulled out of :mod:`quadris.dse.engine` so the same ``_compile_one`` is
 called by ``DSEEngine.run_cold`` (foreground) and ``_eval_cold_batch``
 (worker process). Without this, every drift in the cold-path body had
 to be mirrored twice — and silently desynchronised on miss.
@@ -52,7 +52,7 @@ def _compile_one(
     :meth:`DSEEngine.run_cold` which does it for them.
 
     Routing-algorithm dispatch happens here via the backend registry —
-    add a new backend to :mod:`qusim.dse.backends` and it lights up
+    add a new backend to :mod:`quadris.dse.backends` and it lights up
     everywhere this function is called.
     """
     backend = get_backend(cold_cfg.get("routing_algorithm", "hqa_sabre"))

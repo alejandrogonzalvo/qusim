@@ -1,5 +1,5 @@
 """
-Backwards-compatibility shim — the DSE engine now lives in :mod:`qusim.dse`.
+Backwards-compatibility shim — the DSE engine now lives in :mod:`quadris.dse`.
 
 Existing imports continue to work::
 
@@ -7,22 +7,22 @@ Existing imports continue to work::
 
 …but new code should prefer the library path::
 
-    from qusim.dse import DSEEngine, SweepResult
+    from quadris.dse import DSEEngine, SweepResult
 
 The logical-first parameterization removed several helpers (the
 ``_clamp_cfg_*`` family, ``clamp_k_for_topology``, the ``qubits``
 alias) so this shim no longer re-exports them.
 """
 
-from qusim.dse.engine import *  # noqa: F401, F403
-from qusim.dse.config import (  # noqa: F401
+from quadris.dse.engine import *  # noqa: F401, F403
+from quadris.dse.config import (  # noqa: F401
     DEFAULT_PIN_AXIS,
     PIN_CORES,
     PIN_QPC,
     _resolve_architecture,
     _resolve_cell_cold_cfg,
 )
-from qusim.dse.engine import (  # noqa: F401  — re-export private names tests rely on
+from quadris.dse.engine import (  # noqa: F401  — re-export private names tests rely on
     _RESERVED_RAM_MB,
     _build_circuit,
     _build_topology,

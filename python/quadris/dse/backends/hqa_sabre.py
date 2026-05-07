@@ -1,9 +1,9 @@
 """
 HQA + SABRE cold-path backend.
 
-Calls the high-level :func:`qusim.map_circuit` which runs HQA initial
+Calls the high-level :func:`quadris.map_circuit` which runs HQA initial
 mapping followed by SABRE swap insertion. SABRE-injected swaps come
-back on ``QusimResult.sparse_swaps`` and *must* be carried into the
+back on ``QuadrisResult.sparse_swaps`` and *must* be carried into the
 hot-path noise estimator — without them, intra-core SWAP cost is
 silently dropped and the algorithm can't be compared to TeleSABRE on
 the noise sweep.
@@ -15,8 +15,8 @@ import time
 
 import numpy as np
 
-import qusim
-from qusim.hqa.placement import InitialPlacement
+import quadris
+from quadris.hqa.placement import InitialPlacement
 
 from ..circuits import _build_circuit, _transpile_circuit
 from ..noise import _make_gate_arrays
@@ -59,7 +59,7 @@ class HqaSabreBackend:
             else InitialPlacement.RANDOM
         )
 
-        result = qusim.map_circuit(
+        result = quadris.map_circuit(
             circuit=transp,
             full_coupling_map=full_coupling_map,
             core_mapping=core_mapping,
@@ -82,7 +82,7 @@ class HqaSabreBackend:
             classical_routing_cycles=int(noise["classical_routing_cycles"]),
         )
 
-        from qusim import _qiskit_circ_to_sparse_list
+        from quadris import _qiskit_circ_to_sparse_list
         gs_sparse, gate_names = _qiskit_circ_to_sparse_list(transp)
         gate_error_arr, gate_time_arr = _make_gate_arrays(gate_names, noise)
 

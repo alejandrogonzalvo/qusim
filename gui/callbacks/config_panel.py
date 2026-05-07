@@ -408,7 +408,7 @@ def _register_architecture_summary(app: Any) -> None:
     )
     def _update_architecture_summary(logical, cores, qpc, K, B, topo, pin_axis):
         """Live architecture-summary line + derived-value badges."""
-        from qusim.dse.config import _resolve_architecture
+        from quadris.dse.config import _resolve_architecture
         cfg = {
             "num_logical_qubits": int(logical or 16),
             "num_cores": int(cores or 1),

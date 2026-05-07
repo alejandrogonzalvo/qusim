@@ -3,17 +3,17 @@ from dataclasses import dataclass
 from typing import List, Union, Optional
 import qiskit
 from qiskit.converters import circuit_to_dag, dag_to_circuit
-from qusim.orchestrator import MultiCoreOrchestrator
+from quadris.orchestrator import MultiCoreOrchestrator
 
 # Import the compiled Rust extension
 try:
-    from qusim.rust_core import map_and_estimate, estimate_hardware_fidelity, estimate_hardware_fidelity_batch, telesabre_map_and_estimate
+    from quadris.rust_core import map_and_estimate, estimate_hardware_fidelity, estimate_hardware_fidelity_batch, telesabre_map_and_estimate
 except ImportError:
     import warnings
-    warnings.warn("qusim.rust_core not found. Ensure you have built the maturin extension.")
+    warnings.warn("quadris.rust_core not found. Ensure you have built the maturin extension.")
 
 @dataclass
-class QusimResult:
+class QuadrisResult:
     """
     Data capsule returned by the Rust engine after completing the HQA mapping,
     routing schedule, and hardware noise estimation calculations.
@@ -90,7 +90,7 @@ class QusimResult:
         return algo_curve, route_curve, coh_curve
 
 
-from qusim.hqa.placement import InitialPlacement, PlacementConfig, generate_initial_placement
+from quadris.hqa.placement import InitialPlacement, PlacementConfig, generate_initial_placement
 
 
 def estimate_fidelity_from_cache(
@@ -284,7 +284,7 @@ def map_circuit(
     classical_link_width: int = 0,
     classical_clock_freq_hz: float = 200e6,
     classical_routing_cycles: int = 2,
-) -> QusimResult:
+) -> QuadrisResult:
     """
     Map a Qiskit quantum circuit using HQA and estimate teleportation routing and hardware fidelity.
 
@@ -313,7 +313,7 @@ def map_circuit(
         t2_per_qubit (Optional[np.ndarray]): Per-qubit T2 dephasing times in ns.
 
     Returns:
-        QusimResult: Structured simulation payload metrics including multidimensional matrices isolating individual qubit drop footprints across layers.
+        QuadrisResult: Structured simulation payload metrics including multidimensional matrices isolating individual qubit drop footprints across layers.
     """
     # 1. Parse Circuit to NumPy slices
     gs_sparse, gate_names = _qiskit_circ_to_sparse_list(circuit)
@@ -447,7 +447,7 @@ def map_circuit(
     )
 
     # 6. Wrap Results
-    return QusimResult(
+    return QuadrisResult(
         execution_success=raw_dict.get("execution_success", False),
         placements=placements,
         total_teleportations=raw_dict["total_teleportations"],
@@ -497,12 +497,12 @@ def telesabre_map_circuit(
     classical_link_width: int = 0,
     classical_clock_freq_hz: float = 200e6,
     classical_routing_cycles: int = 2,
-) -> "QusimResult":
+) -> "QuadrisResult":
     """
     Route a quantum circuit using TeleSABRE and estimate hardware fidelity.
 
     Unlike ``map_circuit``, this function accepts file paths because TeleSABRE
-    reads QASM and device JSON directly.  The returned ``QusimResult`` has the
+    reads QASM and device JSON directly.  The returned ``QuadrisResult`` has the
     same fidelity fields as ``map_circuit``.
 
     Notes:
@@ -554,7 +554,7 @@ def telesabre_map_circuit(
     num_layers = raw["algorithmic_fidelity_grid"].shape[0]
     num_qubits = raw["algorithmic_fidelity_grid"].shape[1]
 
-    return QusimResult(
+    return QuadrisResult(
         execution_success=raw["execution_success"],
         placements=raw["placements"],
         total_teleportations=raw["total_teleportations"],
@@ -573,7 +573,7 @@ def telesabre_map_circuit(
     )
 
 
-# Make `import qusim; qusim.dse.DSEEngine(...)` work without forcing the
+# Make `import quadris; quadris.dse.DSEEngine(...)` work without forcing the
 # user to remember the submodule path. Imports are lazy-friendly: each
 # subpackage owns its own optional deps (qiskit for dse, none for analysis).
-from qusim import dse, analysis  # noqa: E402, F401
+from quadris import dse, analysis  # noqa: E402, F401

@@ -15,7 +15,7 @@ from .constants import (
     OUTPUT_METRICS,
     PARETO_METRIC_ORIENTATION,
 )
-from qusim.dse.flatten import (
+from quadris.dse.flatten import (
     flatten_sweep_to_table as _flatten_sweep_to_table,
     _OUTPUT_KEYS,
     _find_sample,
@@ -24,7 +24,7 @@ from qusim.dse.flatten import (
     _flatten_structured,
     _resolve_axes,
 )
-from qusim.analysis.pareto import pareto_front_mask as _pareto_front_mask
+from quadris.analysis.pareto import pareto_front_mask as _pareto_front_mask
 
 # Map output metric key → display label
 _OUTPUT_LABELS = {m["value"]: m["label"] for m in OUTPUT_METRICS}

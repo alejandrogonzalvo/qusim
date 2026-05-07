@@ -1,10 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ndarray::Array2;
-use qusim::circuit::InteractionTensor;
-use qusim::hqa::hqa_mapping;
-use qusim::noise::{estimate_fidelity, ArchitectureParams};
-use qusim::routing::extract_inter_core_communications;
-use qusim::routing::RoutingSummary;
+use quadris::circuit::InteractionTensor;
+use quadris::hqa::hqa_mapping;
+use quadris::noise::{estimate_fidelity, ArchitectureParams};
+use quadris::routing::extract_inter_core_communications;
+use quadris::routing::RoutingSummary;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;

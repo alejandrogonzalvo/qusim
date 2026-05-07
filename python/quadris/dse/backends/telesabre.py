@@ -1,7 +1,7 @@
 """
 TeleSABRE cold-path backend.
 
-Wraps :func:`qusim.rust_core.telesabre_map_and_estimate`, which is the
+Wraps :func:`quadris.rust_core.telesabre_map_and_estimate`, which is the
 PyO3 binding around the TeleSABRE C library. Two ergonomic concerns
 the wrapper handles:
 
@@ -40,8 +40,8 @@ from ..topology import (
 
 
 # Repository root resolved relative to this file:
-# …/python/qusim/dse/backends/telesabre.py — parents[0] = backends/,
-# parents[1] = dse/, parents[2] = qusim/, parents[3] = python/,
+# …/python/quadris/dse/backends/telesabre.py — parents[0] = backends/,
+# parents[1] = dse/, parents[2] = quadris/, parents[3] = python/,
 # parents[4] = repo root. Used to find the bundled TeleSABRE config.
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _DEFAULT_TELESABRE_CONFIG = (
@@ -59,7 +59,7 @@ class TeleSabreBackend:
         config_key: tuple,
     ) -> CachedMapping:
         from qiskit import qasm2
-        from qusim.rust_core import telesabre_map_and_estimate
+        from quadris.rust_core import telesabre_map_and_estimate
 
         t0 = time.time()
         seed = cold_cfg["seed"]
@@ -119,7 +119,7 @@ class TeleSabreBackend:
         # Use Qiskit's gs_sparse so the hot path has the correct
         # num_layers (DAG depth) and gate-type structure for the
         # algorithmic / coherence fidelity model.
-        from qusim import _qiskit_circ_to_sparse_list
+        from quadris import _qiskit_circ_to_sparse_list
         gs_sparse, gate_names = _qiskit_circ_to_sparse_list(transp)
         gate_error_arr, gate_time_arr = _make_gate_arrays(gate_names, noise)
 

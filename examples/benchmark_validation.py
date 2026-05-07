@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Validation benchmark: tests qusim against circuit families NOT used during model development.
+Validation benchmark: tests quadris against circuit families NOT used during model development.
 
 Training set used: GHZ, QFT, random_circuit(seed=42) at 3/5/8/10/12 qubits.
 Validation set uses: Bernstein-Vazirani, W-state, QAOA-style layers,
@@ -23,7 +23,7 @@ from qiskit.transpiler import CouplingMap
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
 
-from qusim import map_circuit, InitialPlacement
+from quadris import map_circuit, InitialPlacement
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(SCRIPT_DIR, '..', 'data')
@@ -171,7 +171,7 @@ def generate_validation_circuits():
 
 
 # ---------------------------------------------------------------------------
-# Fidelity models (ESP, Depol, qusim) — same as benchmark_live_hw.py
+# Fidelity models (ESP, Depol, quadris) — same as benchmark_live_hw.py
 # ---------------------------------------------------------------------------
 VIRTUAL_GATES = frozenset({'rz', 'id', 'delay', 'barrier', 'measure'})
 
@@ -255,7 +255,7 @@ def estimate_depol(circ, params):
     return np.prod(qubits_fidelity)
 
 
-def estimate_qusim(transp, params, per_qubit):
+def estimate_quadris(transp, params, per_qubit):
     n = transp.num_qubits
     edges = []
     for i in range(n):
@@ -425,13 +425,13 @@ def main():
     for transp in transpiled:
         esp_fids.append(estimate_esp(transp, params))
         depol_fids.append(estimate_depol(transp, params))
-        uniform_fids.append(estimate_qusim(transp, params, per_qubit=False))
-        perqubit_fids.append(estimate_qusim(transp, params, per_qubit=True))
+        uniform_fids.append(estimate_quadris(transp, params, per_qubit=False))
+        perqubit_fids.append(estimate_quadris(transp, params, per_qubit=True))
 
     # --- Print results table ---
     print()
     print(f"{'Circuit':<18} {'Qubits':>6} {'Gates':>6} "
-          f"{'HW':>8} {'ESP':>8} {'Depol':>8} {'qusim(U)':>9} {'qusim(PQ)':>9}")
+          f"{'HW':>8} {'ESP':>8} {'Depol':>8} {'quadris(U)':>9} {'quadris(PQ)':>9}")
     print('=' * 90)
 
     for i, meta in enumerate(circuit_meta):
@@ -444,8 +444,8 @@ def main():
     models = {
         'ESP': np.array(esp_fids),
         'Depol': np.array(depol_fids),
-        'qusim(uniform)': np.array(uniform_fids),
-        'qusim(per-qubit)': np.array(perqubit_fids),
+        'quadris(uniform)': np.array(uniform_fids),
+        'quadris(per-qubit)': np.array(perqubit_fids),
     }
 
     print(f"\n{'Model':<20} {'MAE':>8} {'RMSE':>8} {'Max Err':>8} {'R²':>8}")
@@ -468,9 +468,9 @@ def main():
     ax1.plot([0, 1], [0, 1], 'k--', alpha=0.4, label='Perfect prediction')
     ax1.scatter(hw, esp_fids, label='ESP', color='tab:orange', alpha=0.7, s=60)
     ax1.scatter(hw, depol_fids, label='Depol', color='tab:green', alpha=0.7, s=60)
-    ax1.scatter(hw, uniform_fids, label='qusim (uniform)', color='tab:red', alpha=0.7,
+    ax1.scatter(hw, uniform_fids, label='quadris (uniform)', color='tab:red', alpha=0.7,
                 s=60, marker='x')
-    ax1.scatter(hw, perqubit_fids, label='qusim (per-qubit)', color='tab:blue', alpha=0.85,
+    ax1.scatter(hw, perqubit_fids, label='quadris (per-qubit)', color='tab:blue', alpha=0.85,
                 s=60, marker='D')
     ax1.set_xlabel('Hardware Fidelity (measured)', fontsize=14)
     ax1.set_ylabel('Model Prediction', fontsize=14)
@@ -486,9 +486,9 @@ def main():
     ax2.scatter(gates, hw, label='Hardware', color='black', s=80, marker='s', zorder=5)
     ax2.scatter(gates, esp_fids, label='ESP', color='tab:orange', alpha=0.7, s=50)
     ax2.scatter(gates, depol_fids, label='Depol', color='tab:green', alpha=0.7, s=50)
-    ax2.scatter(gates, uniform_fids, label='qusim (uniform)', color='tab:red', alpha=0.7,
+    ax2.scatter(gates, uniform_fids, label='quadris (uniform)', color='tab:red', alpha=0.7,
                 s=50, marker='x')
-    ax2.scatter(gates, perqubit_fids, label='qusim (per-qubit)', color='tab:blue', alpha=0.85,
+    ax2.scatter(gates, perqubit_fids, label='quadris (per-qubit)', color='tab:blue', alpha=0.85,
                 s=50, marker='D')
     ax2.set_xscale('log')
     ax2.set_xlabel('Number of Gates', fontsize=14)
@@ -513,7 +513,7 @@ def main():
     ax3.set_title('Prediction Error Distribution', fontsize=15)
     ax3.tick_params(axis='x', rotation=15)
 
-    plt.suptitle(f'qusim VALIDATION Benchmark — {backend.name} ({args.shots} shots)',
+    plt.suptitle(f'quadris VALIDATION Benchmark — {backend.name} ({args.shots} shots)',
                  fontsize=17, y=1.02)
     plt.tight_layout()
 
@@ -536,8 +536,8 @@ def main():
             'hw_fidelity': hw_fidelities[i],
             'esp': esp_fids[i],
             'depol': depol_fids[i],
-            'qusim_uniform': uniform_fids[i],
-            'qusim_perqubit': perqubit_fids[i],
+            'quadris_uniform': uniform_fids[i],
+            'quadris_perqubit': perqubit_fids[i],
         })
 
     results_path = os.path.join(DATA_DIR, 'benchmark_validation_hw_results.json')

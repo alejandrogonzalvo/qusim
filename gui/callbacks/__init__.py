@@ -1,4 +1,4 @@
-"""Dash callback registration entry points for the qusim GUI.
+"""Dash callback registration entry points for the quadris GUI.
 
 Each submodule exposes a ``register(app)`` function that attaches its
 callbacks to the given Dash app. ``register_all`` calls them in the

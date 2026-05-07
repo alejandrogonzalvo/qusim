@@ -21,7 +21,7 @@ distributed across focused leaf modules:
 """
 
 # Memory module pins per-process thread pools at import time. It MUST be
-# imported before numpy/qiskit/qusim so Rayon/OpenMP/BLAS pools
+# imported before numpy/qiskit/quadris so Rayon/OpenMP/BLAS pools
 # initialize at 1 thread (otherwise parallel cold-path workers
 # oversubscribe the CPU and the scheduler stalls).
 from .memory import (  # noqa: F401 — re-export for back-compat
@@ -40,10 +40,10 @@ from typing import Callable, Iterable, Optional
 
 import numpy as np
 
-import qusim
+import quadris
 
 # Public/back-compat re-exports from leaf modules so external code that
-# does ``from qusim.dse.engine import X`` keeps working.
+# does ``from quadris.dse.engine import X`` keeps working.
 from .axes import (
     CAT_METRIC_BY_KEY,
     METRIC_BY_KEY,
@@ -126,7 +126,7 @@ from .sweep import (
 # ---------------------------------------------------------------------------
 
 class DSEEngine:
-    """Wraps qusim's mapper+estimator pipeline for Design Space Exploration.
+    """Wraps quadris's mapper+estimator pipeline for Design Space Exploration.
 
     Cold path — build circuit + topology, route via the selected backend,
                 cache structural results.
@@ -138,7 +138,7 @@ class DSEEngine:
     """
 
     # Single source of truth for cold-path / integer keys lives in
-    # :mod:`qusim.dse.config`. Re-exported on the class for callers that
+    # :mod:`quadris.dse.config`. Re-exported on the class for callers that
     # introspect ``DSEEngine.COLD_PATH_KEYS``.
     COLD_PATH_KEYS = _CFG_COLD_PATH_KEYS
     INTEGER_KEYS = _CFG_INTEGER_KEYS
@@ -179,7 +179,7 @@ class DSEEngine:
         qubits_per_core``) is a derived field, written into the cold
         config below.
 
-        Routing dispatches via :mod:`qusim.dse.backends` — pass
+        Routing dispatches via :mod:`quadris.dse.backends` — pass
         ``routing_algorithm="telesabre"`` to use the C-library mapper
         instead of HQA+SABRE.
 
@@ -261,7 +261,7 @@ class DSEEngine:
         """Fast fidelity estimation reusing cached placements + distance matrix."""
         merged = _merge_noise(noise)
         gate_error_arr, gate_time_arr = _make_gate_arrays(cached.gate_names, merged)
-        result = qusim.estimate_fidelity_from_cache(
+        result = quadris.estimate_fidelity_from_cache(
             gs_sparse=cached.gs_sparse,
             placements=cached.placements,
             distance_matrix=cached.distance_matrix,
@@ -324,7 +324,7 @@ class DSEEngine:
             chunk = noise_dicts[start : start + self._HOT_BATCH_CHUNK]
             merged_chunk = [_merge_noise(n) for n in chunk]
 
-            chunk_results = qusim.estimate_fidelity_from_cache_batch(
+            chunk_results = quadris.estimate_fidelity_from_cache_batch(
                 gs_sparse=cached.gs_sparse,
                 placements=cached.placements,
                 distance_matrix=cached.distance_matrix,
@@ -361,7 +361,7 @@ class DSEEngine:
         what the sweep should actually respect.
 
         Calls ``_max_hot_points_for_memory`` via this module's binding
-        so test monkeypatches against ``qusim.dse.engine`` apply here.
+        so test monkeypatches against ``quadris.dse.engine`` apply here.
         """
         requested = max_hot if max_hot is not None else MAX_TOTAL_POINTS_HOT
         return min(requested, _max_hot_points_for_memory()), requested
@@ -530,7 +530,7 @@ class DSEEngine:
         max_workers: int | None,
         keep_grids: bool = False,
     ) -> dict[tuple, dict]:
-        """Thin wrapper around :func:`qusim.dse.sweep._parallel_cold_sweep`."""
+        """Thin wrapper around :func:`quadris.dse.sweep._parallel_cold_sweep`."""
         return _sweep_parallel_cold_sweep(
             cold_config, noise, indexed_points, total,
             progress_callback, max_workers, keep_grids,

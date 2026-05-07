@@ -15,7 +15,7 @@ as the user sweeps comm/buffer overhead. ``num_qubits`` (= ``num_cores
 
 Typical usage::
 
-    from qusim.dse import DSEEngine
+    from quadris.dse import DSEEngine
 
     engine = DSEEngine()
     sweep = engine.sweep_nd(

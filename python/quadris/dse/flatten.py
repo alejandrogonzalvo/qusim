@@ -14,7 +14,7 @@ import numpy as np
 
 
 # Scalar output keys carried in every sweep cell. Mirrors
-# ``qusim.dse.engine._RESULT_SCALAR_KEYS``; duplicated here so this module
+# ``quadris.dse.engine._RESULT_SCALAR_KEYS``; duplicated here so this module
 # stays a leaf with no dependency on the engine.
 _OUTPUT_KEYS: tuple[str, ...] = (
     "overall_fidelity",

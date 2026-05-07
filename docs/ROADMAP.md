@@ -1,6 +1,6 @@
-# qusim Roadmap
+# quadris Roadmap
 
-Feature roadmap for the qusim fidelity simulator. Items are grouped by priority based on researcher impact and implementation effort.
+Feature roadmap for the quadris fidelity simulator. Items are grouped by priority based on researcher impact and implementation effort.
 
 Status legend: **done** | **in progress** | planned
 
@@ -19,8 +19,8 @@ Switch backends per `DSEEngine.run_cold` call via the
 `routing_algorithm` kwarg (`"hqa_sabre"` or `"telesabre"`). The C
 library is vendored in `csrc/telesabre/`, wrapped by the Rust crate
 in `src/telesabre/`, exposed to Python through
-`qusim.rust_core.telesabre_map_and_estimate`, and integrated with the
-DSE engine via `qusim.dse.backends.telesabre.TeleSabreBackend`. The
+`quadris.rust_core.telesabre_map_and_estimate`, and integrated with the
+DSE engine via `quadris.dse.backends.telesabre.TeleSabreBackend`. The
 backend remaps placements + sparse swaps from TeleSABRE's gate-step
 space into Qiskit DAG-layer space so the hot-path noise model sees a
 consistent row count regardless of the backend.
@@ -77,7 +77,7 @@ Users manually index into grids to get per-qubit fidelity:
 result.algorithmic_fidelity_grid[-1, q] * result.routing_fidelity_grid[-1, q] * result.coherence_fidelity_grid[-1, q]
 ```
 
-Add a convenience `per_qubit_fidelity: np.ndarray` (shape `(n_qubits,)`) to `QusimResult` that combines all three channels at the final layer.
+Add a convenience `per_qubit_fidelity: np.ndarray` (shape `(n_qubits,)`) to `QuadrisResult` that combines all three channels at the final layer.
 
 **Effort:** Low — computed from existing grids.
 
@@ -129,7 +129,7 @@ The Rust engine already works on a sparse `(layer, q1, q2, weight)` tensor. Expo
 Researchers often sweep over parameterized circuits (variational ansatze with different depths/entanglement patterns). A batch API would avoid repeated Python→Rust crossing overhead.
 
 ```python
-results = map_circuits(circuits, architecture)  # returns list[QusimResult]
+results = map_circuits(circuits, architecture)  # returns list[QuadrisResult]
 ```
 
 **Effort:** Low-Medium — loop in Rust instead of Python.
@@ -163,5 +163,5 @@ For resource estimation, knowing *when* EPR pairs are consumed (not just the tot
 | Frozen-axis dropdown (3-D slice scrubbing) | 2026-04-23 | `2026-04-23-frozen-axis-dropdown-*` plan series |
 | TeleSABRE FFI integration as second routing backend | 2026-04-30 | `2026-04-14-telesabre-fidelity-integration-*` plan series |
 | Readout / measurement error + TREX mitigation | 2026-05-04 | exposed via `measurement_error`, `readout_mitigation_factor` |
-| DSE engine + FoM + Pareto lifted into `qusim.dse` / `qusim.analysis` | 2026-05-05 | `879c7dd` (lift), `1ee94ba` (leaf split), `4acf413` (backends + thin facade) |
-| `pip install qusim[gui]` extras + `qusim-dse` console script | 2026-05-05 | `e384094` |
+| DSE engine + FoM + Pareto lifted into `quadris.dse` / `quadris.analysis` | 2026-05-05 | `879c7dd` (lift), `1ee94ba` (leaf split), `4acf413` (backends + thin facade) |
+| `pip install quadris[gui]` extras + `quadris-dse` console script | 2026-05-05 | `e384094` |

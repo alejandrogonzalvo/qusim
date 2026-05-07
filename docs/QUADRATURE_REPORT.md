@@ -2,7 +2,7 @@
 
 > **Naming.** The package is referred to as **`quadris`** throughout
 > this document. The name is provisional; the codebase currently
-> exposes it as `qusim` and the rename will land before the deliverable
+> exposes it as `quadris` and the rename will land before the deliverable
 > is finalised.
 
 ## 0. Executive summary
@@ -47,7 +47,7 @@ only uniform noise parameters.
 `quadris.map_circuit` accepts a transpiled Qiskit `QuantumCircuit`,
 a `CouplingMap`, a `core_mapping` (physical qubit to core index),
 and a noise dict. It runs HQA initial placement followed by SABRE
-swap insertion and returns a `QusimResult` carrying overall,
+swap insertion and returns a `QuadrisResult` carrying overall,
 algorithmic, routing, and coherence fidelities, per-layer ×
 per-qubit grids of each channel, and aggregate counters
 (teleportations, swaps, EPR pairs, total circuit time).
@@ -163,7 +163,7 @@ graph TD
     APP[quadris-dse: app, callbacks, plots]
   end
   subgraph LIB ["Python library"]
-    QU[quadris<br/>map_circuit, QusimResult]
+    QU[quadris<br/>map_circuit, QuadrisResult]
     DSE[quadris.dse<br/>DSEEngine, SweepResult, axes]
     ANA[quadris.analysis<br/>FoM, Pareto]
   end
@@ -190,7 +190,7 @@ batch jobs.
 | `src/routing/` | SABRE swap-insertion glue, teleportation event log |
 | `src/telesabre/` | Rust wrapper around the vendored TeleSABRE C library (`csrc/telesabre/`) |
 | `src/python_api.rs` | PyO3 entry points (4 functions) |
-| `python/quadris/` | Single-circuit API (`map_circuit`, `QusimResult`) |
+| `python/quadris/` | Single-circuit API (`map_circuit`, `QuadrisResult`) |
 | `python/quadris/dse/` | `DSEEngine` façade plus leaf modules: `axes`, `circuits`, `topology`, `noise`, `results`, `config`, `flatten`, `memory`, `sweep`, `backends/{base,hqa_sabre,telesabre}` |
 | `python/quadris/analysis/` | `FomConfig`, `evaluate`, `pareto_front` |
 | `gui/` | Dash app, plots, components, sessions |
@@ -211,8 +211,8 @@ evaluations are batched through a single Rust call.
 
 | Name | What it does |
 |---|---|
-| `quadris.map_circuit(circuit, full_coupling_map, core_mapping, ...)` | HQA + SABRE, returns `QusimResult` |
-| `quadris.telesabre_map_circuit(circuit_path, device_json, config_json, ...)` | TeleSABRE C library, returns `QusimResult` |
+| `quadris.map_circuit(circuit, full_coupling_map, core_mapping, ...)` | HQA + SABRE, returns `QuadrisResult` |
+| `quadris.telesabre_map_circuit(circuit_path, device_json, config_json, ...)` | TeleSABRE C library, returns `QuadrisResult` |
 | `quadris.estimate_fidelity_from_cache(gs_sparse, placements, dist, swaps, ...)` | Single hot-path call |
 | `quadris.estimate_fidelity_from_cache_batch(..., noise_dicts: list)` | Vectorised batch call |
 | `quadris.dse.DSEEngine().run_cold(...)` | Cold mapping with cache, returns `CachedMapping` |
@@ -288,45 +288,73 @@ sees a consistent row count regardless of back-end.
 
 ### 3.5 Noise model: three channels
 
-Total per-qubit fidelity at the final layer is the product of three
-disjoint factors.
+Per-qubit fidelity is tracked on a fidelity vector $f \in [0, 1]^N$
+initialised to $\mathbf{1}$ and mutated in place as gates, swaps and
+teleportations are applied. Total fidelity at the final layer is the
+product of three disjoint factors: algorithmic (gate errors),
+routing (SABRE SWAPs + inter-core teleportations), and coherence
+(T1/T2 decay over per-qubit busy time).
 
-**Algorithmic**, depolarising error per native gate:
+**Algorithmic gates** follow the depolarising channel directly. The
+channel parameter for a $d$-dimensional Hilbert space is
 
-$$F_\text{algo} = \prod_{g \in \mathcal{C}} (1 - \epsilon_g)$$
+$$\lambda_d = \frac{d}{d-1}\,\epsilon, \qquad
+  \lambda_1 = 2\epsilon_\text{1Q}, \qquad
+  \lambda_2 = \tfrac{4}{3}\epsilon_\text{2Q}.$$
 
-**Routing**, SABRE SWAPs and inter-core teleportations:
+A 1Q gate on qubit $q$ updates its fidelity by
 
-$$F_\text{SWAP} = (1 - 3\epsilon_\text{2Q})^{n_\text{SWAP}}, \quad
-  F_\text{tele} = (1 - \epsilon_\text{hop})^{\text{distance}}$$
+$$f_q \;\leftarrow\; (1-\lambda_1)\,f_q \;+\; \tfrac{1}{2}\lambda_1.$$
 
-**Coherence**, exponential T1/T2 decay over per-qubit busy time:
+A 2Q gate on $(u, v)$ couples the two fidelities through an $\eta$
+update that mirrors the reference Python implementation
+(`dse_pau/utils.py:get_operational_fidelity_depol`):
 
-$$F_\text{coh} = \exp\!\left(-\frac{t_\text{idle}}{T_1}\right) \cdot
-                 \exp\!\left(-\frac{t_\text{idle}}{T_2}\right)$$
+$$\eta(f_u, f_v; \lambda_2) = \tfrac{1}{2}\!\left[
+  \sqrt{(1-\lambda_2)\,(f_u + f_v)^2 + \lambda_2}
+  \;-\; \sqrt{1-\lambda_2}\,(f_u + f_v)
+\right],$$
+$$f_u \leftarrow \sqrt{1-\lambda_2}\,f_u + \eta, \qquad
+  f_v \leftarrow \sqrt{1-\lambda_2}\,f_v + \eta.$$
 
-The Rust pass is Θ(L · N) per estimate (one sweep through the
-sparse interaction tensor, layer by layer). Every event is recorded
-on a shared per-qubit busy timeline, so coherence sees the same
-idle windows that routing decisions create.
+**SABRE SWAPs** apply three sequential $\eta$-coupled CNOTs to the
+participating pair, matching the SWAP-as-three-CNOTs decomposition
+under the same depolarising channel.
+
+**Inter-core teleportations** unroll the teledata protocol once per
+hop along the routed path. For each hop, on the moving qubit $f_q$:
+an EPR partner is initialised at $f_p = \sqrt{1-\epsilon_\text{EPR}}$
+and consumed by one $\eta$-coupled preprocess CNOT; one 1Q
+depolarising update absorbs the source-side Hadamard;
+$f_q \leftarrow (1-\epsilon_\text{meas})\,f_q$ accounts for the
+mid-circuit measurement; one 1Q update absorbs the destination
+X/Z correction; finally three $\eta$-coupled CNOTs against a fresh
+buffer (initialised at $1$) apply the SWAP into the destination
+core. The buffer is discarded after each hop.
+
+**Coherence** uses the standard T1/T2 envelope over per-qubit idle
+time, identical to the reference model:
+
+$$F_\text{coh}(t_\text{idle}) =
+  \exp\!\left(-\tfrac{t_\text{idle}}{T_1}\right) \cdot
+  \left[\tfrac{1}{2}\exp\!\left(-\tfrac{t_\text{idle}}{T_2}\right)
+        + \tfrac{1}{2}\right].$$
+
+Idle time is accumulated against a shared per-qubit busy timeline so
+coherence decay sees the same idle windows that routing decisions
+create. The full pass is $\Theta(L \cdot N)$ per estimate.
 
 ### 3.6 Teleportation cost decomposition
 
-The bundled `teleportation_error_per_hop` and
-`teleportation_time_per_hop` are derived from constituents matching
-the depolarising-channel paper's protocol cost: 1 EPR generation,
-4 two-qubit gates (1 preprocess CNOT, 3 buffer-SWAP CNOTs),
-2 single-qubit gates (Hadamard preprocess, X/Z correction), and
-1 mid-circuit measurement.
-
-$$F_\text{hop} \approx \sqrt{1-\epsilon_\text{EPR}}\;\;
-                       (1 - \tfrac{2}{3}\epsilon_\text{2Q})^4\;\;
-                       (1-\epsilon_\text{1Q})^2\;\;
-                       (1-\epsilon_\text{meas})$$
-
-The (2/3)·ε factor on each CNOT is the per-qubit marginal of a d=4
-depolarising channel under the η-model
-(`src/noise/eta_cnot_update`).
+The fidelity protocol above (§3.5) unrolls the teledata cost exactly,
+hop by hop, with no linearised approximation. The corresponding
+bundled scalar `teleportation_time_per_hop` aggregates the per-hop
+constituents on the timing side: 1 EPR generation, 4 two-qubit
+gates (1 preprocess CNOT, 3 buffer-SWAP CNOTs), 2 single-qubit
+gates (Hadamard preprocess, X/Z correction), and 1 mid-circuit
+measurement. Classical communication latency is added separately
+through `classical_link_width`, `classical_clock_freq_hz` and
+`classical_routing_cycles` (paper packet-size formula).
 
 ### 3.7 Sweep-axis count derivation (split-budget model)
 
@@ -568,7 +596,7 @@ dataset.
 
 | Symbol or capability | Location |
 |---|---|
-| `map_circuit`, `QusimResult` | `python/quadris/__init__.py` |
+| `map_circuit`, `QuadrisResult` | `python/quadris/__init__.py` |
 | `DSEEngine`, `SweepResult`, `SweepProgress` | `python/quadris/dse/engine.py` (façade) |
 | Parameter registry (axes, NOISE_DEFAULTS) | `python/quadris/dse/axes.py` |
 | Pinned-axis architecture resolver | `python/quadris/dse/config.py` |
@@ -593,9 +621,9 @@ dataset.
 # quadris (top level)
 def map_circuit(circuit, full_coupling_map, core_mapping, *, seed,
                 initial_placement, single_gate_error, two_gate_error,
-                t1, t2, ...) -> QusimResult
+                t1, t2, ...) -> QuadrisResult
 def telesabre_map_circuit(circuit_path, device_json_path,
-                          config_json_path, ...) -> QusimResult
+                          config_json_path, ...) -> QuadrisResult
 def estimate_fidelity_from_cache(gs_sparse, placements, distance_matrix,
                                  sparse_swaps, gate_error_arr,
                                  gate_time_arr, ...) -> dict

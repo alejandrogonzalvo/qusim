@@ -1,4 +1,4 @@
-"""Dash layout for the qusim DSE GUI.
+"""Dash layout for the quadris DSE GUI.
 
 Pure UI: builds the topbar, sidebars, centre panel, and the root
 ``html.Div`` that becomes ``app.layout``. Holds no callbacks and no
@@ -612,7 +612,7 @@ def build_layout() -> html.Div:
             dcc.Store(id="merit-mode-store", data="heatmap", storage_type="memory"),
             dcc.Store(id="merit-frozen-values-store", data={}, storage_type="memory"),
             # Sink for the clientside callback that pushes (view-type, merit-mode)
-            # into window.qusimUpdatePlotHelp — drives the modebar "?" popup text.
+            # into window.quadrisUpdatePlotHelp — drives the modebar "?" popup text.
             dcc.Store(id="plot-help-sink", data=0, storage_type="memory"),
             dcc.Download(id="session-download"),
             dcc.Interval(id="sweep-check", interval=16, n_intervals=0),

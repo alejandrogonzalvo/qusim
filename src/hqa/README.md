@@ -8,7 +8,7 @@ Rust implementation of the HQA algorithm for optimized mapping of quantum circui
 
 HQA solves the qubit-to-core assignment problem for modular quantum processors. Given a quantum circuit decomposed into L temporal layers (time slices), HQA iteratively:
 
-1. **Initial Placement**: Qubits are initially distributed among cores. In `qusim`, this is configurable (e.g., `RANDOM` or `SPECTRAL_CLUSTERING` graph partitioning via the Python API) to minimize initial layout penalties before temporal mapping begins.
+1. **Initial Placement**: Qubits are initially distributed among cores. In `quadris`, this is configurable (e.g., `RANDOM` or `SPECTRAL_CLUSTERING` graph partitioning via the Python API) to minimize initial layout penalties before temporal mapping begins.
 2. **Lookahead**: builds a spatio-temporal interaction matrix combining hard constraints from the current layer with exponentially decaying future interactions.
 3. **Conflict detection**: identifies qubit pairs that interact but sit on different cores.
 4. **Core balancing**: resolves odd free-space parity between cores by swapping movable qubits.
@@ -61,7 +61,7 @@ No interpreter overhead, no GC pauses, contiguous memory layout for partition ma
 ## Usage
 
 ```rust
-use qusim::hqa::{hqa_mapping, InteractionTensor};
+use quadris::hqa::{hqa_mapping, InteractionTensor};
 
 // gs_sparse: Vec<[f64; 4]> where each entry is [layer, q1, q2, weight]
 let tensor = InteractionTensor::from_sparse(&gs_sparse, num_layers, num_qubits);

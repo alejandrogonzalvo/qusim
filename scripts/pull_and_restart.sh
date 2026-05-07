@@ -13,7 +13,7 @@
 # restarts (the tunnel will return 502 for a few seconds during the gap).
 #
 # Cron suggestion:
-#   */5 * * * * /home/alejandro/dev/qusim/scripts/pull_and_restart.sh
+#   */5 * * * * /home/alejandro/dev/quadris/scripts/pull_and_restart.sh
 
 set -euo pipefail
 
@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-LOG_DIR="${LOG_DIR:-/tmp/qusim-serve}"
+LOG_DIR="${LOG_DIR:-/tmp/quadris-serve}"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/pull.log"
 
@@ -31,10 +31,10 @@ log() {
 
 # Cron runs in a stripped environment with no ssh-agent. The repo uses an
 # SSH remote, so we need a key path explicitly. ~/.ssh/id_ed25519 covers
-# the common case; override with QUSIM_SSH_KEY if you use a different key.
+# the common case; override with QUADRIS_SSH_KEY if you use a different key.
 if [[ -z "${GIT_SSH_COMMAND:-}" ]]; then
   default_key="$HOME/.ssh/id_ed25519"
-  key="${QUSIM_SSH_KEY:-$default_key}"
+  key="${QUADRIS_SSH_KEY:-$default_key}"
   if [[ -r "$key" ]]; then
     export GIT_SSH_COMMAND="ssh -i $key -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
   fi
